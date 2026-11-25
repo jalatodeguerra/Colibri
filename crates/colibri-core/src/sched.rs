@@ -430,7 +430,9 @@ impl Scheduler {
                 } else {
                     match pending.rx.try_recv() {
                         Ok(outcome) => Ok(outcome),
-                        Err(_) => {
+                        // The completer ended without a result: the usual "no result" error.
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(()),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
                             self.ext.forget(pending.op);
                             return Err(ExternalError::Failed(NO_BLOCKING.to_string()));
                         }

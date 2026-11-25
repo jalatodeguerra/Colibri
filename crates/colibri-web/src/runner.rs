@@ -177,10 +177,11 @@ impl Runner {
             self.finish();
         } else if nothing_due {
             // `main` waits for an event (a signal, a join) that nothing can cause: there is no
-            // other thread, and no input, to cause one. `colibri run` panics here too.
+            // other thread, and no input, to cause one. `colibri run` panics here ("would wait
+            // forever"), so this is a panic's exit code.
             self.fail_text(
-                "error: the program waits for something that cannot happen (a signal nobody emits, or a coroutine that cannot end)\n",
-                1,
+                "panic: the program waits for something that cannot happen (a signal nobody emits, or a coroutine that cannot end)\n",
+                EXIT_PANIC,
             );
         }
     }

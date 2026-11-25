@@ -13,6 +13,9 @@ fn every_web_golden_prints_what_its_expect_lines_say() {
     let cases = support::cases();
     assert!(cases.len() >= 8, "the harness runs a few programs");
     for (name, source) in &cases {
+        if support::node_only(source) {
+            continue;
+        }
         let out = driver::run_pack(&support::pack_of(name, source));
         let want = support::expected_output(source);
         let (state, code) = match support::web_exit(source) {
@@ -36,6 +39,11 @@ fn every_web_golden_prints_what_its_expect_lines_say() {
                 "the error stream lacks {text:?}: {}",
                 out.out.stderr
             ));
+        }
+        if let Some(n) = support::max_ticks(source)
+            && out.ticks > n
+        {
+            problems.push(format!("made {} ticks, at most {n} wanted", out.ticks));
         }
         if let Some(ms) = support::virtual_ms(source) {
             let ms = ms as f64;

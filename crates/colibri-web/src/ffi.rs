@@ -77,8 +77,13 @@ pub unsafe extern "C" fn colibri_free(ptr: *mut u8, len: usize) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn colibri_start(ptr: *const u8, len: usize) -> i32 {
     report_panics();
-    // SAFETY: the host wrote `len` bytes at `ptr`.
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    // An empty pack may come with a null pointer, which a slice must not have.
+    let bytes: &[u8] = if len == 0 || ptr.is_null() {
+        &[]
+    } else {
+        // SAFETY: the host wrote `len` bytes at `ptr`.
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    };
     let runner = Runner::start(bytes, Box::new(HostSink));
     let state = runner.state();
     RUNNER.with(|slot| *slot.borrow_mut() = Some(runner));

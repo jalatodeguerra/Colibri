@@ -55,14 +55,26 @@ function textSink(target) {
   return () => {};
 }
 
-/** Decodes UTF-8 that arrives in pieces, which may split a character. */
-function decoderFor(sink) {
+/**
+ * Decodes UTF-8 that arrives in pieces, which may split a character. The function takes bytes;
+ * its `flush()` ends the stream, so that a character left half written shows as U+FFFD instead of
+ * vanishing. (Exported for the tests.)
+ */
+export function decoderFor(sink) {
   const decoder = new TextDecoder("utf-8");
-  return (bytes) => {
+  const write = (bytes) => {
     const text = decoder.decode(bytes, { stream: true });
     if (text) sink(text);
   };
+  write.flush = () => {
+    const text = decoder.decode();
+    if (text) sink(text);
+  };
+  return write;
 }
+
+/** The longest delay `setTimeout` takes: a larger one is read as a 32-bit number and fires at once. */
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** The default `random`: `crypto.getRandomValues` in chunks (it takes at most 65536 bytes). */
 function defaultRandom(bytes) {
@@ -144,20 +156,29 @@ export async function start(options) {
   });
 
   /** Ends the loop; the caller says how. */
-  const conclude = (state) => {
+  const conclude = (state, exitCode) => {
     if (over) return;
     over = true;
     cancelPending();
+    outText.flush();
+    errText.flush();
     options.onState?.(names[state]);
-    finish({ state: names[state], exitCode: x.colibri_exit_code() });
+    finish({ state: names[state], exitCode: exitCode ?? x.colibri_exit_code() });
   };
 
-  /** A trap: the instance is lost. What the engine could say is already on the error stream. */
+  /**
+   * An exception out of the module: the instance is lost. It is a trap (what the engine could say
+   * is already on the error stream), or an error thrown by the page's own output function, which
+   * passes through the module's frames.
+   */
   const lost = (error) => {
     if (over) return;
     over = true;
     cancelPending();
-    errText(new TextEncoder().encode("the program stopped: the runner trapped\n"));
+    const why = error instanceof Error ? error.message : String(error);
+    errText(new TextEncoder().encode(`the program stopped: the runner trapped or the page failed (${why})\n`));
+    outText.flush();
+    errText.flush();
     options.onState?.("failed");
     abandon(error);
   };
@@ -187,14 +208,17 @@ export async function start(options) {
     if (delay < 0) {
       // Running, yet nothing will ever be due. The module ends a program that is stuck, so this
       // is a module that disagrees with itself: stop, as a failure.
-      conclude(STATE.failed);
+      conclude(STATE.failed, 1);
       return;
     }
     if (delay <= FRAME_MS && raf) {
       timer = { kind: "frame", id: raf(onWake) };
     } else {
       // Rounded up: a timer that fires a hair early would find nothing due and ask again.
-      timer = { kind: "timer", id: setTimer(onWake, Math.ceil(delay)) };
+      // A delay too long for `setTimeout` is cut: the timer fires early, the tick finds nothing
+      // due, and the next one is asked for. Not a number (it cannot be) is a frame.
+      const ms = Number.isNaN(delay) ? 0 : Math.min(Math.ceil(delay), MAX_TIMER_MS);
+      timer = { kind: "timer", id: setTimer(onWake, ms) };
     }
   }
 

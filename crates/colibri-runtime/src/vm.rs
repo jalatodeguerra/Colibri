@@ -287,6 +287,7 @@ impl VmBuilder {
             registering: Vec::new(),
             reload: None,
             entry: None,
+            entry_pending: false,
             cfg: self.cfg,
         }
     }
@@ -341,6 +342,8 @@ pub struct Vm {
     reload: Option<ReloadState>,
     /// The program's entry, when a host runs it as coroutines ([`Vm::start_entry`]).
     entry: Option<EntryRun>,
+    /// A program was loaded by [`Vm::load_from_deferred`] and its entry is not started yet.
+    entry_pending: bool,
 }
 
 /// Where the entry of a program started by [`Vm::start_entry`] is.
@@ -1516,7 +1519,9 @@ impl Vm {
             }
         }?;
         self.warn(&checked);
-        self.install(checked, mode)
+        self.install(checked, mode)?;
+        self.entry_pending = mode == LoadMode::Deferred;
+        Ok(())
     }
 
     /// Hands the warnings of a checked program to the [`Vm::on_warnings`] hook.
@@ -1844,6 +1849,10 @@ impl Vm {
     /// reported by the [`Vm::tick`] that resumes it, like any coroutine's.
     pub fn start_entry(&mut self) -> Result<(), Error> {
         self.program.as_ref().ok_or(Error::NotLoaded)?;
+        // Only the program of `load_from_deferred` has an entry that nothing has run, and only once.
+        if !std::mem::take(&mut self.entry_pending) {
+            return Err(Error::EntryNotPending);
+        }
         let stage = if self.engine.has_script() {
             EntryStage::Script
         } else {
@@ -2341,6 +2350,7 @@ impl Vm {
 
     fn teardown(&mut self) {
         self.release_entry();
+        self.entry_pending = false;
         self.engine.shutdown();
         self.engine.core_mut().flush();
         if self.program.take().is_some() {

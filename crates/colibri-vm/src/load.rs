@@ -50,6 +50,10 @@ impl Machine {
             self.refused = false;
             self.discard_pending_refusal();
             self.drain_root_drops();
+            // A time profile starts here, as in `run_module`.
+            if let Some(profiler) = self.profiler.as_mut() {
+                profiler.restart_clock(self.core.sched.idle_nanos());
+            }
         }
         let result = self.run_inits_only(fiber);
         self.core.end_entry(outermost, true);
@@ -116,12 +120,7 @@ impl Machine {
     }
 
     fn run_module_parts(&mut self, fiber: &mut VmFiber) -> Result<(), Box<PanicInfo>> {
-        let inits: Vec<_> = self.inits[..self.script_from.min(self.inits.len())].to_vec();
-        for g in inits {
-            let value = self.run_global_init(fiber, g.0 as usize)?;
-            let old = std::mem::replace(&mut self.globals[g.0 as usize], value);
-            self.release(old);
-        }
+        self.run_inits_only(fiber)?;
         if let Some(chunk) = self.script.as_ref().map(|s| s.chunk(None, &self.env)) {
             let chunk = chunk.map_err(|m| bare_panic(&format!("internal error: {m}")))?;
             let value = self.enter_from_host(fiber, false, |this, fiber| {

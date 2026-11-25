@@ -101,3 +101,32 @@ fn a_vm_dropped_in_the_middle_of_its_entry_releases_it() {
     vm.start_entry().unwrap();
     drop(vm);
 }
+
+#[test]
+fn the_entry_cannot_be_started_on_a_program_that_already_ran_its_statements() {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+    let mut fs = colibri::MemoryFs::new();
+    fs.insert("main.colibri", "print(\"top\")\nfn main() {}\n");
+    vm.load_from(&fs, colibri::Entry::File(Path::new("main.colibri")))
+        .unwrap();
+    assert!(matches!(
+        vm.start_entry(),
+        Err(colibri::Error::EntryNotPending)
+    ));
+    assert_eq!(out.contents(), "top\n", "the statements did not run again");
+}
+
+#[test]
+fn the_entry_starts_once() {
+    let (mut vm, out) = start("fn main() {\n    print(\"main\")\n    wait(1.0)\n}\n");
+    vm.start_entry().unwrap();
+    assert!(matches!(
+        vm.start_entry(),
+        Err(colibri::Error::EntryNotPending)
+    ));
+    assert_eq!(out.contents(), "main\n", "main did not run twice");
+    // And nothing was lost: the first run goes on.
+    vm.tick(1.0).unwrap();
+    assert!(vm.entry_step().unwrap());
+}

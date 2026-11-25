@@ -5,8 +5,9 @@
 // PACKS_DIR holds what `cargo run -p colibri-web --example make_packs -- PACKS_DIR` writes: for each
 // program NAME.pack (what the runner loads) and NAME.out (what it must print), and when the
 // program asks for them NAME.exit (it must fail with this exit code), NAME.err (the error stream
-// must contain this text) and NAME.ms (the run takes this long on the page's clock, to within
-// three frames).
+// must contain this text), NAME.ms (the run takes this long on the page's clock, to within
+// three frames) and NAME.ticks (it takes at most this many ticks: a program that sleeps with
+// timers needs few, one that is ticked on every frame needs many).
 //
 // There is no browser. requestAnimationFrame and setTimeout are fakes that share one virtual
 // clock: nothing sleeps, and the clock jumps to the next thing that is due, so a program that
@@ -33,7 +34,8 @@ class VirtualPage {
     this.#queue = this.#queue.filter((e) => e.id !== id);
   }
 
-  setTimeout = (fn, ms) => this.#add(this.now + Math.max(0, ms), fn);
+  /** As a real one: a delay over 2^31-1 ms is read as a 32-bit number, and fires at once (1 ms). */
+  setTimeout = (fn, ms) => this.#add(this.now + (ms > 2 ** 31 - 1 ? 1 : Math.max(0, ms)), fn);
   clearTimeout = (id) => this.#remove(id);
   /** A frame is the next multiple of FRAME_MS. */
   requestAnimationFrame = (fn) =>
@@ -73,6 +75,7 @@ async function runOne(module, dir, name) {
     clearTimeout: page.clearTimeout,
     now: () => page.now,
     nowUnix: () => 1_700_000_000 + page.now / 1000,
+    // What the programs that check the seams expect (`web-tests/host_seams.colibri`).
     random: (bytes) => bytes.fill(0xa5),
   });
   const problems = [];
@@ -99,6 +102,10 @@ async function runOne(module, dir, name) {
   const err = sidecar(dir, name, "err");
   if (err !== null && !stderr.includes(err)) {
     problems.push(`the error stream lacks "${err}": ${stderr}`);
+  }
+  const maxTicks = sidecar(dir, name, "ticks");
+  if (maxTicks !== null && handle.tickCount > Number(maxTicks)) {
+    problems.push(`made ${handle.tickCount} ticks, at most ${maxTicks} wanted`);
   }
   const ms = sidecar(dir, name, "ms");
   if (ms !== null && (page.now < Number(ms) || page.now > Number(ms) + 3 * FRAME_MS)) {

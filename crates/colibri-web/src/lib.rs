@@ -25,6 +25,12 @@
 //! | `host_now_unix() -> f64` | seconds since 1970 (`Date.now() / 1000`) |
 //! | `host_random(ptr, len)` | fills the memory with random bytes (`crypto.getRandomValues`) |
 //!
+//! **Imports must not call back into the module.** Every import runs while the runner is borrowed
+//! (`host_write` and `host_random` inside `colibri_tick`, the clocks inside `tick` and
+//! `colibri_next_deadline`): an import that calls an export makes the module panic, which traps. A
+//! host that wants to react to output does so after the export returns. The exports are not
+//! re-entrant either, and the module is single-threaded.
+//!
 //! A panic of the engine itself (a bug, not a Colibri panic) is written to the error stream and
 //! ends the instance: nothing can be called after it.
 

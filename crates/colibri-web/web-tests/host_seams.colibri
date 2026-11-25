@@ -1,5 +1,8 @@
-// The clock and the random numbers of the standard library come from the page.
-import math
+// The clock and the random numbers of the standard library come from the page, and only the node
+// harness can say what they must be: its clock is virtual (the wait of half a second is exactly
+// that long on it, whatever this machine's clock says) and its random bytes are all 0xa5.
+// node-only: the clock and the random bytes are the harness's.
+// web-max-ticks: 3
 import rand
 import time
 
@@ -7,11 +10,9 @@ fn main() {
     let t0 = time.now()
     wait(0.5)
     let dt = time.now() - t0
-    print("the clock moved: {dt >= 0.0}")
-    print("random in range: {rand.int(7, 8)} {rand.float() < 1.0}")
-    print("math: {math.floor(2.5)}")
+    print("the page's clock moved by half a second: {dt >= 0.5 && dt < 0.6}")
+    print("the seed came from the page: {rand.int(0, 1000000)}")
 }
 
-// expect: the clock moved: true
-// expect: random in range: 7 true
-// expect: math: 2.0
+// expect: the page's clock moved by half a second: true
+// expect: the seed came from the page: 97819

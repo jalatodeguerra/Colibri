@@ -114,3 +114,15 @@ fn directive(source: &str, name: &str) -> Option<String> {
         .find_map(|l| l.trim().strip_prefix(key.as_str()))
         .map(|rest| rest.trim().to_string())
 }
+
+/// `// web-max-ticks: N` in a program of `web-tests`: the run takes at most this many ticks.
+pub fn max_ticks(source: &str) -> Option<u32> {
+    directive(source, "web-max-ticks").and_then(|n| n.parse().ok())
+}
+
+/// `// node-only: why` in a program of `web-tests`: what it expects only the node harness can
+/// give (its clock and its random bytes are the harness's, not this machine's), so the native
+/// test leaves it out.
+pub fn node_only(source: &str) -> bool {
+    directive(source, "node-only").is_some()
+}

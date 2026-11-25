@@ -29,6 +29,9 @@ fn main() {
         if let Some(ms) = support::virtual_ms(&source) {
             std::fs::write(out.join(format!("{name}.ms")), ms.to_string()).expect("write");
         }
+        if let Some(n) = support::max_ticks(&source) {
+            std::fs::write(out.join(format!("{name}.ticks")), n.to_string()).expect("write");
+        }
         if let Some(code) = support::web_exit(&source) {
             std::fs::write(out.join(format!("{name}.exit")), code.to_string()).expect("write");
         }

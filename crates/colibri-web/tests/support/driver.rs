@@ -38,6 +38,7 @@ pub struct Outcome {
     pub out: Captured,
     /// The virtual milliseconds the run took.
     pub elapsed_ms: f64,
+    pub ticks: u32,
 }
 
 /// What a thread that runs a [`Runner`] natively needs: more than the engine may use of it (the
@@ -87,5 +88,6 @@ fn run_here(bytes: &[u8]) -> Outcome {
         exit_code: code,
         out,
         elapsed_ms: elapsed,
+        ticks,
     }
 }

@@ -723,7 +723,16 @@ mod tests {
             }
             other => panic!("expected a failure, got {:?}", other.err()),
         }
+        // A completer that ended with no result is the usual error, not "cannot block".
         drop(completer);
+        let (completer, pending) = sched.begin_completion::<i32>();
+        drop(completer);
+        match sched.collect_with(pending, super::Waited::Blocked, false) {
+            Err(super::ExternalError::Failed(message)) => {
+                assert!(!message.contains("without blocking"), "{message}");
+            }
+            other => panic!("expected a failure, got {:?}", other.err()),
+        }
         // With the result already there, it is taken.
         let (completer, pending) = sched.begin_completion::<i32>();
         completer.complete(5);

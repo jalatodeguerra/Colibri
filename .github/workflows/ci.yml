@@ -58,6 +58,8 @@ jobs:
         run: |
           size=$(stat -c %s target/wasm32-unknown-unknown/release/colibri_web.wasm)
           echo "colibri.wasm: $size bytes"
+      - name: Unit tests of colibri.js
+        run: node crates/colibri-web/js/test/unit.mjs
       - name: Packs of the golden programs
         run: cargo run -p colibri-web --example make_packs -- web-packs
       - name: Run them with colibri.js in node

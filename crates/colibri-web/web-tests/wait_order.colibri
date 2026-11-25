@@ -1,5 +1,6 @@
 // The program's `main` waits: on a page that must not block, so it suspends and the timers go on.
 // virtual-ms: 1750
+// web-max-ticks: 12
 fn tick_every(name: str, seconds: float, times: int) {
     for i in 0..times {
         wait(seconds)
