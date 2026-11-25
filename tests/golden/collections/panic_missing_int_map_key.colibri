@@ -1,0 +1,9 @@
+fn main() {
+    let mut m: Map[int, str] = {:}
+    m[3] = "c"
+    print(m[3])
+    print(m[-4])
+}
+
+// expect: c
+// panic: key -4 not found in map

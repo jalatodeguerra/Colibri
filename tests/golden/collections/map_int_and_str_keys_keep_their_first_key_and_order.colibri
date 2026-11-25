@@ -1,0 +1,68 @@
+// Int and str keys: a repeated key replaces the value in place, the order stays that of the
+// first insertion, removal and re-insertion move the key to the end, and equal keys made in
+// different ways are one key.
+fn main() {
+    let mut m: Map[int, int] = {:}
+    for i in 0..40 {
+        m[i * 7 % 40] = i
+    }
+    m[3] = 100
+    m[-1] = 5
+    m[9223372036854775807] = 6
+    m[-9223372036854775807 - 1] = 7
+    print(m.len())
+    print(m[3])
+    print(m[-1])
+    print(m[9223372036854775807])
+    print(m[-9223372036854775807 - 1])
+    print(m.remove(3))
+    m[3] = 1
+    let mut last = 0
+    for (k, v) in m {
+        last = k
+    }
+    print(last)
+    print(m.len())
+
+    let mut s: Map[str, int] = {:}
+    s[""] = 1
+    s["a"] = 2
+    s["é"] = 3
+    s["ab"] = 4
+    s["a" + "b"] = 5
+    s["{1}{2}"] = 6
+    s["12"] = 7
+    print(s.len())
+    print(s[""])
+    print(s["é"])
+    print(s["ab"])
+    print(s["12"])
+    for i in 0..300 {
+        s["key{i}"] = i
+    }
+    s["key17"] = -17
+    print(s.len())
+    print(s["key17"])
+    print(s["key299"])
+    print(s.contains_key("key300"))
+    print(s.keys().len())
+}
+
+// expect: 43
+// expect: 100
+// expect: 5
+// expect: 6
+// expect: 7
+// expect: some(100)
+// expect: 3
+// expect: 43
+// expect: 5
+// expect: 1
+// expect: 3
+// expect: 5
+// expect: 7
+// expect: 305
+// expect: -17
+// expect: 299
+// expect: false
+// expect: 305
