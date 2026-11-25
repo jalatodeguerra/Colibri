@@ -973,7 +973,8 @@ fn main() {
 }
 ```
 
-- A pattern is a path relative to the package folder, written with `/`. `*` stands for any run of
+- The list is on one line, as every array of `colibri.toml`. A pattern is a path relative to the
+  package folder, written with `/`. `*` stands for any run of
   characters inside one name, `?` for one character, and `**` for any number of folders. A pattern
   selects a file when it matches the file or a folder above it, so `data/` (or `data`) is
   everything below `data`; a trailing `/` insists on a folder. Files whose names start with a dot

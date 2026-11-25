@@ -975,11 +975,12 @@ mod tests {
         let head = "[package]\nname = \"x\"\n[build]\n";
         let one = |body: &str| errs(&format!("{head}{body}")).join("; ");
         assert!(one("assets = \"data/\"").contains("must be a list"));
-        assert!(one("assets = [1]").contains("lists patterns as strings"));
+        // The reader of `colibri.toml` only knows arrays of strings, and says so first.
+        assert!(one("assets = [1]").contains("holds strings"));
         assert!(one("assets = [\"../x\"]").contains("not a valid asset pattern"));
         assert!(one("assets = [\"/etc\"]").contains("not a valid asset pattern"));
         assert!(one("assets = [\"a\\\\b\"]").contains("not a valid asset pattern"));
-        assert!(one("other = 1").contains("unknown key `other` in `[build]`"));
+        assert!(one("other = \"x\"").contains("unknown key `other` in `[build]`"));
     }
 
     #[test]
