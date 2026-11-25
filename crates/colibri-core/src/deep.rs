@@ -28,6 +28,7 @@ fn adt_of(v: &Value) -> Option<TypeId> {
     match v {
         Value::Struct(s) => Some(s.ty),
         Value::Enum(e) => Some(e.ty),
+        Value::SomeObj(_) => Some(colibri_check::types::OPTION_TYPE),
         Value::Obj(o) => Some(o.ty()),
         Value::Host(r) => Some(r.ty),
         _ => None,
@@ -197,6 +198,7 @@ pub trait Deep: Engine {
                 user_eq(&r.ty) || core.host_hook_set(r.ty).is_some_and(|hooks| hooks.eq)
             }
             Value::Obj(o) => user_eq(&o.ty()),
+            Value::SomeObj(o) => user_eq(&colibri_check::types::OPTION_TYPE) || user_eq(&o.ty()),
             Value::Struct(s) => user_eq(&s.ty) || s.fields.iter().any(|x| self.reaches_eq(x, d)),
             Value::Enum(e) => user_eq(&e.ty) || e.payload.iter().any(|x| self.reaches_eq(x, d)),
             Value::Tuple(items) => items.iter().any(|x| self.reaches_eq(x, d)),

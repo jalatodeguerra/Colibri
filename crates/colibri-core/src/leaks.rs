@@ -223,8 +223,11 @@ fn strong_count(v: &Value) -> usize {
 }
 
 fn push(out: &mut Vec<(Edge, Value)>, edge: Edge, v: &Value) {
-    if key(v).is_some() {
-        out.push((edge, v.clone()));
+    // A `some(obj)` without its box is a node of its own here, as the boxed one is: a fresh
+    // box for each reference to it, whose only edge leads to the object.
+    let v = v.unsugar();
+    if key(&v).is_some() {
+        out.push((edge, v.into_owned()));
     }
 }
 

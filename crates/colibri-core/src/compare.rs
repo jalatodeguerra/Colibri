@@ -141,6 +141,9 @@ fn equal(
     if guard.spent(depth) {
         return Err(Stop::TooDeep);
     }
+    if matches!(a, Value::SomeObj(_)) || matches!(b, Value::SomeObj(_)) {
+        return equal(&a.unsugar(), &b.unsugar(), depth, guard, ov);
+    }
     if let Some(answer) = override_eq(a, b, ov) {
         return answer;
     }
@@ -295,6 +298,9 @@ fn cmp(
 ) -> Result<Option<Ordering>, Stop> {
     if guard.spent(depth) {
         return Err(Stop::TooDeep);
+    }
+    if matches!(a, Value::SomeObj(_)) || matches!(b, Value::SomeObj(_)) {
+        return cmp(&a.unsugar(), &b.unsugar(), depth, guard, ov);
     }
     if let Some(answer) = override_cmp(a, b, ov) {
         return answer;

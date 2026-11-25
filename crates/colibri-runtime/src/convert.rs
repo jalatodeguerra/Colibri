@@ -35,7 +35,7 @@ impl Value {
 
     /// The index of the variant of an enum value.
     pub fn variant_index(&self) -> Option<u32> {
-        match &self.0 {
+        match &*self.0.unsugar() {
             Inner::Enum(e) => Some(e.variant),
             _ => None,
         }
@@ -170,7 +170,7 @@ impl Value {
     /// What the value holds. Collections are copied out (the elements are shared).
     pub fn kind(&self) -> ValueKind {
         let wrap = |items: Vec<Inner>| items.into_iter().map(Value).collect::<Vec<_>>();
-        match &self.0 {
+        match &*self.0.unsugar() {
             Inner::Unit => ValueKind::Unit,
             Inner::Bool(v) => ValueKind::Bool(*v),
             Inner::Int(v) => ValueKind::Int(*v),
@@ -556,7 +556,7 @@ impl<T: FromColibri> FromColibri for Option<T> {
         TypeDesc::Option(Box::new(T::ty(reg)))
     }
     fn from_colibri(value: &Value, cx: &mut Cx<'_>) -> Result<Self, Error> {
-        match &value.0 {
+        match &*value.0.unsugar() {
             Inner::Enum(e) if e.variant == VARIANT_NONE => Ok(None),
             Inner::Enum(e) if e.variant == VARIANT_SOME => match e.payload.first() {
                 Some(inner) => Ok(Some(T::from_colibri(&Value(inner.clone()), cx)?)),

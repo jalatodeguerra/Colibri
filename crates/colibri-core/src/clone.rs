@@ -70,6 +70,7 @@ impl Cloner {
             Value::Struct(s) => Value::strukt(s.ty, self.clone_fields(&s.fields, ov)?),
             Value::Tuple(items) => Value::tuple(self.clone_all(items, ov)?),
             Value::Enum(e) => Value::variant(e.ty, e.variant, self.clone_fields(&e.payload, ov)?),
+            Value::SomeObj(_) => return self.clone_value(&v.unsugar(), ov),
             Value::Weak(w) => self.clone_weak(w),
             Value::Dyn(d) => Value::Dyn(Rc::new(crate::value::DynVal {
                 impl_id: d.impl_id,

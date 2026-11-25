@@ -51,6 +51,11 @@ pub enum Value {
     Set(Rc<SetObj>),
     /// A class object (reference type).
     Obj(Rc<ClassObj>),
+    /// `some(obj)` of an `Option` whose payload is a class object, without the box a general
+    /// `some(..)` has: the object itself, tagged. It means exactly what the boxed
+    /// `Enum { OPTION, SOME, [Obj(obj)] }` means, which every consumer still accepts too
+    /// ([`Value::unsugar`] turns one into the other). Only the bytecode VM makes these.
+    SomeObj(Rc<ClassObj>),
     /// An object of the embedding program, held through the host heap (EMBEDDING §3). Equal
     /// when it names the same slot and generation.
     Host(Rc<HostRef>),
@@ -137,6 +142,10 @@ impl PartialEq for Value {
             (Value::Map(a), Value::Map(b)) => Rc::ptr_eq(a, b),
             (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
             (Value::Obj(a), Value::Obj(b)) => Rc::ptr_eq(a, b),
+            (Value::SomeObj(a), Value::SomeObj(b)) => Rc::ptr_eq(a, b),
+            (Value::SomeObj(_), Value::Enum(_)) | (Value::Enum(_), Value::SomeObj(_)) => {
+                *self.unsugar() == *other.unsugar()
+            }
             (Value::Host(a), Value::Host(b)) => a.index == b.index && a.generation == b.generation,
             (Value::Weak(a), Value::Weak(b)) => Weak::ptr_eq(a, b),
             (Value::Dyn(a), Value::Dyn(b)) => a == b,
@@ -281,6 +290,19 @@ impl Value {
     #[inline]
     pub fn list(items: Vec<Value>) -> Value {
         Value::List(ListObj::new(items))
+    }
+
+    /// The value with `SomeObj` spelled as the boxed enum it stands for; any other value as it is.
+    /// For the walkers (`show`, comparison, hashing, cloning, conversion) that read an `Option`
+    /// through its enum shape.
+    #[inline]
+    pub fn unsugar(&self) -> std::borrow::Cow<'_, Value> {
+        match self {
+            Value::SomeObj(rc) => std::borrow::Cow::Owned(Value::option(Some(Value::Obj(
+                Rc::clone(rc),
+            )))),
+            other => std::borrow::Cow::Borrowed(other),
+        }
     }
 
     /// The prelude `Option`: `none`, or `some(v)`.
