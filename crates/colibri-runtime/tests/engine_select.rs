@@ -89,6 +89,21 @@ fn a_repl_session_runs_on_the_bytecode_engine() {
     assert_eq!((text.as_str(), ty.as_str()), ("21", "int"));
 }
 
+#[test]
+fn a_repl_session_shows_an_optional_object_the_same_on_both_engines() {
+    let show = |kind: EngineKind| {
+        let mut vm = Vm::builder().engine(kind).build();
+        vm.session_start().expect("a session starts");
+        let src = "class N { v: int }\nlet n = N { v: 7 }\nlet s: N? = some(n)\n";
+        let check = vm.session_check(src).unwrap();
+        vm.session_commit(check, &[], &[]).unwrap();
+        vm.session_display("s").expect("s is a module value")
+    };
+    let tree = show(EngineKind::Tree);
+    assert_eq!(tree.0, "some(N { v: 7 })");
+    assert_eq!(show(EngineKind::Bytecode), tree);
+}
+
 /// What a commit without a running session says, on an engine.
 fn commit_without_a_session(kind: EngineKind, load: bool) -> String {
     let mut vm = Vm::builder().engine(kind).build();

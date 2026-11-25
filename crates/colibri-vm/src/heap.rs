@@ -98,6 +98,13 @@ impl Machine {
             && *variant == colibri_check::types::VARIANT_NONE
         {
             self.core.none()
+        } else if let [r] = **regs
+            && *ty == colibri_check::types::OPTION_TYPE
+            && *variant == colibri_check::types::VARIANT_SOME
+            && let Value::Obj(o) = &fiber.regs[base + usize::from(r)]
+        {
+            // `some(obj)` is the object itself, tagged: no box.
+            Value::SomeObj(Rc::clone(o))
         } else {
             let payload = Self::clone_regs::<PayloadInline>(fiber, base, regs);
             Value::variant_exact(*ty, *variant, payload)
@@ -175,7 +182,7 @@ impl Machine {
     ) -> Result<(), Ctl> {
         let v = std::mem::replace(&mut fiber.regs[base + usize::from(s)], Value::Unit);
         let weak = match &v {
-            Value::Obj(rc) => Some(Rc::downgrade(rc)),
+            Value::Obj(rc) | Value::SomeObj(rc) => Some(Rc::downgrade(rc)),
             Value::Enum(e) => match e.payload.first() {
                 Some(Value::Obj(rc)) => Some(Rc::downgrade(rc)),
                 None => Some(Weak::new()),

@@ -262,6 +262,7 @@ pub fn item_of(next: &Value) -> Option<Option<Value>> {
                 Some(None)
             }
         }
+        Value::SomeObj(o) => Some(Some(Value::Obj(Rc::clone(o)))),
         _ => None,
     }
 }

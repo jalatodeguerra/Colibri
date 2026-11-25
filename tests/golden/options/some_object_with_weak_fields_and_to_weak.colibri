@@ -1,0 +1,26 @@
+// A `weak` field of class type reads as `T?`; storing a `some(obj)` into one makes it weak,
+// and the strong reference the `some` held goes at once.
+class Owner { name: str }
+class Holder { who: weak Owner }
+
+fn main() {
+    let o = Owner { name: "o" }
+    let h = Holder { who: o }
+    print(h.who)
+    print(h.who == some(o))
+    let w: Owner? = h.who
+    print(w == some(o))
+    print(w.is_some())
+    let mut later: Owner? = some(Owner { name: "temp" })
+    print(later)
+    later = none
+    print(later)
+}
+
+// expect: some(Owner { name: "o" })
+// expect: true
+// expect: true
+// expect: true
+// expect: some(Owner { name: "temp" })
+// expect: none
+// drops: temp, Holder, o

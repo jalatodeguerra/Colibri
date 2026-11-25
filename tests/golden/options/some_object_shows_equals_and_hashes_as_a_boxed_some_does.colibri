@@ -1,0 +1,59 @@
+// `some(obj)` of a class is compared by identity, shown with the class and hashed so that it
+// finds the same key whichever way the `Option` was made (a literal, or a list's `get`).
+class Item { name: str }
+
+fn main() {
+    let a = Item { name: "a" }
+    let b = Item { name: "a" }
+    let xs = [a, b]
+    let sa: Item? = some(a)
+    let sb: Item? = some(b)
+    print(sa == some(a))
+    print(sa == sb)
+    print(sa != sb)
+    print(sa == xs.get(0))
+    print(xs.get(1) == sb)
+    print(xs.get(0) == sb)
+    let none_item: Item? = none
+    print(sa == none_item)
+    print(none_item == xs.get(5))
+    print(sa)
+    print("{sb}")
+    print([sa, none_item, sb])
+    print((sa, 1))
+    let mut m: Map[Item?, int] = {:}
+    m[sa] = 1
+    m[xs.get(1)] = 2
+    m[none_item] = 3
+    print(m.len())
+    print(m[xs.get(0)])
+    print(m[sb])
+    print(m[xs.get(9)])
+    print(m)
+    let mut s = Set[Item?]()
+    s.add(sa)
+    s.add(xs.get(0))
+    s.add(sb)
+    print(s.len())
+    print(s.contains(xs.get(1)))
+}
+
+// expect: true
+// expect: false
+// expect: true
+// expect: true
+// expect: true
+// expect: false
+// expect: false
+// expect: true
+// expect: some(Item { name: "a" })
+// expect: some(Item { name: "a" })
+// expect: [some(Item { name: "a" }), none, some(Item { name: "a" })]
+// expect: (some(Item { name: "a" }), 1)
+// expect: 3
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: {some(Item { name: "a" }): 1, some(Item { name: "a" }): 2, none: 3}
+// expect: 2
+// expect: true

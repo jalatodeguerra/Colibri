@@ -53,18 +53,21 @@ The tree-walking interpreter on 2026-11-19 (Linux x86-64, CPython 3.13), in mill
 ## Bytecode VM
 
 The bytecode VM (`COLIBRI_ENGINE=vm`) on 2026-11-25 (Linux x86-64, fat LTO, CPython 3.13, the
-lowest of three runs of best-of-five, machine load below 1.2), in milliseconds:
+lowest of three runs of best-of-five, machine load below 1.5), in milliseconds:
 
 | Program | VM | CPython | VM is |
 |---------|---:|--------:|------:|
-| `fib` | 62 | 79 | faster |
-| `loop` | 37 | 147 | faster |
-| `list` | 60 | 84 | faster |
-| `map` | 116 | 90 | 1.3× slower |
-| `structs` | 27 | 27 | level |
-| `objs` | 210 | 168 | 1.25× slower |
-| `closures` | 67 | 129 | faster |
-| `strings` | 52 | 45 | 1.15× slower |
+| `fib` | 65 | 83 | faster |
+| `loop` | 34 | 161 | faster |
+| `list` | 50 | 79 | faster |
+| `map` | 61 | 78 | faster |
+| `structs` | 26 | 27 | level |
+| `objs` | 138 | 187 | faster |
+| `closures` | 70 | 133 | faster |
+| `strings` | 27 | 43 | faster |
+
+`objs` got its margin from an unboxed `T?` for a class reference: `some(obj)` is the object
+itself in the VM (`Value::SomeObj`), with no `Option` box allocated per link of the list.
 
 Simple lambdas given to the list built-ins (`map`, `filter`, `any`, `all`, `find`, `find_index`,
 `fold`), those that only compute over their arguments, run as native loops. Closure code that

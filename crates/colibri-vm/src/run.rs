@@ -934,10 +934,12 @@ impl Machine {
                 // Only the variant is compared: the checker's types make the enum and the arity
                 // of the payload the pattern's (the tree-walker checks them too, redundantly).
                 Op::TestVariant { r, v } => {
-                    let Value::Enum(e) = rd!(r) else {
-                        internal!("a variant pattern on a value that is not an enum")
+                    let hit = match rd!(r) {
+                        Value::Enum(e) => e.variant == v,
+                        Value::SomeObj(_) => v == colibri_check::types::VARIANT_SOME,
+                        _ => internal!("a variant pattern on a value that is not an enum"),
                     };
-                    if e.variant == v {
+                    if hit {
                         pc += 1;
                     }
                 }
@@ -961,6 +963,7 @@ impl Machine {
                     let i = usize::from(i);
                     let part = match rd!(s) {
                         Value::Enum(e) => e.payload.get(i).cloned(),
+                        Value::SomeObj(o) if i == 0 => Some(Value::Obj(Rc::clone(o))),
                         Value::Tuple(items) => items.get(i).cloned(),
                         Value::Struct(st) => st.fields.get(i).cloned(),
                         Value::Obj(o) => o.field(i),

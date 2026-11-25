@@ -40,6 +40,7 @@ pub fn show<'v>(types: &[TypeDef], v: &'v Value) -> Cow<'v, str> {
         Value::Struct(_)
         | Value::Tuple(_)
         | Value::Enum(_)
+        | Value::SomeObj(_)
         | Value::List(_)
         | Value::Map(_)
         | Value::Set(_)
@@ -112,6 +113,7 @@ pub(crate) fn show_with(
         Value::Struct(_)
             | Value::Tuple(_)
             | Value::Enum(_)
+            | Value::SomeObj(_)
             | Value::List(_)
             | Value::Map(_)
             | Value::Set(_)
@@ -208,6 +210,9 @@ impl<'t> Writer<'t> {
         let mut v = v;
         while let Value::Dyn(d) = v {
             v = &d.val;
+        }
+        if let Value::SomeObj(_) = v {
+            return self.value(&v.unsugar(), depth);
         }
         if depth > MAX_SHOW_DEPTH || self.stop.is_some() {
             self.out.push_str("...");

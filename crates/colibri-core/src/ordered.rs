@@ -168,6 +168,10 @@ fn feed(v: &Value, h: &mut KeyHasher, depth: u32, host: &mut dyn FnMut(&Value) -
     if depth > MAX_HASH_DEPTH {
         return;
     }
+    if let Value::SomeObj(_) = v {
+        // Hashes as the boxed `some(obj)` it stands for.
+        return feed(&v.unsugar(), h, depth, host);
+    }
     std::mem::discriminant(v).hash(h);
     match v {
         Value::Unit
@@ -202,6 +206,7 @@ fn feed(v: &Value, h: &mut KeyHasher, depth: u32, host: &mut dyn FnMut(&Value) -
             e.payload.iter().for_each(|x| feed(x, h, depth + 1, host));
         }
         Value::Obj(rc) => (Rc::as_ptr(rc) as usize).hash(h),
+        Value::SomeObj(_) => unreachable!("unsugared above"),
         Value::Host(r) => match host(v) {
             Some(own) => own.hash(h),
             None => (r.index, r.generation).hash(h),

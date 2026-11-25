@@ -42,16 +42,17 @@ fn root_value(obj: &Rc<ClassObj>) -> Value {
     }
 }
 
-fn is_variant(v: &Value, variant: u32) -> Option<&Value> {
+fn is_variant(v: &Value, variant: u32) -> Option<Value> {
     match v {
-        Value::Enum(e) if e.variant == variant => e.payload.first(),
+        Value::Enum(e) if e.variant == variant => e.payload.first().cloned(),
+        Value::SomeObj(o) if variant == VARIANT_SOME => Some(Value::Obj(Rc::clone(o))),
         _ => None,
     }
 }
 
 /// The payload of `some(x)` or `ok(x)`.
 fn payload_of(v: &Value, variant: u32) -> Option<Value> {
-    is_variant(v, variant).cloned()
+    is_variant(v, variant)
 }
 
 fn ok_value(v: Value) -> Value {

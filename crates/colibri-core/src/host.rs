@@ -214,7 +214,7 @@ impl Core {
             Value::Bytes(_) => "a bytes value".to_string(),
             Value::Struct(_) => "a struct".to_string(),
             Value::Tuple(_) => "a tuple".to_string(),
-            Value::Enum(_) => "an enum value".to_string(),
+            Value::Enum(_) | Value::SomeObj(_) => "an enum value".to_string(),
             Value::List(_) => "a list".to_string(),
             Value::Map(_) => "a map".to_string(),
             Value::Set(_) => "a set".to_string(),

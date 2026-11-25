@@ -1,0 +1,51 @@
+// A `some(obj)` is one more holder of the object: the object dies, and its hook runs, when the
+// last of the plain references and the `Option`s that hold it is gone, in the order the
+// tree-walker has always had.
+class Res { name: str }
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.name}")
+    }
+}
+
+fn keep(r: Res?) -> Res? => r
+fn peek(r: Res?) -> bool {
+    let again = r
+    return again.is_some()
+}
+
+fn main() {
+    let a = Res { name: "a" }
+    let sa: Res? = some(a)
+    let sb = sa
+    print("one")
+    print(peek(sb))
+    print(peek(sa))
+    print("shared")
+    let mut c: Res? = some(Res { name: "c" })
+    c = none
+    print("two {c.is_none()}")
+    let kept = keep(some(Res { name: "k" }))
+    print("three")
+    let list: List[Res?] = [some(Res { name: "l1" }), none, some(Res { name: "l2" })]
+    print(list.len())
+    let pair = (some(Res { name: "p" }), 1)
+    print(pair.1)
+    print("end {sb.is_some()} {kept.is_some()}")
+}
+
+// expect: one
+// expect: true
+// expect: true
+// expect: shared
+// expect: drop c
+// expect: two true
+// expect: three
+// expect: 3
+// expect: 1
+// expect: end true true
+// expect: drop p
+// expect: drop l1
+// expect: drop l2
+// expect: drop k
+// expect: drop a

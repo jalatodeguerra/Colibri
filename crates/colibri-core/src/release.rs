@@ -34,6 +34,7 @@ fn is_container(v: &Value) -> bool {
             | Value::Map(_)
             | Value::Set(_)
             | Value::Obj(_)
+            | Value::SomeObj(_)
             | Value::Host(_)
             | Value::Dyn(_)
             | Value::Closure(_)
@@ -53,7 +54,7 @@ fn is_shared(v: &Value) -> bool {
         Value::List(rc) => Rc::strong_count(rc) > 1,
         Value::Map(rc) => Rc::strong_count(rc) > 1,
         Value::Set(rc) => Rc::strong_count(rc) > 1,
-        Value::Obj(rc) => Rc::strong_count(rc) > 1,
+        Value::Obj(rc) | Value::SomeObj(rc) => Rc::strong_count(rc) > 1,
         Value::Host(rc) => Rc::strong_count(rc) > 1,
         Value::Dyn(rc) => Rc::strong_count(rc) > 1,
         Value::Closure(rc) => Rc::strong_count(rc) > 1,
@@ -187,6 +188,12 @@ pub trait Release: Engine {
     /// (in the order they must die) and lets the shell drop.
     #[doc(hidden)]
     fn dismantle(&mut self, value: Value, work: &mut Vec<Value>) {
+        // A `some(obj)` without its box dies as the object does: the box it stands for would
+        // only have handed the object on.
+        let value = match value {
+            Value::SomeObj(rc) => Value::Obj(rc),
+            other => other,
+        };
         match value {
             Value::Obj(rc) if Rc::strong_count(&rc) == 1 => {
                 if rc.ty() == colibri_check::types::COGROUP_TYPE {

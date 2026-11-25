@@ -118,6 +118,7 @@ pub fn runtime_key(v: &Value) -> Option<TypeKey> {
         Value::Struct(s) => TypeKey::Adt(s.ty),
         Value::Tuple(_) => TypeKey::Tuple,
         Value::Enum(e) => TypeKey::Adt(e.ty),
+        Value::SomeObj(_) => TypeKey::Adt(colibri_check::types::OPTION_TYPE),
         Value::List(_) => TypeKey::List,
         Value::Map(_) => TypeKey::Map,
         Value::Set(_) => TypeKey::Set,

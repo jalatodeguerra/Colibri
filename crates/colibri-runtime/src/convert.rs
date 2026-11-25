@@ -21,8 +21,16 @@ use crate::types::{TypeDesc, TypeRegistry};
 /// A Colibri value in flight between Rust and a script. Opaque: convert with
 /// [`IntoColibri`] and [`FromColibri`]; implementations for host types take it apart with
 /// [`Value::field`] and [`Value::variant_index`] and build one with [`Cx::new_struct`].
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Value(pub(crate) Inner);
+
+/// Prints the same for an optional object whichever engine made it (the VM keeps one without its
+/// `Option` box; this shows the box).
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Value").field(&*self.0.unsugar()).finish()
+    }
+}
 
 impl Value {
     /// The `i`th field of a struct value.
@@ -35,7 +43,7 @@ impl Value {
 
     /// The index of the variant of an enum value.
     pub fn variant_index(&self) -> Option<u32> {
-        match &self.0 {
+        match &*self.0.unsugar() {
             Inner::Enum(e) => Some(e.variant),
             _ => None,
         }
@@ -170,7 +178,7 @@ impl Value {
     /// What the value holds. Collections are copied out (the elements are shared).
     pub fn kind(&self) -> ValueKind {
         let wrap = |items: Vec<Inner>| items.into_iter().map(Value).collect::<Vec<_>>();
-        match &self.0 {
+        match &*self.0.unsugar() {
             Inner::Unit => ValueKind::Unit,
             Inner::Bool(v) => ValueKind::Bool(*v),
             Inner::Int(v) => ValueKind::Int(*v),
@@ -556,7 +564,7 @@ impl<T: FromColibri> FromColibri for Option<T> {
         TypeDesc::Option(Box::new(T::ty(reg)))
     }
     fn from_colibri(value: &Value, cx: &mut Cx<'_>) -> Result<Self, Error> {
-        match &value.0 {
+        match &*value.0.unsugar() {
             Inner::Enum(e) if e.variant == VARIANT_NONE => Ok(None),
             Inner::Enum(e) if e.variant == VARIANT_SOME => match e.payload.first() {
                 Some(inner) => Ok(Some(T::from_colibri(&Value(inner.clone()), cx)?)),

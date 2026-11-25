@@ -1,0 +1,79 @@
+// Every way of taking a `some(obj)` apart, and options nested around one (`T??` stays boxed).
+class Node { v: int, next: Node? }
+
+fn first_v(n: Node?) -> int? {
+    let node = n?
+    return some(node.v)
+}
+
+fn describe(n: Node?) -> str {
+    return match n {
+        some(x) => "node {x.v}"
+        none => "nothing"
+    }
+}
+
+fn ident[T](x: T?) -> T? => x
+
+fn main() {
+    let tail = Node { v: 2, next: none }
+    let head: Node? = some(Node { v: 1, next: some(tail) })
+    print(describe(head))
+    print(describe(none))
+    print(first_v(head))
+    print(first_v(none))
+    if let some(h) = head {
+        if let some(t) = h.next {
+            print(t.v)
+        }
+    }
+    let mut cur = head
+    let mut sum = 0
+    while let some(n) = cur {
+        sum += n.v
+        cur = n.next
+    }
+    print(sum)
+    print(head.is_some())
+    print(head.is_none())
+    print(head.map(fn(n) => n.v))
+    let nothing: Node? = none
+    print(head.and_then(fn(n) => n.next).map(fn(n) => n.v))
+    print(head.expect("has one").v)
+    let picked = nothing or head
+    print(picked.is_some())
+    print(ident(head).is_some())
+    let nested: Node?? = some(head)
+    let nested_none: Node?? = some(nothing)
+    let outer_none: Node?? = none
+    if let some(inner) = nested {
+        print(inner.is_some())
+    }
+    if let some(inner) = nested_none {
+        print(inner.is_some())
+    }
+    print(outer_none.is_none())
+    print(nested == some(head))
+    print(nested == nested_none)
+    print(nested_none)
+}
+
+// expect: node 1
+// expect: nothing
+// expect: some(1)
+// expect: none
+// expect: 2
+// expect: 3
+// expect: true
+// expect: false
+// expect: some(1)
+// expect: some(2)
+// expect: 1
+// expect: true
+// expect: true
+// expect: true
+// expect: false
+// expect: true
+// expect: true
+// expect: false
+// expect: some(none)

@@ -256,6 +256,37 @@ fn a_generic_host_function_sees_the_type_arguments_of_its_call() {
     );
 }
 
+#[test]
+fn a_host_function_sees_an_optional_object_as_the_some_enum_it_is() {
+    let outcome = both(
+        &plain(&|vm, _| {
+            vm.register_fn("probe", |cx: &mut Ctx, v: Value| -> Value {
+                let text = match v.kind() {
+                    colibri::ValueKind::Enum {
+                        variant, payload, ..
+                    } => format!(
+                        "enum {variant} {} {:?} {}\n",
+                        payload.len(),
+                        v.variant_index(),
+                        payload
+                            .first()
+                            .map_or("-".to_string(), |p| format!("{:?}", p.kind())),
+                    ),
+                    other => format!("other {other:?}\n"),
+                };
+                cx.write_stdout(&text);
+                v
+            })
+            .unwrap();
+        }),
+        "class N { v: int }\nfn main() {\n    let n = N { v: 1 }\n    let s: N? = some(n)\n    let back = probe(s)\n    print(back == s)\n    print(back.is_some())\n    let z: N? = none\n    print(probe(z).is_none())\n}\n",
+    );
+    assert_eq!(
+        outcome, "enum 1 1 Some(1) Other\ntrue\ntrue\nenum 0 0 Some(0) -\ntrue\n--\nok",
+        "{outcome}"
+    );
+}
+
 /// A host class that shows, compares and hashes itself, and a hook that fails for one value.
 struct Pt(i64, i64);
 
