@@ -38,7 +38,7 @@ mod run;
 mod safepoint;
 mod source;
 #[allow(unsafe_code)]
-#[cfg_attr(target_arch = "wasm32", path = "stacks_web.rs")]
+#[cfg_attr(target_family = "wasm", path = "stacks_web.rs")]
 mod stacks;
 #[allow(unsafe_code)]
 mod unchecked;

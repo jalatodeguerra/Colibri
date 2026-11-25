@@ -116,7 +116,7 @@ impl ReloadState {
         if !reads.iter().any(|(p, _)| *p == entry) {
             reads.push((entry, 0));
         }
-        let now = SystemTime::now();
+        let now = now();
         self.files = reads
             .into_iter()
             .map(|(path, hash)| {
@@ -138,7 +138,7 @@ impl ReloadState {
     /// Whether any watched file differs from what was loaded: a cheap metadata comparison,
     /// and a read and hash only for files whose metadata moved (or cannot be believed).
     pub fn poll_changed(&mut self) -> bool {
-        let now = SystemTime::now();
+        let now = now();
         let mut changed = false;
         for f in &mut self.files {
             let meta = std::fs::metadata(&f.path).ok();
@@ -167,6 +167,20 @@ impl ReloadState {
             }
         }
         changed
+    }
+}
+
+/// The time `poll_changed` and `set_files` compare file times with. `SystemTime::now` panics on
+/// the web; there no file can be watched (`std::fs` reports "unsupported", so every file has no
+/// time and is never trusted), so the value is never compared with anything.
+fn now() -> SystemTime {
+    #[cfg(target_family = "wasm")]
+    {
+        SystemTime::UNIX_EPOCH
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        SystemTime::now()
     }
 }
 

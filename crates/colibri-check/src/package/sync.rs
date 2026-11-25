@@ -51,7 +51,15 @@ pub struct SyncReport {
 /// was collected is not the whole tree, and a lock made from it would drop what the manifest
 /// it could not read had pinned.
 pub fn sync(root: &Path, options: &SyncOptions) -> Result<SyncReport, String> {
-    sync_in(root, options, git::cache_root().ok())
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = (root, options);
+        Err(format!("cannot sync dependencies: {}", git::NO_DISK))
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        sync_in(root, options, git::cache_root().ok())
+    }
 }
 
 fn sync_in(

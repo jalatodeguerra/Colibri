@@ -9,7 +9,7 @@ use colibri_lang::on_big_stack;
 
 // The system allocator is a large share of the time of the allocation-heavy programs (`objs`, `strings`,
 // `map`); mimalloc is faster. Only the binary chooses: a library cannot pick an allocator for its host.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

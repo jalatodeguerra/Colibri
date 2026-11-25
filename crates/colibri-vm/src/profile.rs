@@ -8,8 +8,8 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
 
+use colibri_core::clock::Stopwatch;
 use colibri_core::safepoint::{Due, SafepointKind};
 use colibri_syntax::Span;
 
@@ -124,7 +124,7 @@ pub(crate) struct Profiler {
     /// Weights by stack, then by the position of the innermost visible frame.
     samples: HashMap<Box<[u32]>, HashMap<Span, u64>>,
     scratch: Vec<u32>,
-    last_time: Instant,
+    last_time: Stopwatch,
     /// The scheduler's idle nanoseconds (`Scheduler::idle_nanos`) at the previous sample: the
     /// time it spent sleeping since is the program waiting, not working.
     last_idle: u64,
@@ -155,7 +155,7 @@ impl Profiler {
             go_names: HashMap::new(),
             samples: HashMap::new(),
             scratch: Vec::new(),
-            last_time: Instant::now(),
+            last_time: Stopwatch::start(),
             last_idle: idle,
             last: None,
         }
@@ -164,17 +164,15 @@ impl Profiler {
     /// Starts the clock of a time profile again: what came before (checking and compiling
     /// the program) is not the program's time.
     pub(crate) fn restart_clock(&mut self, idle: u64) {
-        self.last_time = Instant::now();
+        self.last_time = Stopwatch::start();
         self.last_idle = idle;
     }
 
     /// The real time since the previous reading, split into the time spent working and the
     /// time the event loop spent sleeping; the sleeping goes to the `[idle]` root.
     fn take_time(&mut self, idle: u64) -> u64 {
-        let now = Instant::now();
-        let spent =
-            u64::try_from(now.duration_since(self.last_time).as_nanos()).unwrap_or(u64::MAX);
-        self.last_time = now;
+        let spent = self.last_time.elapsed_nanos();
+        self.last_time = Stopwatch::start();
         let slept = idle.saturating_sub(self.last_idle).min(spent);
         self.last_idle = idle;
         if slept > 0 {

@@ -3,20 +3,16 @@
 //! §3.2). Nothing in this file is unsafe, and `may_park` never holds, so only the names the VM
 //! uses are here.
 //!
-//! **This file has never been compiled.** colibri-vm's own dependencies on wasm32 are pure Rust
-//! (`corosensei` and `libc` are not dependencies there), so a `cargo check -p colibri-vm --target
-//! wasm32-unknown-unknown` looks possible, but the target is not installed on the machines this
-//! was written on and no CI job builds it. `colibri-runtime` cannot be
-//! built for wasm32 at all (`corosensei`). It stays unbuilt until the web step, which has to make
-//! the runtime build there and then check this stub.
+//! Compiled for `target_family = "wasm"` (see `lib.rs`), and checked by the CI job that builds
+//! the engine crates for `wasm32-unknown-unknown`. What a host function that wants to wait does
+//! there: a wait for a background operation fails with `CannotStart` (the pool has no threads, see
+//! `colibri_core::external`), so nothing needs to park.
 
 use colibri_core::value::Value;
 
 use crate::fiber::VmFiber;
 use crate::host::{HostFault, HostImpl};
 use crate::machine::Machine;
-
-pub(crate) const DEFAULT_HOST_STACK: usize = 1024 * 1024;
 
 /// No fiber ever has a yielder here.
 #[derive(Clone, Copy, Debug)]
@@ -32,11 +28,13 @@ pub(crate) enum Parked {}
 
 pub(crate) enum Step {
     Done(Result<Value, HostFault>),
+    // Never built: its payload has no values.
+    #[allow(dead_code)]
     Parked(Parked),
 }
 
 #[derive(Default)]
-pub(crate) struct HostStacks;
+pub(crate) struct HostStacks(());
 
 impl HostStacks {
     pub(crate) fn set_size(&mut self, _size: usize) {}

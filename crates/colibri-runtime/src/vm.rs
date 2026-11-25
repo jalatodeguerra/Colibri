@@ -173,7 +173,8 @@ impl VmBuilder {
         self
     }
 
-    /// Where `print` writes. The default is the process's standard output.
+    /// Where `print` writes. The default is the process's standard output. On the web build
+    /// (`wasm32-unknown-unknown`) standard output goes nowhere, so a host must set a writer.
     pub fn stdout(mut self, writer: Box<dyn Write>) -> Self {
         self.stdout = Some(writer);
         self
@@ -1851,7 +1852,9 @@ impl Vm {
         self.run_event_loop_polling(0.001)
     }
 
-    /// [`Vm::run_event_loop`] with a chosen polling interval in seconds.
+    /// [`Vm::run_event_loop`] with a chosen polling interval in seconds. Not for the web build:
+    /// there the clock cannot sleep (see `colibri_core::clock::SourceClock`), so this would spin
+    /// until the next timer is due; a web host calls [`Vm::tick`] from its own timers.
     pub fn run_event_loop_polling(&mut self, poll: f64) -> Result<(), Error> {
         let mut last = self.engine.core_mut().sched.clock_now();
         loop {

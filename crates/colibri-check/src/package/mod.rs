@@ -5,10 +5,14 @@
 pub mod assets;
 mod cfg;
 mod fs;
+// On the web the disk half of `git` (the cache, the `git` commands) is compiled but never
+// reached: `cache_root`, `sync` and `DiskFs` refuse first.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 mod git;
 mod loader;
 mod lock;
 mod manifest;
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 mod sync;
 pub mod toml;
 

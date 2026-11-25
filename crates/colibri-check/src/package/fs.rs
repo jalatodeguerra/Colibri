@@ -134,6 +134,7 @@ impl SourceFs for RecordingFs<'_> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DiskFs;
 
+#[cfg(not(target_family = "wasm"))]
 impl SourceFs for DiskFs {
     fn read(&self, path: &Path) -> Result<String, String> {
         std::fs::read_to_string(path).map_err(|e| e.to_string())
@@ -177,6 +178,31 @@ impl SourceFs for DiskFs {
             .unwrap_or_default();
         names.sort();
         names
+    }
+}
+
+/// The web has no file system: every question about the disk gets the answer "nothing there",
+/// and a read says why. (`std::fs` would say "operation not supported on this platform".)
+#[cfg(target_family = "wasm")]
+impl SourceFs for DiskFs {
+    fn read(&self, _path: &Path) -> Result<String, String> {
+        Err(super::git::NO_DISK.to_string())
+    }
+
+    fn read_prefix(&self, _path: &Path, _n: usize) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn is_file(&self, _path: &Path) -> bool {
+        false
+    }
+
+    fn is_dir(&self, _path: &Path) -> bool {
+        false
+    }
+
+    fn list(&self, _dir: &Path) -> Vec<String> {
+        Vec::new()
     }
 }
 

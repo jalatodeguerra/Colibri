@@ -15,7 +15,7 @@ colibri-ffi = { path = "../colibri-ffi", optional = true }
 
 # Native stacks for host functions that a coroutine calls (`stacks`). corosensei has no
 # wasm32 target: on the web a host function cannot suspend.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 corosensei = "0.3.4"
 
 # `madvise`, to give a pooled stack's deep pages back to the system (Unix only).
