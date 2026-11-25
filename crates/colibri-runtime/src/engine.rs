@@ -186,4 +186,12 @@ pub(crate) trait RuntimeEngine: HostCx {
 
     /// The cycles that nothing reaches.
     fn find_leaks(&self) -> Vec<Leak>;
+
+    /// Starts the sampling profiler.
+    fn start_profile(&mut self, weight: colibri_vm::ProfileWeight);
+    /// Stops it; `locate` turns a span into a file name and a line.
+    fn finish_profile(
+        &mut self,
+        locate: &dyn Fn(colibri_syntax::Span) -> Option<(String, u32)>,
+    ) -> Option<colibri_vm::Profile>;
 }

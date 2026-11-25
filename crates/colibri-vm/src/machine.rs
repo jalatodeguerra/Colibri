@@ -105,6 +105,10 @@ pub struct Machine {
     pub(crate) scratch: String,
     /// Tests only (`Machine::set_safepoint_probe`): told of each safepoint that runs.
     pub(crate) safepoint_probe: Option<crate::safepoint::Probe>,
+    /// Tests only (`Machine::set_safepoint_failure`): makes a consumer fail.
+    pub(crate) safepoint_failure: Option<crate::safepoint::Failure>,
+    /// The sampling profiler while one runs (`Machine::start_profile`).
+    pub(crate) profiler: Option<Box<crate::profile::Profiler>>,
     /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
     /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
     #[cfg(test)]
@@ -142,6 +146,8 @@ impl Machine {
             pending_refusal: None,
             stack_root: 0,
             safepoint_probe: None,
+            safepoint_failure: None,
+            profiler: None,
             scratch: String::new(),
             #[cfg(test)]
             print_hook: None,

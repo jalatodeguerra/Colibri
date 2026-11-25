@@ -251,7 +251,7 @@ impl VmBuilder {
         if let Some(every) = self.safepoint_slice.and_then(std::num::NonZeroU32::new) {
             engine
                 .core_mut()
-                .want_safepoints(colibri_core::safepoint::SafepointKind::Profiler, every);
+                .want_safepoints(colibri_core::safepoint::SafepointKind::Debugger, every);
         }
         if let Some(size) = self.coroutine_stack_size {
             engine.core_mut().sched.set_stack_size(size);
@@ -2171,6 +2171,31 @@ impl Vm {
     /// result is empty. The cost is linear in the live objects. See ARCHITECTURE §18.
     pub fn find_leaks(&self) -> Vec<Leak> {
         self.engine.find_leaks()
+    }
+
+    /// Starts the sampling profiler: about every 1,024 steps it records the stack that runs.
+    /// Starting again begins a new profile. Not part of the stable interface yet: the format
+    /// may change until it has settled.
+    #[doc(hidden)]
+    pub fn start_profile(&mut self, weight: crate::ProfileWeight) {
+        self.engine.start_profile(weight);
+    }
+
+    /// Stops the profiler and returns what it found (`None` if none was started). The steps
+    /// or time since the last sample are a final sample.
+    #[doc(hidden)]
+    pub fn finish_profile(&mut self) -> Option<crate::Profile> {
+        let sources = Rc::clone(&self.sources);
+        let locate = move |span: colibri_syntax::Span| {
+            let known = (span.file.0 < sources.next_file_id().0).then_some(span.file)?;
+            // A span of the prelude or of a file the program no longer has has no line.
+            if colibri_check::is_prelude_span(span) {
+                return None;
+            }
+            let (line, _) = sources.line_col(known, span.start);
+            Some((sources.name(known).to_string(), line))
+        };
+        self.engine.finish_profile(&locate)
     }
 
     /// The labels of the class objects destroyed so far, in order, when the `Vm` was built

@@ -1,10 +1,14 @@
 //! Running the consumers of safepoints (see `colibri_core::safepoint`).
 
 use colibri_core::ctl::Ctl;
+use colibri_core::prelude::*;
 use colibri_core::safepoint::{Due, SafepointKind};
 
 use crate::fiber::VmFiber;
 use crate::machine::Machine;
+
+/// Says, for a consumer that is due, whether it fails (tests only).
+pub type Failure = Box<dyn FnMut(Due) -> bool>;
 
 /// What a test hangs on the safepoints to see them run: each consumer that runs, and the fiber
 /// it is given.
@@ -26,9 +30,27 @@ impl Machine {
             if let Some(probe) = self.safepoint_probe.as_mut() {
                 probe(due, fiber);
             }
-            let outcome: Result<(), Ctl> = match due.kind {
-                // No consumer is built yet: each arrives with its own step.
-                SafepointKind::Memory | SafepointKind::Debugger | SafepointKind::Profiler => Ok(()),
+            let forced = self
+                .safepoint_failure
+                .as_mut()
+                .is_some_and(|fails| fails(due));
+            let outcome: Result<(), Ctl> = if forced {
+                let span = fiber.frames.last().map_or_else(
+                    || colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
+                    |f| f.span(),
+                );
+                Err(self.panic(fiber, span, "a safepoint consumer failed"))
+            } else {
+                match due.kind {
+                    // No consumer is built yet: each arrives with its own step.
+                    SafepointKind::Memory | SafepointKind::Debugger => Ok(()),
+                    SafepointKind::Profiler => {
+                        if let Some(profiler) = self.profiler.as_mut() {
+                            profiler.sample(due, fiber, self.core.sched.idle_nanos());
+                        }
+                        Ok(())
+                    }
+                }
             };
             if let Err(ctl) = outcome
                 && failure.is_none()
@@ -37,6 +59,13 @@ impl Machine {
             }
         }
         failure.map_or(Ok(()), Err)
+    }
+
+    /// Makes the consumers fail where `fails` says so (it is asked for each one that runs): a
+    /// stand-in for the memory limit. Tests only.
+    #[doc(hidden)]
+    pub fn set_safepoint_failure(&mut self, fails: Option<Failure>) {
+        self.safepoint_failure = fails;
     }
 
     /// Hangs `probe` on the safepoints: it is called for each consumer that runs, in the order

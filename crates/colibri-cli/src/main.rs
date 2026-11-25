@@ -74,6 +74,24 @@ enum Command {
         /// were never freed to stderr; `--leaks=error` also exits with 1
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
+        /// Sample the running program and write a flame graph (SVG) to FILE (`profile.svg` by
+        /// default) and the folded stacks it was drawn from next to it (`profile.folded`; a FILE without an extension gets `.svg`), then
+        /// print the heaviest functions and lines to stderr. A sample is taken about every
+        /// 1,024 steps, so a long call into a host function or a built-in is charged to the
+        /// line that made the call; stacks deeper than 200 frames are cut in the middle; time the program spends waiting is `[idle]`
+        #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "profile.svg", conflicts_with = "watch")]
+        profile: Option<PathBuf>,
+        /// What a sample weighs with `--profile`: `time` (the default) is real time, so time in
+        /// host functions counts; `steps` counts instructions, which gives the same profile on
+        /// every run
+        #[arg(
+            long,
+            value_enum,
+            value_name = "WEIGHT",
+            default_value = "time",
+            requires = "profile"
+        )]
+        profile_weight: colibri_lang::profilecmd::Weight,
         #[command(flatten)]
         build: BuildFlags,
         #[command(flatten)]
@@ -115,6 +133,25 @@ enum Command {
         /// Report the reference cycles each test leaks; `--leaks=error` fails the test
         #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
+        /// Sample the running program and write a flame graph (SVG) to FILE (`profile.svg` by
+        /// default) and the folded stacks it was drawn from next to it (`profile.folded`; a FILE without an extension gets `.svg`), then
+        /// print the heaviest functions and lines to stderr. A sample is taken about every
+        /// 1,024 steps, so a long call into a host function or a built-in is charged to the
+        /// line that made the call; stacks deeper than 200 frames are cut in the middle; time the program spends waiting is `[idle]`; all the tests make
+        /// one profile
+        #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "profile.svg")]
+        profile: Option<PathBuf>,
+        /// What a sample weighs with `--profile`: `time` (the default) is real time, so time in
+        /// host functions counts; `steps` counts instructions, which gives the same profile on
+        /// every run
+        #[arg(
+            long,
+            value_enum,
+            value_name = "WEIGHT",
+            default_value = "time",
+            requires = "profile"
+        )]
+        profile_weight: colibri_lang::profilecmd::Weight,
         #[command(flatten)]
         build: BuildFlags,
         #[command(flatten)]
@@ -212,6 +249,8 @@ fn main() -> ExitCode {
             watch,
             args,
             leaks,
+            profile,
+            profile_weight,
             build,
             deps,
         } => {
@@ -223,7 +262,9 @@ fn main() -> ExitCode {
                     Err(code) => code,
                 }
             } else {
-                colibri_lang::runcmd::run(&file, args, leaks, deps)
+                let profile =
+                    profile.map(|f| colibri_lang::profilecmd::Options::new(&f, profile_weight));
+                colibri_lang::runcmd::run(&file, args, leaks, deps, profile.as_ref())
             }
         }
         Command::Test {
@@ -232,6 +273,8 @@ fn main() -> ExitCode {
             budget,
             nocapture,
             leaks,
+            profile,
+            profile_weight,
             build,
             deps,
         } => {
@@ -243,6 +286,8 @@ fn main() -> ExitCode {
                 nocapture,
                 leaks,
                 deps,
+                profile: profile
+                    .map(|f| colibri_lang::profilecmd::Options::new(&f, profile_weight)),
             })
         }
         Command::Update { names, path, deps } => depscmd::update(&path, names, deps),

@@ -26,6 +26,8 @@ pub struct Options {
     pub leaks: Option<crate::leakcmd::LeakMode>,
     /// `--locked` and `--offline` for git dependencies.
     pub deps: crate::depscmd::DepFlags,
+    /// Profile the tests (`--profile`): one profile for the whole run.
+    pub profile: Option<crate::profilecmd::Options>,
 }
 
 /// Runs the tests and prints the report to stdout; the exit code is 1 if the program does not
@@ -46,6 +48,10 @@ pub fn run(options: &Options) -> ExitCode {
     if let Err(e) = vm.load_tests(&options.path) {
         eprint!("{}", e.render(stderr_color));
         return ExitCode::from(1);
+    }
+    // After loading: checking the program is not the tests' time.
+    if let Some(profile) = &options.profile {
+        crate::profilecmd::start(&mut vm, profile);
     }
     let warnings = vm.render_warnings(stderr_color);
     if !warnings.is_empty() {
@@ -136,6 +142,9 @@ pub fn run(options: &Options) -> ExitCode {
             }
             let _ = write!(out, "{details}");
         }
+    }
+    if let Some(profile) = &options.profile {
+        crate::profilecmd::finish(&mut vm, profile);
     }
     let failed = failures.len();
     let mut summary = format!("\n{passed} passed, {failed} failed");

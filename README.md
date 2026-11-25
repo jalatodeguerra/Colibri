@@ -757,8 +757,9 @@ entry, and two `@when` variants of one name are both kept. `colibri repl` takes 
 | `colibri run [file or folder]` | type-check, then run a script or the package in a folder |
 | `colibri run --watch` | run and hot-reload on every save (see below) |
 | `colibri run --leaks[=error]` | report reference cycles that were never freed |
+| `colibri run --profile[=FILE]` | sample the program and write a flame graph and its folded stacks (see below) |
 | `colibri check [file or folder]` | type-check without running; a folder checks every module |
-| `colibri test [file or folder]` | run the `test "name" { ... }` blocks (`--filter`, `--nocapture`, `--leaks`) |
+| `colibri test [file or folder]` | run the `test "name" { ... }` blocks (`--filter`, `--nocapture`, `--leaks`, `--profile`) |
 | `colibri fmt [paths]` | format files in place (`--check` only reports) |
 | `colibri new <name>` | create a package |
 | `colibri update [names...]` | resolve git dependencies again (branches, tags) and rewrite `colibri.lock`: all of them, or only the ones named (transitive ones too); `--path DIR` is the package folder, `--locked` and `--offline` as for `run` |
@@ -837,6 +838,47 @@ warning: 1 leaked reference cycle (reference counting never frees a cycle; make 
 
 `--leaks=error` also exits with status 1, which is useful in CI, and `colibri test --leaks`
 checks each test.
+
+### Profiler
+
+`colibri run --profile` samples the running program about every 1,024 steps and, when it
+ends, writes a flame graph (`profile.svg`, or the file you name with `--profile=FILE`), the
+folded stacks it was drawn from (`profile.folded`, next to it, one `main;load;parse 1234` line
+per stack, which other flame graph tools read too) and prints the heaviest functions and
+lines to stderr:
+
+```console
+$ colibri run --profile sum.colibri
+profile: 41.3 ms
+written: profile.folded, profile.svg
+
+  self   total  function
+ 61.0%   61.0%  fib
+ 21.9%   21.9%  go spin
+ 12.2%   78.1%  main
+  4.9%    4.9%  <closure in main>
+
+  self  line
+ 43.9%  sum.colibri:2
+ 21.9%  sum.colibri:8
+```
+
+Frames are functions; a coroutine's stack starts at `go name`, a built-in that is written in
+Colibri shows as its own name (`List.map`) with your closure under it, and a call into a host
+function shows as `[native: name]`. A stack deeper than 200 frames shows its first 40 and
+last 160 with `[...]` between.
+
+By default a sample weighs the real time since the previous one, so time spent in host
+functions and long built-ins counts; because the sample is taken at the next step boundary,
+that time is charged to the line that made the call. Time the program spends sleeping (`wait`,
+the event loop between ticks) is not charged to the code that runs next: it is the root
+`[idle]`, so a program that mostly waits shows mostly `[idle]`. Checking the program is left
+out, and a function's first call includes the time to compile it. `--profile-weight=steps`
+weighs by steps instead: the profile is then the same on every run. `colibri test --profile`
+makes one profile of all the tests. `--profile=out` writes `out.svg` and `out.folded`. A
+program shorter than 1,024 steps has no sample to draw from and shows up as one `[unsampled]`
+frame, and a sample taken while no function runs (a host calling in) is `[host]`.
+`--profile` does not combine with `--watch`. Profiling costs a few percent.
 
 ### Formatter
 

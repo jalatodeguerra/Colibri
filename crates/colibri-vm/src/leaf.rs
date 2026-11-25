@@ -17,7 +17,9 @@
 use std::rc::Rc;
 
 use colibri_check::hir::Builtin;
+use colibri_core::ctl::Ctl;
 use colibri_core::heap::ListObj;
+use colibri_core::prelude::*;
 use colibri_core::value::{StructVal, Value};
 
 use crate::bytecode::{Chunk, Op};
@@ -1083,14 +1085,14 @@ impl Machine {
         a: u16,
         d: u16,
         which: Builtin,
-    ) -> bool {
+    ) -> Result<bool, Ctl> {
         if self.leaf_off {
-            return false;
+            return Ok(false);
         }
         // A Drop hook that panicked earlier in this expression is folded in at the first closure
         // call of the generic path; the loop here would run past it.
         if !self.core.hook_panics.is_empty() {
-            return false;
+            return Ok(false);
         }
         let at = base + usize::from(a);
         let fold = which == Builtin::ListFold;
@@ -1098,29 +1100,29 @@ impl Machine {
             fiber.regs.get(at),
             fiber.regs.get(at + 1 + usize::from(fold)),
         ) else {
-            return false;
+            return Ok(false);
         };
         // The body the generic path would call for this closure (a closure made before a hot
         // reload gets the replacement's, a body that does not compile is its failure).
         let Ok(chunk) = self.closure_chunk(c) else {
-            return false;
+            return Ok(false);
         };
         let Some(leaf) = chunk.leaf.as_ref() else {
-            return false;
+            return Ok(false);
         };
         if usize::from(leaf.nparams) != 1 + usize::from(fold) {
-            return false;
+            return Ok(false);
         }
         // The closure's frame would be one deeper than the call: the generic path refuses it.
         if fiber.visible_depth() >= self.max_depth || fiber.frames.len() >= 2 * self.max_depth + 64
         {
-            return false;
+            return Ok(false);
         }
         let n = list.len() as u64;
         let per = u64::from(leaf.steps) + u64::from(leaf.max_body_steps);
         let left = u64::try_from(self.core.budget.real_left()).unwrap_or(0);
         if n.checked_mul(per).is_none_or(|need| left < need) {
-            return false;
+            return Ok(false);
         }
         let list = Rc::clone(list);
         let init = if fold {
@@ -1129,7 +1131,7 @@ impl Machine {
             None
         };
         let Some((result, calls, extra)) = Self::leaf_loop(&list, leaf, which, init) else {
-            return false;
+            return Ok(false);
         };
         let charged = calls
             .saturating_mul(u64::from(leaf.steps))
@@ -1140,8 +1142,20 @@ impl Machine {
             LeafResult::Value(v) => v,
             LeafResult::Option(v) => self.core.option(v),
         };
+        // The loop charged its steps at once: when that ended the window, the safepoint runs
+        // here, with the caller's frame on top, and not inside the next function it calls.
+        // (The pre-check above made sure the budget itself covers the charge.) It runs before
+        // the result is stored: a consumer that fails ends the call like a panic, and the
+        // register must not hold a value the landing pads do not know about.
+        if self.core.budget.left < 0
+            && self.core.slice_ended()
+            && let Err(ctl) = self.safepoint(fiber)
+        {
+            self.release_all(vec![value]);
+            return Err(ctl);
+        }
         Self::put_reg(fiber, base + usize::from(d), value);
-        true
+        Ok(true)
     }
 
     /// Runs `leaf` over the elements of `list` for `which`: the result, how many calls it made,
