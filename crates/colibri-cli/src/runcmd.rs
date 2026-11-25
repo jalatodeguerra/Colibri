@@ -37,9 +37,9 @@ pub fn run(
 
 /// Runs the program of a built executable (`colibri build`): the same as `colibri run` on the
 /// files it was built from, with every capability granted, but read from the pack.
-pub fn run_pack(mut pack: crate::pack::Pack, args: Vec<String>) -> ExitCode {
+pub fn run_pack(pack: crate::pack::Pack, file: std::fs::File, args: Vec<String>) -> ExitCode {
     let (fs, start) = pack.file_system();
-    let assets = crate::assets::for_pack(&mut pack);
+    let assets = crate::assets::for_pack(&pack, file);
     let mut vm = crate::build_vm_with_assets(crate::vm_builder().allow_all(), args, Some(assets));
     let color = io::stderr().is_terminal();
     vm.on_warnings(move |report| eprint!("{}", report.render(color)));

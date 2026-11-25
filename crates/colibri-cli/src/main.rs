@@ -266,20 +266,20 @@ fn warn_if_the_removed_engine_is_asked_for() {
 
 /// An executable made by `colibri build` is a program, not the tool: it runs what it holds and
 /// every argument is the program's.
-fn run_built(pack: colibri_lang::pack::Pack) -> ExitCode {
+fn run_built(pack: colibri_lang::pack::Pack, file: std::fs::File) -> ExitCode {
     colibri_lang::set_build_cfg(pack.cfg.clone());
     let args: Vec<String> = std::env::args_os()
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    on_big_stack(move || colibri_lang::runcmd::run_pack(pack, args))
+    on_big_stack(move || colibri_lang::runcmd::run_pack(pack, file, args))
 }
 
 fn main() -> ExitCode {
     // One seek and one read of 32 bytes tell whether this executable holds a program.
     match colibri_lang::pack::read_own() {
         Ok(None) => {}
-        Ok(Some(pack)) => return run_built(pack),
+        Ok(Some((pack, file))) => return run_built(pack, file),
         Err(message) => {
             eprintln!("error: {message}");
             return ExitCode::from(1);

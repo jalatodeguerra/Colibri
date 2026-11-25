@@ -110,6 +110,17 @@ pub enum EnvSource {
 }
 
 /// Everything the standard library takes from the world, with the real thing as the default.
+///
+/// Build one with struct update syntax, naming only what differs, so that a field added later
+/// (as `assets` was) does not break the code:
+///
+/// ```
+/// let config = colibri_std::StdConfig {
+///     args: vec!["one".to_string()],
+///     ..colibri_std::StdConfig::default()
+/// };
+/// # let _ = config;
+/// ```
 pub struct StdConfig {
     pub clock: Box<dyn Clock>,
     /// What `os.args()` returns: the arguments of the script, not of the `colibri` tool.

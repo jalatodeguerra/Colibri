@@ -1,7 +1,7 @@
 //! `assets`: the files that belong to the program and that it reads at run time.
 //!
-//! - `assets.read(path) -> Result[Bytes]` and `assets.read_text(path) -> Result[str]` give the
-//!   content of one asset;
+//! - `assets.read(path) -> Result[str]` and `assets.read_bytes(path) -> Result[Bytes]` give the
+//!   content of one asset, as `fs.read` and `fs.read_bytes` do for a file;
 //! - `assets.list(dir) -> Result[List[str]]` gives the names in a folder of assets, sorted;
 //!   a name that is a folder ends with `/`, and `""` is the package folder.
 //!
@@ -29,7 +29,7 @@ error_kind!(
         NotFound,
         /// The path cannot name an asset (empty, absolute, `..`, a symbolic link on the way).
         Invalid,
-        /// `read_text` on an asset that is not UTF-8 text.
+        /// `read` on an asset that is not UTF-8 text.
         InvalidData,
         /// The asset could not be read.
         Other,
@@ -105,17 +105,17 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     let mut m = vm.std_module("assets");
     plain(
         m.register_fn_named("read", ["path"], |cx: &mut Ctx, path: String| {
-            read_bytes(cx, &path).map(Bytes)
-        }),
-    )?;
-    plain(
-        m.register_fn_named("read_text", ["path"], |cx: &mut Ctx, path: String| {
             let bytes = read_bytes(cx, &path)?;
             String::from_utf8(bytes).map_err(|_| {
                 Kind::InvalidData.error(format!(
                     "cannot read asset `{path}`: the data is not valid UTF-8 text"
                 ))
             })
+        }),
+    )?;
+    plain(
+        m.register_fn_named("read_bytes", ["path"], |cx: &mut Ctx, path: String| {
+            read_bytes(cx, &path).map(Bytes)
         }),
     )?;
     plain(

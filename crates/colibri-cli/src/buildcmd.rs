@@ -74,16 +74,12 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
     let sources = pack
         .files
         .iter()
-        .filter(|f| f.kind != Kind::Asset && f.path.ends_with(".colibri"))
+        .filter(|f| f.path.ends_with(".colibri"))
         .count();
     let size = fs::metadata(&out).map_or(0, |m| m.len());
-    let assets: Vec<&PackFile> = pack
-        .files
-        .iter()
-        .filter(|f| f.kind == Kind::Asset)
-        .collect();
+    let assets = &pack.assets;
     for asset in assets.iter().take(MAX_LISTED_ASSETS) {
-        eprintln!("  asset {} ({} bytes)", asset.path, asset.data.len());
+        eprintln!("  asset {} ({} bytes)", asset.path, asset.len);
     }
     if assets.len() > MAX_LISTED_ASSETS {
         eprintln!("  ... and {} more assets", assets.len() - MAX_LISTED_ASSETS);
@@ -151,14 +147,7 @@ fn make_pack(path: &Path, reads: Vec<Recorded>, out: &Path) -> Result<Pack, Exit
     }
     let root = assets::package_root(path);
     let patterns = assets::declared(&root).map_err(fail)?;
-    for (asset, data) in assets::collect(&root, &patterns, out).map_err(fail)? {
-        files.push(PackFile {
-            kind: Kind::Asset,
-            name: asset.clone(),
-            path: asset,
-            data,
-        });
-    }
+    let assets = assets::collect(&root, &patterns, out).map_err(fail)?;
     let Some(start) = pack::portable(path) else {
         return Err(fail(format!(
             "the path `{}` is not text, and cannot be packed",
@@ -174,6 +163,8 @@ fn make_pack(path: &Path, reads: Vec<Recorded>, out: &Path) -> Result<Pack, Exit
         },
         cfg: crate::build_cfg(),
         files,
+        assets,
+        assets_at: 0,
     })
 }
 
@@ -281,7 +272,12 @@ fn write_executable(runner: &Path, out: &Path, pack: &Pack) -> Result<(), String
         use std::io::Seek;
         source.rewind()?;
         let runner_len = std::io::copy(&mut source, &mut file)?;
-        file.write_all(&pack.append_to(runner_len))?;
+        {
+            let mut buffered = std::io::BufWriter::new(&mut file);
+            pack.write_to(&mut buffered, runner_len)
+                .map_err(std::io::Error::other)?;
+            buffered.flush()?;
+        }
         file.set_permissions(permissions)?;
         file.sync_all()?;
         fs::rename(&tmp, out)
@@ -310,6 +306,8 @@ mod tests {
             start: Start::File("p.colibri".to_string()),
             cfg: colibri::BuildCfg::default(),
             files: Vec::new(),
+            assets: Vec::new(),
+            assets_at: 0,
         }
     }
 

@@ -28,13 +28,13 @@ enum Error {
 ### `read`
 
 ```text
-fn read(path: str) -> Result[Bytes]
+fn read(path: str) -> Result[str]
 ```
 
-### `read_text`
+### `read_bytes`
 
 ```text
-fn read_text(path: str) -> Result[str]
+fn read_bytes(path: str) -> Result[Bytes]
 ```
 
 ### `list`

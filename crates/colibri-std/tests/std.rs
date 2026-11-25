@@ -1047,7 +1047,7 @@ fn kind(e: Error) -> str {
     }
 }
 fn show(path: str) {
-    match assets.read(path) {
+    match assets.read_bytes(path) {
         ok(b) => print("{path}: {b.len()}")
         err(e) => print("{path}: {kind(e)} / {e.message()}")
     }
@@ -1060,11 +1060,11 @@ fn main() {
     show("/a.txt")
     show("a/./b")
     show("")
-    match assets.read_text("bin") {
+    match assets.read("bin") {
         ok(_) => print("bin: text")
         err(e) => print("bin: {kind(e)}")
     }
-    print(assets.read_text("a.txt").expect("text"))
+    print(assets.read("a.txt").expect("text"))
     print(assets.list("").expect("top"))
     print(assets.list("d/").expect("d"))
     match assets.list("../d") {
@@ -1117,7 +1117,7 @@ fn a_vm_without_an_asset_source_has_no_assets() {
     let (mut vm, out) = vm_with(StdConfig::default(), &[]);
     run(
         &mut vm,
-        "import assets\nfn main() {\n    print(assets.list(\"\").expect(\"top\"))\n    print(assets.read(\"x\").err().expect(\"no\").message())\n    print(assets.list(\"d\").err().expect(\"no\").message())\n}\n",
+        "import assets\nfn main() {\n    print(assets.list(\"\").expect(\"top\"))\n    print(assets.read_bytes(\"x\").err().expect(\"no\").message())\n    print(assets.list(\"d\").err().expect(\"no\").message())\n}\n",
     )
     .unwrap();
     assert_eq!(

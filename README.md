@@ -967,8 +967,8 @@ assets = ["greeting.txt", "data/", "img/*.png", "templates/**/*.html"]
 import assets
 
 fn main() {
-    print(assets.read_text("greeting.txt").expect("greeting"))
-    let logo = assets.read("img/logo.png").expect("logo")      // Bytes
+    print(assets.read("greeting.txt").expect("greeting"))
+    let logo = assets.read_bytes("img/logo.png").expect("logo")  // Bytes
     print(assets.list("data").expect("data"))                  // ["deep/", "table.csv"]
 }
 ```
@@ -979,12 +979,13 @@ fn main() {
   selects a file when it matches the file or a folder above it, so `data/` (or `data`) is
   everything below `data`; a trailing `/` insists on a folder. Files whose names start with a dot
   are selected like any other.
-- `assets.read(path)` gives `Bytes`, `assets.read_text(path)` gives text (`assets.Error.InvalidData`
-  if the file is not UTF-8), and `assets.list(dir)` gives the sorted names in a folder, with a `/`
-  after the name of a folder; `""` is the package folder. Each returns a `Result`, and the error is
-  an `assets.Error`: `NotFound` (not listed in the manifest, or not there), `Invalid` (a path that
-  is empty, absolute, has a `.` or `..` piece, a `\` or a `:`, or a symbolic link on the way) or
-  `Other`.
+- `assets.read(path)` gives text (`assets.Error.InvalidData` if the file is not UTF-8),
+  `assets.read_bytes(path)` gives `Bytes`, as `fs.read` and `fs.read_bytes` do, and `assets.list(dir)`
+  gives the sorted names in a folder, with a `/` after the name of a folder; `""` is the package
+  folder. Each returns a `Result`, and the error is an `assets.Error`: `NotFound` (not listed in the
+  manifest, not there, or not a file), `Invalid` (a path that is empty, absolute, has a `.` or `..`
+  piece, a `\`, a `:`, a piece that ends with a `.` or a space or is a Windows device name such as
+  `CON` or `COM1`, or a symbolic link on the way) or `Other`.
 - The module needs no capability. A program reads only what the manifest lists: another file of the
   package, a file outside it and a path with `..` are errors, and a symbolic link is never followed.
 - `colibri run` and `colibri test` read the files from the package folder, wherever the tool is
@@ -992,10 +993,19 @@ fn main() {
   and the executable needs neither the source files nor the assets on disk.
 - The package folder is the folder with the `colibri.toml`: the folder given to `colibri run`, or
   the folder of a script that has a manifest beside it. A script with no manifest has no assets.
-- `colibri build` copies the files into the executable and lists them (`asset data/table.csv (4
+- `colibri build` appends the files to the executable and lists them (`asset data/table.csv (4
   bytes)`, then `built tool (1 source file, 4 assets, ...)`). It stops if a pattern selects no file
   (a likely typo), if a selected file is a symbolic link, or if the output would overwrite an asset.
   Assets of dependencies are not packed: only the manifest of the program counts.
+- A built program does not read its assets when it starts: it keeps them in its file and reads one
+  when the program asks for it, so a large asset costs nothing to a program that does not use it
+  (neither time nor memory). Each asset has a check sum that is verified when it is read; if the
+  executable was damaged, that read is an `assets.Error.Other` and nothing else is affected.
+  `colibri build` does not hold the assets in memory either.
+- Names are looked up exactly as they are spelt in the folder, with the case of the file system
+  that was walked: `assets.read("Logo.PNG")` does not find `logo.png`, also on Windows and macOS, so
+  `colibri run` finds what the built program finds. `colibri build` and `assets.list` walk only
+  the folders a pattern can reach (not `.git` or `target`, unless a pattern names them).
 
 ### Formatter
 
