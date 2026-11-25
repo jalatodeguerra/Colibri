@@ -15,7 +15,7 @@
 
 /// Why `path` cannot name an asset, or `None` when it can: a relative path of plain pieces
 /// separated by `/`. Written to say the same thing on every system, so a path with `\`, a
-/// drive (`C:`) or a root is refused everywhere.
+/// drive (`C:`), a root, a Windows device name or a trailing dot is refused everywhere.
 pub fn path_problem(path: &str) -> Option<&'static str> {
     if path.is_empty() {
         return Some("the path is empty");
@@ -36,6 +36,14 @@ pub fn path_problem(path: &str) -> Option<&'static str> {
             ".." => return Some("the path leaves the package folder with `..`"),
             _ if piece.contains(':') => {
                 return Some("a piece of the path has a `:`, which is not portable");
+            }
+            _ if piece.ends_with(['.', ' ']) => {
+                return Some("a piece of the path ends with a `.` or a space, which Windows drops");
+            }
+            _ if super::fs::is_device_name(piece) => {
+                return Some(
+                    "a piece of the path is the name of a Windows device (`CON`, `NUL`, `COM1`, ..)",
+                );
             }
             _ => {}
         }
@@ -135,6 +143,17 @@ impl AssetPatterns {
         self.patterns.iter().any(|p| p.selects(&pieces))
     }
 
+    /// Whether some file below the folder `dir` (valid by [`path_problem`]; `""` is the top) can
+    /// be selected: a walk of the package needs to go no deeper than where this says yes.
+    pub fn may_select_below(&self, dir: &str) -> bool {
+        let pieces: Vec<&str> = if dir.is_empty() {
+            Vec::new()
+        } else {
+            dir.split('/').collect()
+        };
+        self.patterns.iter().any(|p| p.may_select_below(&pieces))
+    }
+
     /// The patterns that select none of `files`, for the build to name them.
     pub fn unmatched<'a>(&'a self, files: &[String]) -> Vec<&'a str> {
         let split: Vec<Vec<&str>> = files.iter().map(|f| f.split('/').collect()).collect();
@@ -148,12 +167,30 @@ impl AssetPatterns {
 }
 
 impl Pattern {
+    fn may_select_below(&self, dir: &[&str]) -> bool {
+        // The folder or one above it is selected: so is everything below.
+        (1..=dir.len()).any(|n| matches_pieces(&self.pieces, &dir[..n]))
+            || starts_like(&self.pieces, dir)
+    }
+
     fn selects(&self, file: &[&str]) -> bool {
         // The pattern against the whole path, and against every folder above the file.
         (1..=file.len()).any(|n| {
             let is_file = n == file.len();
             !(self.folder && is_file) && matches_pieces(&self.pieces, &file[..n])
         })
+    }
+}
+
+/// Whether the folders `dir` can be the start of a path that the pieces match.
+fn starts_like(pattern: &[Piece], dir: &[&str]) -> bool {
+    let Some((first, rest_dir)) = dir.split_first() else {
+        return !pattern.is_empty();
+    };
+    match pattern.split_first() {
+        None => false,
+        Some((Piece::Folders, rest)) => starts_like(rest, dir) || starts_like(pattern, rest_dir),
+        Some((Piece::Name(name), rest)) => matches_name(name, first) && starts_like(rest, rest_dir),
     }
 }
 
@@ -221,6 +258,17 @@ mod tests {
             "C:/x",
             "C:x",
             "a\0b",
+            "x.",
+            "x..",
+            "a/b ",
+            "a./b",
+            "con",
+            "CON",
+            "data/Nul.txt",
+            "aux.tar.gz",
+            "a/COM1",
+            "lpt9.log",
+            "PRN ",
         ] {
             assert!(path_problem(bad).is_some(), "{bad:?}");
         }
@@ -273,6 +321,32 @@ mod tests {
         assert!(patterns(&["**"]).selects("a/b/c"));
         assert!(patterns(&["a*b*c"]).selects("aXXbYYc"));
         assert!(!patterns(&["a*b*c"]).selects("aXXbYY"));
+    }
+
+    #[test]
+    fn a_walk_goes_only_where_a_pattern_can_match() {
+        let below = |texts: &[&str], dir: &str| patterns(texts).may_select_below(dir);
+        // A folder pattern: its folder and what is above it, and below it.
+        assert!(below(&["data/"], ""));
+        assert!(below(&["data/"], "data"));
+        assert!(below(&["data/"], "data/deep/er"));
+        assert!(!below(&["data/"], ".git"));
+        assert!(!below(&["data/"], "target/debug"));
+        assert!(!below(&["data/"], "database"));
+        // A path: the folders on the way.
+        assert!(below(&["a/b/c.txt"], "a"));
+        assert!(below(&["a/b/c.txt"], "a/b"));
+        assert!(!below(&["a/b/c.txt"], "a/x"));
+        assert!(!below(&["a/b/c.txt"], "x"));
+        // Wildcards and `**`.
+        assert!(below(&["img/*.png"], "img"));
+        assert!(!below(&["img/*.png"], "other"));
+        assert!(below(&["t/**/*.html"], "t/x/y/z"));
+        assert!(!below(&["t/**/*.html"], "u"));
+        assert!(below(&["**/*.png"], "any/where"));
+        assert!(below(&["*/logo.png"], "x"));
+        assert!(!below(&["*/logo.png"], "x/y"));
+        assert!(!below(&[], ""));
     }
 
     #[test]
