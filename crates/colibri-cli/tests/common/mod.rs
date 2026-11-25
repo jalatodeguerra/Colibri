@@ -52,3 +52,56 @@ impl Tap {
         }
     }
 }
+
+// Damaged programs on macOS. A program built there is signed, and the signature is the last
+// thing in the file, after the pack. A test that changes bytes of the pack, or cuts the end of
+// the file, must change the *unsigned* layout (the trailer last, as on the other systems) and
+// sign the result again, or the kernel refuses the file before the reader ever sees it.
+
+/// The program as the other systems have it: the signature cut off, the trailer the last bytes.
+/// A file that is not a thin Mach-O is returned as it is.
+pub fn plain(signed: Vec<u8>) -> Vec<u8> {
+    use colibri_lang::macho;
+    if !macho::is_thin(&signed) {
+        return signed;
+    }
+    let at = signed
+        .windows(12)
+        .rposition(|w| w == colibri_lang::pack::MAGIC)
+        .expect("a built program has a trailer");
+    let end = at + colibri_lang::pack::TRAILER_LEN;
+    let head = macho::head_len(&signed).expect("a Mach-O head");
+    let prepared = macho::prepare(&signed[..head], signed.len() as u64).expect("a signed runner");
+    let mut out = signed[..end].to_vec();
+    out[..head].copy_from_slice(&prepared.head_with(end as u64));
+    out
+}
+
+/// Makes `bytes`, a changed copy of `plain` output that was `unsigned_len` bytes long, a file
+/// that can be signed: `__LINKEDIT` reaches its (new) end.
+pub fn fit(bytes: &mut [u8], unsigned_len: u64) {
+    use colibri_lang::macho;
+    if !macho::is_thin(bytes) {
+        return;
+    }
+    let head = macho::head_len(bytes).expect("a Mach-O head");
+    let prepared = macho::prepare(&bytes[..head], unsigned_len).expect("an unsigned layout");
+    let fitted = prepared.head_with(bytes.len() as u64);
+    bytes[..head].copy_from_slice(&fitted);
+}
+
+/// Signs the file ad hoc on a Mac, so that it can be started; nothing elsewhere.
+pub fn sign(path: &std::path::Path) {
+    if cfg!(target_os = "macos") {
+        let out = std::process::Command::new("codesign")
+            .args(["-s", "-", "-f"])
+            .arg(path)
+            .output()
+            .expect("codesign is on every Mac");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

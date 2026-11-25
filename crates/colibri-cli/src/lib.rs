@@ -9,7 +9,7 @@ mod flame;
 pub mod fmt;
 pub mod golden;
 pub mod leakcmd;
-mod macho;
+pub mod macho;
 pub mod newcmd;
 pub mod pack;
 pub mod platform;

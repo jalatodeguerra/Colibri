@@ -5,6 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
 struct Out {
     stdout: String,
     stderr: String,
@@ -356,15 +358,18 @@ fn warnings_of_a_built_program_are_those_of_run() {
 
 /// The executable `built` made, with a mistake `damage` makes in its bytes.
 fn damaged(dir: &Dir, name: &str, damage: impl FnOnce(&mut Vec<u8>, usize)) -> Out {
-    let good = fs::read(dir.path(&exe("good"))).unwrap();
+    let good = common::plain(fs::read(dir.path(&exe("good"))).unwrap());
+    let unsigned_len = good.len() as u64;
     let payload_start = {
         let t = &good[good.len() - 32..];
         u64::from_le_bytes(t[12..20].try_into().unwrap()) as usize
     };
     let mut bytes = good;
     damage(&mut bytes, payload_start);
+    common::fit(&mut bytes, unsigned_len);
     let target = dir.path(&exe(name));
     fs::write(&target, &bytes).unwrap();
+    common::sign(&target);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -436,7 +441,7 @@ fn a_cut_executable_is_the_plain_tool_and_not_a_program() {
     let dir = Dir::new("cut");
     dir.write("prog.colibri", "fn main() {\n    print(\"fine\")\n}\n");
     build(&dir, "prog.colibri", "good");
-    let good = fs::read(dir.path(&exe("good"))).unwrap();
+    let good = common::plain(fs::read(dir.path(&exe("good"))).unwrap());
     assert!(
         !dir.built(&exe("good"), &["--version"])
             .stdout
@@ -444,7 +449,10 @@ fn a_cut_executable_is_the_plain_tool_and_not_a_program() {
     );
     let out = {
         let target = dir.path(&exe("short"));
-        fs::write(&target, &good[..good.len() - 5]).unwrap();
+        let mut cut = good[..good.len() - 5].to_vec();
+        common::fit(&mut cut, good.len() as u64);
+        fs::write(&target, &cut).unwrap();
+        common::sign(&target);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

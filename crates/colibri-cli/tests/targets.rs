@@ -8,6 +8,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+mod common;
+
 struct Out {
     stdout: String,
     stderr: String,
@@ -425,8 +427,71 @@ fn mach_o(len: usize, version: &str) -> Vec<u8> {
     file.resize(len - sig, 0x90);
     let at = 0x4100;
     file[at..at + marker(version).len()].copy_from_slice(&marker(version));
+    // The runner holds the magic as a constant, as the real one does.
+    file[0x4200..0x420c].copy_from_slice(colibri_lang::pack::MAGIC);
     file.resize(len, 0xEE);
     file
+}
+
+/// The linkedit segment of a built Mach-O: where it ends.
+#[cfg(not(target_os = "macos"))]
+fn linkedit_end(b: &[u8]) -> u64 {
+    let at = 32 + 72;
+    u64::from_le_bytes(b[at + 40..at + 48].try_into().unwrap())
+        + u64::from_le_bytes(b[at + 48..at + 56].try_into().unwrap())
+}
+
+/// The helpers that let the damage tests run on a Mac (see `common`): they change nothing but
+/// a signature's place, which a Linux run can check on a built file and a made-up signature.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn the_damage_helpers_undo_a_signature_and_make_a_changed_file_signable() {
+    let dir = Dir::new("helpers");
+    dir.write("prog.colibri", "fn main() {\n    print(1)\n}\n");
+    fs::write(dir.path("mac"), mach_o(0x6000, VERSION)).unwrap();
+    let out = dir.colibri(&[
+        "build",
+        "prog.colibri",
+        "-o",
+        "prog",
+        "--target",
+        "macos-aarch64",
+        "--runner",
+        "mac",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let built = fs::read(dir.path("prog")).unwrap();
+    // Add what `codesign` adds: a blob after the end, 16 aligned, and a command for it.
+    let mut signed = built.clone();
+    let at = signed.len().next_multiple_of(16);
+    signed.resize(at + 77, 0xEE);
+    signed[16..20].copy_from_slice(&3u32.to_le_bytes());
+    let cmds = u32::from_le_bytes(signed[20..24].try_into().unwrap());
+    signed[20..24].copy_from_slice(&(cmds + 16).to_le_bytes());
+    let cmd_at = 32 + cmds as usize;
+    let size = (signed.len() - 0x4000) as u64;
+    signed[32 + 72 + 48..32 + 72 + 56].copy_from_slice(&size.to_le_bytes());
+    signed[cmd_at..cmd_at + 8].copy_from_slice(&[0x1d, 0, 0, 0, 16, 0, 0, 0]);
+    signed[cmd_at + 8..cmd_at + 12].copy_from_slice(&(at as u32).to_le_bytes());
+    signed[cmd_at + 12..cmd_at + 16].copy_from_slice(&77u32.to_le_bytes());
+    // The signed layout is read by the library, and `plain` gives back the unsigned file.
+    assert!(
+        colibri_lang::pack::read_from(&mut std::io::Cursor::new(signed.clone()))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(common::plain(signed), built);
+    // A file with the end cut off is made to fit again.
+    let mut cut = built[..built.len() - 5].to_vec();
+    assert_ne!(linkedit_end(&cut), cut.len() as u64);
+    common::fit(&mut cut, built.len() as u64);
+    assert_eq!(linkedit_end(&cut), cut.len() as u64);
+    // Other kinds of file are left alone.
+    let elf = fake(elf(0x3e), Some(VERSION));
+    assert_eq!(common::plain(elf.clone()), elf);
+    let mut same = elf.clone();
+    common::fit(&mut same, 1);
+    assert_eq!(same, elf);
 }
 
 #[cfg(not(target_os = "macos"))]
