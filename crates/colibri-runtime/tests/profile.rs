@@ -168,3 +168,41 @@ fn main() {
         );
     }
 }
+
+#[test]
+fn a_very_deep_stack_keeps_its_first_and_last_frames_with_a_marker_between() {
+    let src = "\
+fn down(n: int) -> int {
+    if n == 0 { return 0 }
+    return down(n - 1) + 1
+}
+fn main() {
+    let mut t = 0
+    for i in 0..20 {
+        t += down(900)
+    }
+    print(t)
+}
+";
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(colibri::SharedBuffer::new()))
+        .build();
+    vm.start_profile(colibri::ProfileWeight::Steps);
+    vm.load_source("d.colibri", src).unwrap();
+    vm.run_main().unwrap();
+    let used = vm.steps_used();
+    let profile = vm.finish_profile().unwrap();
+    // The cut loses no weight.
+    assert!(profile.total() >= used && profile.total() <= used + 1);
+    let longest = profile.samples.iter().map(|s| s.stack.len()).max().unwrap();
+    assert_eq!(longest, 201, "40 first, the marker, 160 last");
+    let cut = profile
+        .samples
+        .iter()
+        .find(|s| s.stack.len() == 201)
+        .expect("a deep sample");
+    assert_eq!(cut.stack[0], "main");
+    assert_eq!(cut.stack[40], "[...]");
+    assert!(cut.stack[41..].iter().all(|n| n == "down"));
+    assert!(cut.line > 0, "the position is the innermost frame's");
+}

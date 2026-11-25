@@ -29,6 +29,13 @@ pub enum ProfileWeight {
     Time,
 }
 
+/// Stacks deeper than this are cut: the first `HEAD_FRAMES` and the last `TAIL_FRAMES` frames stay.
+const MAX_FRAMES: usize = 200;
+const HEAD_FRAMES: usize = 40;
+const TAIL_FRAMES: usize = 160;
+/// What stands for the frames that were cut.
+const ELIDED: &str = "[...]";
+
 /// The stack of a sample that was taken when no frame was left to name (a host calling in).
 const NO_FRAMES: &str = "[host]";
 /// The stack of weight that was never sampled, when the program ended before any sample.
@@ -194,9 +201,26 @@ impl Profiler {
             }
         };
         self.scratch.clear();
+        let frames = &fiber.frames;
+        // A very deep stack (recursion) would cost more to read than the steps it stands for
+        // and fill the output: past the limit only its first and last frames are read, with a
+        // marker between them, which is the same for every sample so they still add up.
+        let (head, tail_from) = if frames.len() > MAX_FRAMES {
+            (HEAD_FRAMES, frames.len() - TAIL_FRAMES)
+        } else {
+            (frames.len(), frames.len())
+        };
         let mut at: Option<Span> = None;
         let mut outer_hidden = false;
-        for (i, frame) in fiber.frames.iter().enumerate() {
+        let mut i = 0;
+        while i < frames.len() {
+            if i == head && head < tail_from {
+                let id = self.intern(ELIDED.to_string());
+                self.scratch.push(id);
+                i = tail_from;
+                outer_hidden = frames[i - 1].chunk.hidden;
+            }
+            let frame = &frames[i];
             let named = self.name_of(&frame.chunk, frame.kind);
             // The frames of a built-in's own helpers fold into the built-in's.
             if !(named.hidden && outer_hidden) {
@@ -210,6 +234,7 @@ impl Profiler {
             if !named.hidden {
                 at = Some(frame.span());
             }
+            i += 1;
         }
         if self.scratch.is_empty() {
             let id = self.intern(NO_FRAMES.to_string());
