@@ -30,26 +30,6 @@ pub(crate) enum Exit {
     Suspend,
 }
 
-/// Appends the decimal form of `x`, as `show` writes an integer (without the formatting
-/// machinery, which is most of the cost of building a short string).
-fn push_int(out: &mut String, x: i64) {
-    let mut digits = [0u8; 20];
-    let mut at = digits.len();
-    let mut n = x.unsigned_abs();
-    loop {
-        at -= 1;
-        digits[at] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
-    }
-    if x < 0 {
-        out.push('-');
-    }
-    out.extend(digits[at..].iter().map(|&d| char::from(d)));
-}
-
 impl Machine {
     /// Runs the entry frame on top of `fiber` to its end. On a panic every frame down to and
     /// including the entry frame has run its landing pads and been popped (`catch`).
@@ -1278,7 +1258,7 @@ impl Machine {
         if let Value::Int(x) = fiber.regs[at] {
             let mut out = std::mem::take(&mut self.scratch);
             out.clear();
-            push_int(&mut out, x);
+            crate::unchecked::push_int(&mut out, x);
             let text: Rc<str> = Rc::from(out.as_str());
             self.scratch = out;
             Self::put_reg(fiber, base + usize::from(d), Value::Str(text));
@@ -1334,7 +1314,7 @@ impl Machine {
             let at = base + usize::from(a + i);
             match &fiber.regs[at] {
                 Value::Str(s) => out.push_str(s),
-                Value::Int(x) => push_int(&mut out, *x),
+                Value::Int(x) => crate::unchecked::push_int(&mut out, *x),
                 _ => {
                     let v = std::mem::replace(&mut fiber.regs[at], Value::Unit);
                     let text = self.show_deep(fiber, &v, span);
