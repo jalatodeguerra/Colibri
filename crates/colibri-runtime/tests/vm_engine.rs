@@ -90,7 +90,7 @@ fn a_repl_session_shows_an_optional_object() {
         vm.session_display("s").expect("s is a module value")
     };
     let got = show();
-    assert_eq!(got.0, "some(N { v: 7 })");
+    assert_eq!(got, ("some(N { v: 7 })".to_string(), "N?".to_string()));
 }
 
 /// What a commit without a running session says, on an engine.
@@ -171,16 +171,14 @@ fn a_refusal_does_not_silence_the_module_values_of_later_tests() {
         seen
     };
     let got = run();
+    // The refusal fails the test and prints nothing.
     assert_eq!(
-        got[0],
-        (true, "drop module\nplain body\ndrop module\n".to_string()),
-        "{got:?}"
-    );
-    assert!(!got[1].0, "the refusal fails the test: {got:?}");
-    assert_eq!(
-        got[2],
-        (true, "again body\ndrop module\n".to_string()),
-        "{got:?}"
+        got,
+        [
+            (true, "drop module\nplain body\ndrop module\n".to_string()),
+            (false, String::new()),
+            (true, "again body\ndrop module\n".to_string()),
+        ]
     );
 }
 
@@ -226,6 +224,20 @@ fn session(entries: &[&str], between: impl Fn(&mut Vm, usize)) -> (Vec<String>, 
     (results, out.contents(), vm.find_leaks().len())
 }
 
+/// What a session entry that panics with `boom` at its line `line` reports.
+fn boom_at(line: u32) -> String {
+    format!(
+        "Failed(Panic {{ message: \"boom\", location: Some(Location {{ file: \"<repl>\", line: {line}, column: 1 }}), stack: [StackFrame {{ function: \"<script>\", location: Location {{ file: \"<repl>\", line: {line}, column: 1 }} }}], notes: [] }})"
+    )
+}
+
+/// What a call of a closure whose code is gone reports, at `line`, `column` of the entry.
+fn code_is_gone_at(line: u32, column: u32) -> String {
+    format!(
+        "Failed(Panic {{ message: \"this closure was made by a REPL entry that failed and was rolled back, or in a function that a REPL entry replaced; its code is gone\", location: Some(Location {{ file: \"<repl>\", line: {line}, column: {column} }}), stack: [StackFrame {{ function: \"<script>\", location: Location {{ file: \"<repl>\", line: {line}, column: {column} }} }}], notes: [] }})"
+    )
+}
+
 /// A coroutine that a failed entry started runs code that goes away with the entry: it ends at
 /// the rollback (its `defer`s and drops run), and the next tick has nothing to resume. It used to
 /// stay and fail with `internal error: unknown function`.
@@ -248,11 +260,17 @@ fn a_failed_entry_ends_the_coroutines_it_started() {
         (r, ticks.borrow().clone())
     };
     let got = run();
-    let ((results, out, leaks), tick) = &got;
-    assert!(results[1].contains("boom"), "{results:?}");
-    assert_eq!(tick, &["Ok(())"]);
-    assert_eq!(out, "drop 3\nnext 1\n");
-    assert_eq!(*leaks, 0);
+    assert_eq!(
+        got,
+        (
+            (
+                vec!["ok".to_string(), boom_at(17), "ok".to_string()],
+                "drop 3\nnext 1\n".to_string(),
+                0
+            ),
+            vec!["Ok(())".to_string()]
+        )
+    );
 }
 
 /// A closure that a failed entry stored in an older value, made by a function that survives,
@@ -265,7 +283,14 @@ fn a_closure_a_failed_entry_stored_from_surviving_code_still_runs() {
     let third = format!("{first}print(keep())\nprint(other()())\n");
     let run = || session(&[first, &second, &third], |_, _| {});
     let got = run();
-    assert_eq!(got.1, "5\n9\n", "{got:?}");
+    assert_eq!(
+        got,
+        (
+            vec!["ok".to_string(), boom_at(10), "ok".to_string()],
+            "5\n9\n".to_string(),
+            0
+        )
+    );
 }
 
 /// A closure that only the failed entry's code made has no body to run: calling it later is a
@@ -278,12 +303,15 @@ fn a_closure_from_a_failed_entrys_own_code_is_refused_not_mistaken() {
     let third = format!("{first}print(keep())\n");
     let run = || session(&[first, &second, &third], |_, _| {});
     let got = run();
-    assert_eq!(got.1, "", "nothing printed: {got:?}");
-    assert!(
-        got.0[2].contains("this closure was made by a REPL entry that failed"),
-        "{got:?}"
+    // Nothing is printed, and the call is refused, not mistaken for another closure's.
+    assert_eq!(
+        got,
+        (
+            vec!["ok".to_string(), boom_at(7), code_is_gone_at(5, 7)],
+            String::new(),
+            0
+        )
     );
-    assert!(!got.0[2].contains("internal error"), "{got:?}");
 }
 
 /// The shift of the lifted ids a failed entry makes (it defines a function before the closures'
@@ -296,7 +324,14 @@ fn a_leaf_closure_a_failed_entry_stored_still_runs_its_own_body_in_the_list_buil
     let third = format!("{first}print([1, 2, 3].map(keep))\nprint([1, 2, 3].map(other()))\n");
     let run = || session(&[first, &second, &third], |_, _| {});
     let got = run();
-    assert_eq!(got.1, "[5, 10, 15]\n[10, 11, 12]\n", "{got:?}");
+    assert_eq!(
+        got,
+        (
+            vec!["ok".to_string(), boom_at(10), "ok".to_string()],
+            "[5, 10, 15]\n[10, 11, 12]\n".to_string(),
+            0
+        )
+    );
 }
 
 /// The list built-ins run a closure that only computes in a native loop; one whose code is gone
@@ -311,7 +346,14 @@ fn a_leaf_closure_whose_code_is_gone_fails_in_the_list_built_ins_as_a_call_does(
     let mapped = format!("{first}print([1, 2, 3].map(keep).len())\n");
     let run = |third: &str| session(&[first, &second, third], |_, _| {});
     let d = run(&direct);
-    assert!(d.0[2].contains("its code is gone"), "{d:?}");
+    assert_eq!(
+        d,
+        (
+            vec!["ok".to_string(), boom_at(7), code_is_gone_at(5, 7)],
+            String::new(),
+            0
+        )
+    );
     let m = run(&mapped);
     assert_eq!(m, d, "mapped, then direct");
 }
@@ -327,8 +369,14 @@ fn a_closure_whose_function_the_failed_entry_redefined_still_runs() {
     let third = format!("{old_program}print(keep())\n");
     let run = || session(&[first, second, &third], |_, _| {});
     let got = run();
-    assert_eq!(got.1, "8\n", "{got:?}");
-    assert_eq!(got.0[2], "ok");
+    assert_eq!(
+        got,
+        (
+            vec!["ok".to_string(), boom_at(5), "ok".to_string()],
+            "8\n".to_string(),
+            0
+        )
+    );
 }
 
 /// A `defer` that starts a coroutine while the rollback cancels another one: the new one runs
@@ -350,6 +398,11 @@ fn a_coroutine_started_by_a_defer_during_the_rollback_is_cancelled_too() {
     };
     let got = run();
 
-    assert_eq!(got.1, ["Ok(())"], "{got:?}");
-    assert_eq!((got.0).1, "", "{got:?}");
+    assert_eq!(
+        got,
+        (
+            (vec!["ok".to_string(), boom_at(16)], String::new(), 0),
+            vec!["Ok(())".to_string()]
+        )
+    );
 }

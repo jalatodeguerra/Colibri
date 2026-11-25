@@ -288,10 +288,9 @@ fn main() {
         reports[0].0,
         r#"M(name: "a") -> next -> M(name: "b") -> next -> M(name: "a")"#
     );
-    assert!(
-        reports[0].1[0].starts_with("M at leaks.colibri:"),
-        "{:?}",
-        reports[0].1
+    assert_eq!(
+        reports[0].1,
+        ["M at leaks.colibri:8", "M at leaks.colibri:9"]
     );
 }
 
@@ -317,5 +316,9 @@ fn main() {
     assert_eq!(
         reports[0].0,
         r#"L(name: "c") -> xs[0] -> L(name: "d") -> m[7] -> L(name: "c")"#
+    );
+    assert_eq!(
+        reports[0].1,
+        ["L at leaks.colibri:8", "L at leaks.colibri:9"]
     );
 }

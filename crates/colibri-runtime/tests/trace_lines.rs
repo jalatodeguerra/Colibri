@@ -1,6 +1,6 @@
 //! The lines of a panic's stack trace are right.
 
-use colibri_runtime::{Error, Vm};
+use colibri_runtime::{Error, Location, StackFrame, Vm};
 
 fn trace_of(source: &str) -> Vec<(String, u32)> {
     let mut vm = Vm::builder().build();
@@ -25,18 +25,15 @@ let b = boom(a - 1)
 ";
     let vm = trace_of(src);
     // The script's own frame is at the `let`.
-    assert_eq!(vm.last(), Some(&("<script>".to_string(), 4)), "{vm:?}");
-    assert_eq!(vm.first(), Some(&("boom".to_string(), 2)), "{vm:?}");
+    let frame = |name: &str, line: u32| (name.to_string(), line);
+    assert_eq!(
+        vm,
+        [frame("boom", 2), frame("<init b>", 4), frame("<script>", 4)]
+    );
 }
 
 /// The whole panic of a run: message, position and every frame of the stack, with columns.
-fn panic_of(
-    source: &str,
-) -> (
-    String,
-    Option<colibri_runtime::Location>,
-    Vec<colibri_runtime::StackFrame>,
-) {
+fn panic_of(source: &str) -> (String, Option<Location>, Vec<StackFrame>) {
     let mut vm = Vm::builder().build();
     let result = vm
         .load_source("a.colibri", source)
@@ -52,13 +49,24 @@ fn panic_of(
     }
 }
 
-fn stack_of_panic(source: &str) -> Vec<colibri_runtime::StackFrame> {
-    panic_of(source).2
+fn loc(line: u32, column: u32) -> Location {
+    Location {
+        file: "a.colibri".to_string(),
+        line,
+        column,
+    }
+}
+
+fn frame(function: &str, line: u32, column: u32) -> StackFrame {
+    StackFrame {
+        function: function.to_string(),
+        location: loc(line, column),
+    }
 }
 
 #[test]
 fn a_panic_inside_a_map_closure_has_the_right_stack() {
-    let stack = stack_of_panic(
+    let panic = panic_of(
         "fn check(x: int) -> int => 10 / (x - 3)
 fn main() {
     let xs = [1, 2, 3]
@@ -67,38 +75,51 @@ fn main() {
 }",
     );
     // The closure, `check`, and `main` at the call of `map`; nothing of `map` itself.
-    let names: Vec<&str> = stack.iter().map(|f| f.function.as_str()).collect();
-    assert_eq!(names.len(), 3, "{stack:?}");
-    assert_eq!(names[0], "check");
-    assert_eq!(names[2], "main");
-    assert_eq!(stack[2].location.line, 4);
+    assert_eq!(
+        panic,
+        (
+            "division by zero".to_string(),
+            Some(loc(1, 28)),
+            vec![
+                frame("check", 1, 28),
+                frame("<closure in main>", 4, 30),
+                frame("main", 4, 14),
+            ]
+        )
+    );
 }
 
 #[test]
 fn a_panic_inside_every_kind_of_closure_built_in_has_the_right_stack() {
-    for call in [
-        "xs.filter(fn(x) => 1 / (x - 2) > 0)",
-        "xs.retain(fn(x) => 1 / (x - 2) > 0)",
-        "xs.any(fn(x) => 1 / (x - 2) > 5)",
-        "xs.all(fn(x) => 1 / (x - 2) > -5)",
-        "xs.find(fn(x) => 1 / (x - 2) > 5)",
-        "xs.find_index(fn(x) => 1 / (x - 2) > 5)",
-        "xs.fold(0, fn(a, x) => a + 1 / (x - 2))",
-        "xs.for_each(fn(x) => print(1 / (x - 2)))",
-        "xs.flat_map(fn(x) => [1 / (x - 2)])",
-        "xs.sort_by(fn(a, b) => a - 1 / (b - 2))",
-        "xs.sorted_by(fn(a, b) => a - 1 / (b - 2))",
-        "xs.sort_by_key(fn(x) => 1 / (x - 2))",
-        "some(2).map(fn(x) => 1 / (x - 2))",
-        "some(2).and_then(fn(x) => some(1 / (x - 2)))",
+    // Each call, and the column of the division inside its closure.
+    for (call, column) in [
+        ("xs.filter(fn(x) => 1 / (x - 2) > 0)", 30),
+        ("xs.retain(fn(x) => 1 / (x - 2) > 0)", 30),
+        ("xs.any(fn(x) => 1 / (x - 2) > 5)", 27),
+        ("xs.all(fn(x) => 1 / (x - 2) > -5)", 27),
+        ("xs.find(fn(x) => 1 / (x - 2) > 5)", 28),
+        ("xs.find_index(fn(x) => 1 / (x - 2) > 5)", 34),
+        ("xs.fold(0, fn(a, x) => a + 1 / (x - 2))", 38),
+        ("xs.for_each(fn(x) => print(1 / (x - 2)))", 38),
+        ("xs.flat_map(fn(x) => [1 / (x - 2)])", 33),
+        ("xs.sort_by(fn(a, b) => a - 1 / (b - 2))", 38),
+        ("xs.sorted_by(fn(a, b) => a - 1 / (b - 2))", 40),
+        ("xs.sort_by_key(fn(x) => 1 / (x - 2))", 35),
+        ("some(2).map(fn(x) => 1 / (x - 2))", 32),
+        ("some(2).and_then(fn(x) => some(1 / (x - 2)))", 42),
     ] {
-        let stack = stack_of_panic(&format!(
+        let panic = panic_of(&format!(
             "fn main() {{\n    let mut xs = [3, 1, 2]\n    print({call})\n}}"
         ));
-        let names: Vec<&str> = stack.iter().map(|f| f.function.as_str()).collect();
-        assert_eq!(names.len(), 2, "{call}: {stack:?}");
-        assert_eq!(names[1], "main", "{call}");
-        assert_eq!(stack[1].location.line, 3, "{call}");
+        assert_eq!(
+            panic,
+            (
+                "division by zero".to_string(),
+                Some(loc(3, column)),
+                vec![frame("<closure in main>", 3, column), frame("main", 3, 11)]
+            ),
+            "{call}"
+        );
     }
 }
 
@@ -106,7 +127,7 @@ fn a_panic_inside_every_kind_of_closure_built_in_has_the_right_stack() {
 fn a_panic_of_the_built_in_itself_is_reported_at_its_call() {
     // The guard of the list is checked by code that the VM writes in Colibri; the panic names
     // the line of the call, with no frame of that code.
-    let stack = stack_of_panic(
+    let panic = panic_of(
         "fn main() {
     let mut xs = [2, 1]
     for x in xs {
@@ -114,7 +135,12 @@ fn a_panic_of_the_built_in_itself_is_reported_at_its_call() {
     }
 }",
     );
-    assert_eq!(stack.len(), 1, "{stack:?}");
-    assert_eq!(stack[0].function, "main");
-    assert_eq!(stack[0].location.line, 4);
+    assert_eq!(
+        panic,
+        (
+            "list modified during iteration".to_string(),
+            Some(loc(4, 9)),
+            vec![frame("main", 4, 9)]
+        )
+    );
 }

@@ -577,12 +577,8 @@ fn main() {
         exhausted(&err);
         (out.contents(), vm.steps_used())
     };
-    let vm = run();
-    // Some trips ran, and the elements are all there (not `()`, not the old values only).
-    let sum: i64 =
-        vm.0.trim()
-            .split(' ')
-            .map(|n| n.parse::<i64>().unwrap())
-            .sum();
-    assert!(sum > 4, "{}", vm.0);
+    // The deferred print sees every element as the trips left them: the in-flight element is
+    // written back with its trip's increment (the first two elements went round once more than
+    // the last two), and the run stops one step past the budget of 60.
+    assert_eq!(run(), ("6 6 5 5\n".to_string(), 61));
 }
