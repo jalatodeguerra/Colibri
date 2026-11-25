@@ -94,7 +94,10 @@ fn lines(folded: &str) -> Vec<(Vec<&str>, u64)> {
         .lines()
         .map(|l| {
             let (stack, weight) = l.rsplit_once(' ').expect("a stack and a weight");
-            (stack.split(';').collect(), weight.parse().expect("a number"))
+            (
+                stack.split(';').collect(),
+                weight.parse().expect("a number"),
+            )
         })
         .collect()
 }
@@ -107,15 +110,15 @@ fn the_folded_stacks_have_the_shape_of_the_program() {
     assert!(total > 20_000, "a program of some size: {total}");
 
     // The frames that exist: `main` and the coroutine are the roots.
-    let names: std::collections::BTreeSet<&str> = lines
-        .iter()
-        .flat_map(|(s, _)| s.iter().copied())
-        .collect();
+    let names: std::collections::BTreeSet<&str> =
+        lines.iter().flat_map(|(s, _)| s.iter().copied()).collect();
     let expected = ["<closure in main>", "List.map", "fib", "go spin", "main"];
     assert_eq!(names.into_iter().collect::<Vec<_>>(), expected);
-    assert!(lines
-        .iter()
-        .all(|(s, _)| s[0] == "main" || s[0] == "go spin"));
+    assert!(
+        lines
+            .iter()
+            .all(|(s, _)| s[0] == "main" || s[0] == "go spin")
+    );
 
     // `fib` holds most of the weight of `main`'s stacks, and under `main` only.
     let under_fib: u64 = lines
@@ -129,10 +132,12 @@ fn the_folded_stacks_have_the_shape_of_the_program() {
         .map(|(_, w)| w)
         .sum();
     assert!(under_fib * 2 > under_main, "{under_fib} of {under_main}");
-    assert!(lines
-        .iter()
-        .filter(|(s, _)| s.contains(&"fib"))
-        .all(|(s, _)| s[..2] == ["main", "fib"]));
+    assert!(
+        lines
+            .iter()
+            .filter(|(s, _)| s.contains(&"fib"))
+            .all(|(s, _)| s[..2] == ["main", "fib"])
+    );
 
     // The hidden prelude function that `map` runs is named as the built-in, and calls the closure.
     assert!(
@@ -162,7 +167,13 @@ fn the_table_on_stderr_lists_functions_and_lines() {
     assert!(err.contains("p.colibri:3"), "{err}");
     // A function that recurses counts once in a stack, so no total is over the whole.
     for row in &functions {
-        let total: f64 = row.split_whitespace().nth(1).unwrap().trim_end_matches('%').parse().unwrap();
+        let total: f64 = row
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .trim_end_matches('%')
+            .parse()
+            .unwrap();
         assert!(total <= 100.0, "{row}");
     }
     assert!(p.dir.join("prof.svg").exists());
@@ -196,7 +207,10 @@ fn check_xml(doc: &str) -> usize {
         let (before, tail) = rest.split_at(at);
         check_text(before);
         if open.is_empty() {
-            assert!(before.trim().is_empty(), "text outside the root: {before:?}");
+            assert!(
+                before.trim().is_empty(),
+                "text outside the root: {before:?}"
+            );
         }
         if let Some(body) = tail.strip_prefix("<?") {
             let end = body.find("?>").expect("a declaration ends");
@@ -257,7 +271,10 @@ fn check_attributes(mut attrs: &str) {
         }
         let eq = attrs.find('=').expect("an attribute has a value");
         let name = &attrs[..eq];
-        assert!(!name.is_empty() && !name.contains(char::is_whitespace), "{attrs}");
+        assert!(
+            !name.is_empty() && !name.contains(char::is_whitespace),
+            "{attrs}"
+        );
         let value = attrs[eq + 1..].strip_prefix('"').expect("a quoted value");
         let end = value.find('"').expect("the value ends");
         check_text(&value[..end]);
@@ -366,7 +383,12 @@ fn test_profile_covers_every_test() {
         "--profile-weight=steps",
         dir.join("t.colibri").to_str().unwrap(),
     ]);
-    assert!(out.status.success(), "{}{}", text(&out.stdout), text(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
     assert!(text(&out.stdout).contains("2 passed"));
     let folded = std::fs::read_to_string(dir.join("tp.folded")).unwrap();
     let lines = lines(&folded);

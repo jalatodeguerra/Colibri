@@ -285,11 +285,7 @@ impl Profiler {
         self.add(weight, span);
     }
 
-    fn finish(
-        mut self,
-        steps: u64,
-        locate: &dyn Fn(Span) -> Option<(String, u32)>,
-    ) -> Profile {
+    fn finish(mut self, steps: u64, locate: &dyn Fn(Span) -> Option<(String, u32)>) -> Profile {
         self.flush(steps);
         let mut samples = Vec::new();
         for (stack, by_span) in &self.samples {
@@ -315,9 +311,7 @@ impl Profiler {
                 });
             }
         }
-        samples.sort_by(|a, b| {
-            (&a.stack, &a.file, a.line).cmp(&(&b.stack, &b.file, b.line))
-        });
+        samples.sort_by(|a, b| (&a.stack, &a.file, a.line).cmp(&(&b.stack, &b.file, b.line)));
         Profile {
             weight: self.weight,
             samples,
@@ -331,8 +325,7 @@ impl Machine {
     pub fn start_profile(&mut self, weight: ProfileWeight) {
         self.profiler = Some(Box::new(Profiler::new(weight)));
         let every = std::num::NonZeroU32::new(PROFILE_SLICE).expect("a slice");
-        self.core
-            .want_safepoints(SafepointKind::Profiler, every);
+        self.core.want_safepoints(SafepointKind::Profiler, every);
         // The steps before this call are not the profile's.
         self.core.take_pending_steps(SafepointKind::Profiler);
     }

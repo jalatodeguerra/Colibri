@@ -102,8 +102,15 @@ fn the_profile_is_the_same_on_every_run_and_the_lines_are_real() {
         .collect();
     assert!(!fib_lines.is_empty());
     // `fib` is the first three lines of the program.
-    assert!(fib_lines.iter().all(|l| (1..=4).contains(l)), "{fib_lines:?}");
-    assert!(a.samples.iter().all(|s| s.file == "p.colibri" || s.line == 0));
+    assert!(
+        fib_lines.iter().all(|l| (1..=4).contains(l)),
+        "{fib_lines:?}"
+    );
+    assert!(
+        a.samples
+            .iter()
+            .all(|s| s.file == "p.colibri" || s.line == 0)
+    );
 }
 
 #[test]

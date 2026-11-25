@@ -228,7 +228,10 @@ mod tests {
 
     #[test]
     fn a_name_that_does_not_fit_is_cut_with_two_dots_and_a_narrow_frame_has_no_label() {
-        assert_eq!(label("abcdefghijklmnop", 80.0).as_deref(), Some("abcdefgh.."));
+        assert_eq!(
+            label("abcdefghijklmnop", 80.0).as_deref(),
+            Some("abcdefgh..")
+        );
         assert_eq!(label("abc", 80.0).as_deref(), Some("abc"));
         assert_eq!(label("abc", 10.0), None);
     }

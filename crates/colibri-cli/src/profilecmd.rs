@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use colibri_runtime as colibri;
 use colibri::{Profile, ProfileWeight};
+use colibri_runtime as colibri;
 
 use crate::flame;
 

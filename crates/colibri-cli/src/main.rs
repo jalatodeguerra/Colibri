@@ -78,13 +78,19 @@ enum Command {
         /// default) and the folded stacks it was drawn from next to it (`profile.folded`), then
         /// print the heaviest functions and lines to stderr. A sample is taken about every
         /// 1,024 steps, so a long call into a host function or a built-in is charged to the
-        /// line that made the call
+        /// line that made the call; stacks deeper than 200 frames are cut in the middle
         #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "profile.svg")]
         profile: Option<PathBuf>,
         /// What a sample weighs with `--profile`: `time` (the default) is real time, so time in
         /// host functions counts; `steps` counts instructions, which gives the same profile on
         /// every run
-        #[arg(long, value_enum, value_name = "WEIGHT", default_value = "time", requires = "profile")]
+        #[arg(
+            long,
+            value_enum,
+            value_name = "WEIGHT",
+            default_value = "time",
+            requires = "profile"
+        )]
         profile_weight: colibri_lang::profilecmd::Weight,
         #[command(flatten)]
         build: BuildFlags,
@@ -131,13 +137,20 @@ enum Command {
         /// default) and the folded stacks it was drawn from next to it (`profile.folded`), then
         /// print the heaviest functions and lines to stderr. A sample is taken about every
         /// 1,024 steps, so a long call into a host function or a built-in is charged to the
-        /// line that made the call
+        /// line that made the call; stacks deeper than 200 frames are cut in the middle; all the tests make
+        /// one profile
         #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "profile.svg")]
         profile: Option<PathBuf>,
         /// What a sample weighs with `--profile`: `time` (the default) is real time, so time in
         /// host functions counts; `steps` counts instructions, which gives the same profile on
         /// every run
-        #[arg(long, value_enum, value_name = "WEIGHT", default_value = "time", requires = "profile")]
+        #[arg(
+            long,
+            value_enum,
+            value_name = "WEIGHT",
+            default_value = "time",
+            requires = "profile"
+        )]
         profile_weight: colibri_lang::profilecmd::Weight,
         #[command(flatten)]
         build: BuildFlags,
@@ -249,8 +262,8 @@ fn main() -> ExitCode {
                     Err(code) => code,
                 }
             } else {
-                let profile = profile
-                    .map(|f| colibri_lang::profilecmd::Options::new(&f, profile_weight));
+                let profile =
+                    profile.map(|f| colibri_lang::profilecmd::Options::new(&f, profile_weight));
                 colibri_lang::runcmd::run(&file, args, leaks, deps, profile.as_ref())
             }
         }
