@@ -248,8 +248,7 @@ fn check_xml(doc: &str) -> usize {
 
 fn check_text(text: &str) {
     assert!(!text.contains('<'), "{text:?}");
-    let mut chars = text.char_indices();
-    while let Some((i, c)) = chars.next() {
+    for (i, c) in text.char_indices() {
         if c == '&' {
             let rest = &text[i..];
             let end = rest.find(';').expect("an entity ends");
