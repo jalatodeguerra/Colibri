@@ -242,3 +242,125 @@ fn counting_changes_neither_the_output_nor_the_steps_nor_the_end_nor_the_leaks()
     assert!(run(CORPUS[3], false).leaks > 0, "a cycle leaks");
     assert!(run(CORPUS[4], false).ended.is_err(), "a panic");
 }
+
+#[test]
+fn a_push_of_a_value_that_is_kept_is_a_copy() {
+    let p = counted(
+        "\
+fn main() {
+    let mut names: List[str] = []
+    let n = \"n\"
+    for i in 0..3 {
+        names.push(n)
+    }
+    print(names.len())
+}
+",
+    );
+    // The value stays in `n`, so each push takes a reference; the literal is one more.
+    assert_eq!(row(&p, 5), (3, 0, 0), "{p:?}");
+    assert_eq!(row(&p, 3), (1, 0, 0), "{p:?}");
+}
+
+#[test]
+fn the_cleanup_of_a_panic_is_not_counted() {
+    let p = counted_to_the_end(
+        "\
+fn main() {
+    let xs = [\"a\"]
+    let ys = [\"b\"]
+    print(xs[5])
+}
+",
+    );
+    // Each list is a literal and a copy of it into the list, and the literal is dropped. The
+    // drops of `xs` and `ys` that the panic runs on the way out are not on any line.
+    assert_eq!(row(&p, 2), (2, 1, 0), "{p:?}");
+    assert_eq!(row(&p, 3), (2, 1, 0), "{p:?}");
+    assert_eq!(row(&p, 1), (0, 0, 0), "{p:?}");
+}
+
+/// Like [`counted`], for a program that panics.
+fn counted_to_the_end(src: &str) -> colibri::RcProfile {
+    let r = run(src, true);
+    assert!(r.ended.is_err());
+    r.profile.expect("counting was started")
+}
+
+#[test]
+fn the_items_of_a_map_and_of_an_iterator_are_counted_like_those_of_a_list() {
+    let p = counted(
+        "\
+fn main() {
+    let m = {\"k\": \"v\", \"j\": \"w\"}
+    let mut n = 0
+    for k in m.keys() {
+        n += k.len()
+    }
+    for (k, v) in m {
+        n += k.len() + v.len()
+    }
+    print(n)
+}
+",
+    );
+    assert_eq!(row(&p, 4), (3, 4, 0), "{p:?}");
+    assert_eq!(row(&p, 7), (7, 7, 0), "{p:?}");
+}
+
+fn tree(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("colibri-rc-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (path, text) in files {
+        std::fs::write(dir.join(path), text).unwrap();
+    }
+    dir
+}
+
+const RELOADABLE: &str = "\
+fn pick(xs: List[str]) -> int {
+    return xs.len()
+}
+fn run() -> int {
+    let xs = [\"a\"]
+    return pick(xs)
+}
+";
+
+/// Counting started, `RELOADABLE` loaded, then `edited` written over it and reloaded; what the
+/// reload did and the profile after one call of `run`.
+fn reloaded(name: &str, edited: &str) -> (colibri::ReloadOutcome, colibri::RcProfile) {
+    let dir = tree(name, &[("a.colibri", RELOADABLE)]);
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(colibri::SharedBuffer::new()))
+        .build();
+    vm.start_rc_profile();
+    vm.load_file(dir.join("a.colibri")).unwrap();
+    std::fs::write(dir.join("a.colibri"), edited).unwrap();
+    let outcome = vm.reload_changed().unwrap();
+    let run_fn = vm.get_fn::<(), i64>("run").unwrap();
+    run_fn.call(&mut vm, ()).unwrap();
+    (outcome, vm.finish_rc_profile().unwrap())
+}
+
+#[test]
+fn a_body_that_a_reload_patches_in_is_counted() {
+    let (outcome, p) = reloaded(
+        "patch",
+        &RELOADABLE.replace("return pick(xs)", "return pick(xs) + pick(xs)"),
+    );
+    assert!(matches!(
+        outcome,
+        colibri::ReloadOutcome::Patched { functions: 1 }
+    ));
+    // Two calls, each copying the list and dropping the copy, and `return` drops `xs`.
+    assert_eq!(row(&p, 6), (2, 3, 0), "{p:?}");
+}
+
+#[test]
+fn a_program_that_a_reload_restarts_is_counted() {
+    let (outcome, p) = reloaded("restart", &format!("{RELOADABLE}struct S {{ a: int }}\n"));
+    assert!(matches!(outcome, colibri::ReloadOutcome::Restarted { .. }));
+    assert_eq!(row(&p, 6), (1, 2, 0), "{p:?}");
+}
