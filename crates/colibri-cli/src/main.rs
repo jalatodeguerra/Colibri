@@ -96,8 +96,8 @@ enum Command {
         /// copying, reading and dropping strings, lists, structs and other values that have a
         /// reference count, and `x.clone()`) and print the lines with the most to stderr. It
         /// works on its own and does not need `--profile`. The program is compiled with a
-        /// counter next to each such instruction, which makes it slower (about 2 times for code
-        /// that mostly passes lists and strings around, a few percent for code that does
+        /// counter next to each such instruction, which makes it slower (10 to 30% for most
+        /// programs, up to 2 times for one that mostly passes structs around, not at all for
         /// arithmetic) and changes nothing else. Not counted: what built-ins written in Rust do
         /// inside (`sort`, `join`, map lookups), host functions, field and element writes and
         /// the cleanup of a panic
@@ -167,8 +167,8 @@ enum Command {
         /// copying, reading and dropping strings, lists, structs and other values that have a
         /// reference count, and `x.clone()`) and print the lines with the most to stderr (one
         /// report for all the tests). It works on its own and does not need `--profile`. The program is compiled with a
-        /// counter next to each such instruction, which makes it slower (about 2 times for code
-        /// that mostly passes lists and strings around, a few percent for code that does
+        /// counter next to each such instruction, which makes it slower (10 to 30% for most
+        /// programs, up to 2 times for one that mostly passes structs around, not at all for
         /// arithmetic) and changes nothing else. Not counted: what built-ins written in Rust do
         /// inside (`sort`, `join`, map lookups), host functions, field and element writes and
         /// the cleanup of a panic
