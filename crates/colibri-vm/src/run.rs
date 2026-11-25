@@ -869,7 +869,7 @@ impl Machine {
                         let Value::Int(i) = *rd!(a + 1) else {
                             break 'trip false;
                         };
-                        if !chunk.hidden && self.core.budget.real_left() <= 0 {
+                        if !chunk.hidden && self.core.budget.none_left() {
                             break 'trip false;
                         }
                         // A lent slot: the item moves out and nothing keeps a second reference.

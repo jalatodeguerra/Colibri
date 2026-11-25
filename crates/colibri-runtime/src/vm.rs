@@ -249,10 +249,9 @@ impl VmBuilder {
             .core_mut()
             .set_instruction_budget(self.instruction_budget);
         if let Some(every) = self.safepoint_slice.and_then(std::num::NonZeroU32::new) {
-            engine.core_mut().want_safepoints(
-                colibri_core::safepoint::SafepointKind::Profiler,
-                every,
-            );
+            engine
+                .core_mut()
+                .want_safepoints(colibri_core::safepoint::SafepointKind::Profiler, every);
         }
         if let Some(size) = self.coroutine_stack_size {
             engine.core_mut().sched.set_stack_size(size);

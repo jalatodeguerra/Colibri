@@ -143,6 +143,13 @@ impl Budget {
         self.slice
     }
 
+    /// Whether no step is left for a fast path that wants one (`real_left() <= 0`). A window with
+    /// steps in it is answered without looking at the reserve.
+    #[inline(always)]
+    pub fn none_left(&self) -> bool {
+        self.left <= 0 && self.real_left() <= 0
+    }
+
     /// Changes the slice of a budget that is running: the window shrinks or grows to it.
     pub(crate) fn set_slice(&mut self, slice: Option<NonZeroU32>) {
         if self.slice == slice {

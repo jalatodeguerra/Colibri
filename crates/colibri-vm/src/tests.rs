@@ -501,7 +501,8 @@ fn safepoint_run(
     (seen, steps)
 }
 
-const SPIN: &str = "fn main() {\n    let mut t = 0\n    for i in 0..200 {\n        t += i\n    }\n}";
+const SPIN: &str =
+    "fn main() {\n    let mut t = 0\n    for i in 0..200 {\n        t += i\n    }\n}";
 
 #[test]
 fn the_consumers_of_a_safepoint_run_memory_then_debugger_then_profiler() {
@@ -523,8 +524,14 @@ fn each_consumer_runs_about_every_interval_it_asked_for() {
     // consumer runs about as often as asked (a window ends at an instruction boundary).
     for (kind, every) in [(Memory, 100), (Debugger, 10), (Profiler, 50)] {
         let n = count(kind);
-        assert!(n <= steps / every, "{kind:?} ran {n} times in {steps} steps");
-        assert!(n + 2 >= steps / every, "{kind:?} ran {n} times in {steps} steps");
+        assert!(
+            n <= steps / every,
+            "{kind:?} ran {n} times in {steps} steps"
+        );
+        assert!(
+            n + 2 >= steps / every,
+            "{kind:?} ran {n} times in {steps} steps"
+        );
     }
 }
 
