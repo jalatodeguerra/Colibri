@@ -296,7 +296,8 @@ impl Scheduler {
 
     /// Sleeps on the clock; a background operation that finishes ends the sleep early.
     pub fn clock_sleep(&mut self, seconds: f64) {
-        let began = self.measure_idle.then(std::time::Instant::now);
+        // A sleep of nothing (the event loop yielding) is not worth two clock readings.
+        let began = (self.measure_idle && seconds > 0.0).then(std::time::Instant::now);
         self.sleep_on_clock(seconds);
         if let Some(began) = began {
             let nanos = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
