@@ -92,7 +92,7 @@ impl Machine {
     /// calls it from its own code, not from a callback, a `Drop` hook or native code that calls
     /// user code, and the function may wait. On the web nothing parks.
     pub(crate) fn may_park(&self, fiber: &VmFiber, id: HostFnId) -> bool {
-        cfg!(not(target_arch = "wasm32"))
+        cfg!(not(target_family = "wasm"))
             && fiber.state.coro.is_some()
             && fiber.state.host_depth == 1
             && fiber.state.native_depth == 0
@@ -248,6 +248,8 @@ impl Machine {
         let outer = std::mem::replace(&mut self.core.host.type_args, type_args);
         let step = stacks::resume(self, fiber, parked, cancel);
         let own = std::mem::replace(&mut self.core.host.type_args, outer);
+        // On the web `Parked` has no values, so the arm below cannot run.
+        #[cfg_attr(target_family = "wasm", allow(unreachable_code))]
         let result = match step {
             Step::Parked(parked) => {
                 fiber.pending_host =

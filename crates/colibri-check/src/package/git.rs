@@ -23,6 +23,24 @@ pub const HOME_VAR: &str = "COLIBRI_HOME";
 
 /// The cache folder, or why there is none.
 pub fn cache_root() -> Result<PathBuf, String> {
+    // The web has no disk and no `git`: the rest of this file is compiled there but never reached
+    // (`sync` and `DiskFs` refuse first), so a browser build cannot panic in it.
+    #[cfg(target_family = "wasm")]
+    {
+        Err(NO_DISK.to_string())
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        native_cache_root()
+    }
+}
+
+/// Why a web build has no cache folder (and no file system, and no `git`).
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+pub(super) const NO_DISK: &str = "there is no file system on the web";
+
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+fn native_cache_root() -> Result<PathBuf, String> {
     let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
     let dir = if let Some(home) = var(HOME_VAR) {
         PathBuf::from(home)
@@ -786,6 +804,8 @@ fn is_device_name(component: &str) -> bool {
 /// repository's `.gitattributes` (running the user's configured filter programs, which may be
 /// `git-lfs` talking to a server the repository chose, expanding `$Id$`, changing line
 /// endings) and create symbolic links. Here the blobs are copied out as they are.
+// `File` has no destructor on the web, where this is never reached; the `drop` is for the others.
+#[cfg_attr(target_family = "wasm", allow(clippy::drop_non_drop))]
 fn write_tree(db: &Path, commit: &str, dest: &Path) -> Result<(), String> {
     use std::io::{BufRead, BufReader, Read, Write};
 

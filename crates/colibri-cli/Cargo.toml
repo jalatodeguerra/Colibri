@@ -19,7 +19,7 @@ rustyline = { version = "19", default-features = false }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false, features = ["v2"] }
 
 [features]

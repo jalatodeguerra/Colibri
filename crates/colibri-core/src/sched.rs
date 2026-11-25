@@ -297,11 +297,10 @@ impl Scheduler {
     /// Sleeps on the clock; a background operation that finishes ends the sleep early.
     pub fn clock_sleep(&mut self, seconds: f64) {
         // A sleep of nothing (the event loop yielding) is not worth two clock readings.
-        let began = (self.measure_idle && seconds > 0.0).then(std::time::Instant::now);
+        let began = (self.measure_idle && seconds > 0.0).then(crate::clock::Stopwatch::start);
         self.sleep_on_clock(seconds);
         if let Some(began) = began {
-            let nanos = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            self.idle_nanos = self.idle_nanos.saturating_add(nanos);
+            self.idle_nanos = self.idle_nanos.saturating_add(began.elapsed_nanos());
         }
     }
 

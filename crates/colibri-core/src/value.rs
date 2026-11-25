@@ -81,7 +81,11 @@ pub enum Value {
 // A value is a tag and at most 16 bytes of payload (`Str(Rc<str>)` is a fat pointer, `Fn(FnId, Rc<str>)`
 // a name and an id): 24 bytes. Nothing is stored inline beyond a scalar, so a struct such as a
 // vector is a reference to its fields like any other.
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Value>() == 24);
+// Pointers are half as wide on wasm32, so a value is smaller there; it must never be larger.
+#[cfg(not(target_pointer_width = "64"))]
+const _: () = assert!(std::mem::size_of::<Value>() <= 24);
 
 /// The ends of a range value (`Range[int]`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

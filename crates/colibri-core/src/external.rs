@@ -154,11 +154,24 @@ impl PoolShared {
 /// (after the job they are running).
 pub(crate) struct Pool {
     shared: Arc<PoolShared>,
+    /// A pool that never starts a thread: every `submit` is refused (see [`NO_THREADS`]).
+    threadless: bool,
 }
+
+/// What a pool without threads says when it is asked to run a job: on the web there are no
+/// threads (`wasm32-unknown-unknown` cannot spawn one), so nothing ever runs in the background.
+pub const NO_THREADS: &str = "no threads on the web";
 
 impl Pool {
     pub(crate) fn new() -> Self {
+        Pool::with_threads(!cfg!(target_family = "wasm"))
+    }
+
+    /// A pool that takes no job: `submit` fails with [`NO_THREADS`]. What [`Pool::new`] gives on
+    /// the web; native code builds one to test that path.
+    pub(crate) fn with_threads(threads: bool) -> Self {
         Pool {
+            threadless: !threads,
             shared: Arc::new(PoolShared {
                 state: Mutex::new(PoolState {
                     queue: VecDeque::new(),
@@ -173,6 +186,9 @@ impl Pool {
 
     /// Runs `job` on an idle worker, or on a new thread if none is idle.
     pub(crate) fn submit(&self, job: Job) -> Result<(), String> {
+        if self.threadless {
+            return Err(NO_THREADS.to_string());
+        }
         let mut state = self.shared.lock();
         if state.closed {
             return Err("the background pool is closed".to_string());
@@ -255,9 +271,20 @@ pub struct Externals {
 
 impl Externals {
     pub fn new() -> Self {
+        Self::with_pool(Pool::new())
+    }
+
+    /// Background operations whose pool starts no thread, as on the web: `submit` fails with
+    /// [`NO_THREADS`].
+    #[doc(hidden)]
+    pub fn without_threads() -> Self {
+        Self::with_pool(Pool::with_threads(false))
+    }
+
+    fn with_pool(pool: Pool) -> Self {
         let (tx, rx) = mpsc::channel();
         Externals {
-            pool: Pool::new(),
+            pool,
             tx,
             rx,
             pending: HashSet::new(),
@@ -643,5 +670,43 @@ mod tests {
             result_rx.try_recv(),
             Err(mpsc::TryRecvError::Disconnected)
         ));
+    }
+
+    /// The pool of the web build: nothing is started, the job is dropped unrun, and the
+    /// scheduler reports `CannotStart` with the web's message and keeps no trace of the operation.
+    #[test]
+    fn a_pool_without_threads_refuses_work_with_cannot_start() {
+        use super::{ExternalError, Externals, NO_THREADS};
+        let mut sched = crate::sched::Scheduler::new();
+        *sched.ext() = Externals::without_threads();
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&ran);
+        let out = sched.submit_work(move |_| flag.store(true, Ordering::SeqCst));
+        match out {
+            Err(ExternalError::CannotStart(message)) => {
+                assert_eq!(message, "no threads on the web");
+                assert_eq!(message, NO_THREADS);
+            }
+            other => panic!("expected CannotStart, got {:?}", other.err()),
+        }
+        assert!(!ran.load(Ordering::SeqCst), "the job must not run");
+        assert!(
+            sched.ext().is_idle(),
+            "the refused operation leaves nothing behind"
+        );
+        // Dropping the pool must not hang or start anything either.
+        drop(sched);
+    }
+
+    /// The pool of a native build still runs work, so the refusal above is the `threadless`
+    /// switch and not a pool that always fails.
+    #[test]
+    fn a_pool_with_threads_still_runs_work() {
+        let mut sched = crate::sched::Scheduler::new();
+        let pending = sched.submit_work(|_| 7).expect("the pool starts a thread");
+        let done = sched
+            .collect(pending, super::Waited::Blocked)
+            .expect("result");
+        assert_eq!(done, 7);
     }
 }
