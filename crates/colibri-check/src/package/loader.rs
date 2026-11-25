@@ -1496,6 +1496,43 @@ mod tests {
     }
 
     #[test]
+    fn a_recording_load_reads_exactly_the_files_of_the_program() {
+        use crate::package::fs::RecordingFs;
+        let mut mem = MemoryFs::new();
+        mem.insert("app/main.colibri", "import jobs.worker\nimport util\n");
+        mem.insert("app/jobs/worker.colibri", "pub fn run() {}\n");
+        mem.insert("app/util.colibri", "pub fn f() {}\n");
+        // In the folder, but nothing imports them.
+        mem.insert("app/unused.colibri", "pub fn g() {}\n");
+        mem.insert("app/jobs/other.colibri", "pub fn h() {}\n");
+        mem.insert("app/notes.txt", "not source");
+        let rec = RecordingFs::new(&mem);
+        let mut sources = SourceMap::new();
+        let loaded = load(
+            &rec,
+            &mut sources,
+            Entry::File(Path::new("app/main.colibri")),
+            &[],
+        )
+        .expect("loads");
+        assert!(!loaded.has_errors());
+        let mut read: Vec<String> = rec
+            .into_files()
+            .into_iter()
+            .map(|f| f.path.to_string_lossy().replace('\\', "/"))
+            .collect();
+        read.sort();
+        assert_eq!(
+            read,
+            [
+                "app/jobs/worker.colibri",
+                "app/main.colibri",
+                "app/util.colibri"
+            ]
+        );
+    }
+
+    #[test]
     fn a_manifest_or_a_lock_is_not_an_entry_file() {
         for name in ["colibri.toml", "app/colibri.lock", "app/Colibri.TOML"] {
             let mut fs = MemoryFs::new();

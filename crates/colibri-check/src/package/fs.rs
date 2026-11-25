@@ -476,6 +476,40 @@ mod tests {
     }
 
     #[test]
+    fn a_recording_fs_records_reads_and_nothing_else() {
+        let mut mem = MemoryFs::new();
+        mem.insert_named("a/one.colibri", "shown as one", "1");
+        mem.insert("a/two.colibri", "2");
+        mem.insert("a/three.colibri", "3");
+        let rec = RecordingFs::new(&mem);
+        // Looking at files, folders and the start of a file is not reading.
+        assert!(rec.is_file(Path::new("a/one.colibri")));
+        assert!(rec.is_dir(Path::new("a")));
+        assert_eq!(rec.list(Path::new("a")).len(), 3);
+        assert_eq!(
+            rec.read_prefix(Path::new("a/three.colibri"), 1),
+            Some(b"3".to_vec())
+        );
+        assert!(rec.read(Path::new("a/missing.colibri")).is_err());
+        // Reads are, in order, once each, whichever way the path is spelled.
+        assert_eq!(rec.read(Path::new("a/two.colibri")).unwrap(), "2");
+        assert_eq!(rec.read(Path::new("a/one.colibri")).unwrap(), "1");
+        assert_eq!(rec.read(Path::new("./a/two.colibri")).unwrap(), "2");
+        let files = rec.into_files();
+        let seen: Vec<(PathBuf, &str, &str)> = files
+            .iter()
+            .map(|f| (f.path.clone(), f.name.as_str(), f.text.as_str()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (PathBuf::from("./a/two.colibri"), "a/two.colibri", "2"),
+                (PathBuf::from("a/one.colibri"), "shown as one", "1"),
+            ]
+        );
+    }
+
+    #[test]
     fn a_memory_file_keeps_the_name_it_was_given() {
         let mut fs = MemoryFs::new();
         fs.insert("app/game/player.colibri", "b");

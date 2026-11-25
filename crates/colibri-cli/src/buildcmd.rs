@@ -49,6 +49,12 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
         Some(out) => out.to_path_buf(),
         None => default_out(path),
     };
+    if out.is_dir() {
+        return Err(fail(format!(
+            "the output `{}` is a folder: choose a file with `-o`",
+            out.display()
+        )));
+    }
     if let Some(name) = clobbers(&out, &pack, path) {
         return Err(fail(format!(
             "the output `{}` is the source file `{name}`: choose another with `-o`",
