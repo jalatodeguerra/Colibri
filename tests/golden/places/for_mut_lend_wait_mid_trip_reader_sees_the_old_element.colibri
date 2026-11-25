@@ -1,0 +1,26 @@
+// A coroutine reads an alias of the list while the loop waits inside a trip.
+struct P { x: int }
+
+let gate = Signal()
+
+fn reader(xs: List[P]) {
+    wait_for(gate)
+    print("reader {xs[0].x} {xs[1].x}")
+}
+
+fn main() {
+    let mut ps = [P { x: 1 }, P { x: 2 }]
+    go reader(ps)
+    for mut p in ps {
+        p.x += 10
+        if p.x == 11 {
+            gate.emit()
+            task.tick(0.0)
+            task.tick(0.0)
+        }
+    }
+    print("{ps[0].x} {ps[1].x}")
+}
+
+// expect: reader 1 2
+// expect: 11 12

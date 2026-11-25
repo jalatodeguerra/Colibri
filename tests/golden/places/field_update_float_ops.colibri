@@ -1,0 +1,42 @@
+// `p.x op= rhs` for the four float operators, on a local struct, a `mut self` and a copy.
+struct P { x: float, y: float, n: int }
+
+impl P {
+    fn scale(mut self, k: float) {
+        self.x *= k
+        self.y /= k
+        self.x -= 0.5
+        self.y += 0.25
+    }
+
+    fn reset(mut self) -> float {
+        self.y = 10.0
+        return 2.0
+    }
+}
+
+fn main() {
+    let mut p = P { x: 1.0, y: 8.0, n: 0 }
+    p.x += 2.0
+    p.y -= 1.5
+    p.x *= 4.0
+    p.y /= 2.0
+    print("{p.x} {p.y}")
+    p.scale(2.0)
+    print("{p.x} {p.y}")
+    let mut q = p
+    q.x += 100.0
+    print("{p.x} {q.x}")
+    p.x /= 0.0
+    print(p.x)
+    // The right-hand side runs first, so it can change the field the update then reads.
+    p.y = 1.0
+    p.y += p.reset()
+    print(p.y)
+}
+
+// expect: 12.0 3.25
+// expect: 23.5 1.875
+// expect: 23.5 123.5
+// expect: inf
+// expect: 12.0

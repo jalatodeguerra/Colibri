@@ -1,0 +1,26 @@
+// An enum payload holding a class.
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.name}")
+    }
+}
+enum Slot { Empty, Full(Res) }
+
+fn main() {
+    let mut xs = [Slot.Full(Res { name: "old0" }), Slot.Full(Res { name: "old1" })]
+    let mut n = 0
+    for mut s in xs {
+        s = Slot.Empty
+        print("end of trip {n}")
+        n += 1
+    }
+    print("after the loop")
+}
+
+// expect: end of trip 0
+// expect: drop old0
+// expect: end of trip 1
+// expect: drop old1
+// expect: after the loop

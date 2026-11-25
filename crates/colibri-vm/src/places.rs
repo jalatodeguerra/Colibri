@@ -503,6 +503,61 @@ impl Machine {
         Ok(())
     }
 
+    /// `FieldAddF` and the other fused field updates when the struct is shared or the field is
+    /// not what the instruction expects: the struct is made unique (copied when something else
+    /// holds it, as `SetField` does), then the field is combined as the plain instructions do.
+    #[inline(never)]
+    pub(crate) fn op_field_update(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        base: usize,
+        pc: usize,
+        op: Op,
+    ) -> Result<(), Ctl> {
+        let span = chunk.spans[pc - 1];
+        let (idx, l, b) = match op {
+            Op::FieldAddF { idx, l, b }
+            | Op::FieldSubF { idx, l, b }
+            | Op::FieldMulF { idx, l, b }
+            | Op::FieldDivF { idx, l, b }
+            | Op::FieldAddI { idx, l, b }
+            | Op::FieldSubI { idx, l, b }
+            | Op::FieldMulI { idx, l, b } => (usize::from(idx), usize::from(l), usize::from(b)),
+            _ => return Err(self.internal(fiber, span, "not a field update")),
+        };
+        let y = fiber.regs[base + b].dup();
+        let slot = match &mut fiber.regs[base + l] {
+            Value::Struct(st) => Rc::make_mut(st).fields.get_mut(idx),
+            _ => None,
+        };
+        let new = match (slot.as_deref(), op, &y) {
+            (Some(Value::Float(x)), Op::FieldAddF { .. }, Value::Float(y)) => Value::Float(x + y),
+            (Some(Value::Float(x)), Op::FieldSubF { .. }, Value::Float(y)) => Value::Float(x - y),
+            (Some(Value::Float(x)), Op::FieldMulF { .. }, Value::Float(y)) => Value::Float(x * y),
+            (Some(Value::Float(x)), Op::FieldDivF { .. }, Value::Float(y)) => Value::Float(x / y),
+            (Some(Value::Int(x)), Op::FieldAddI { .. }, Value::Int(y)) => match x.checked_add(*y) {
+                Some(v) => Value::Int(v),
+                None => return Err(self.panic(fiber, span, "integer overflow")),
+            },
+            (Some(Value::Int(x)), Op::FieldSubI { .. }, Value::Int(y)) => match x.checked_sub(*y) {
+                Some(v) => Value::Int(v),
+                None => return Err(self.panic(fiber, span, "integer overflow")),
+            },
+            (Some(Value::Int(x)), Op::FieldMulI { .. }, Value::Int(y)) => match x.checked_mul(*y) {
+                Some(v) => Value::Int(v),
+                None => return Err(self.panic(fiber, span, "integer overflow")),
+            },
+            _ => return Err(self.internal(fiber, span, "ill-typed field update")),
+        };
+        if let Value::Struct(st) = &mut fiber.regs[base + l]
+            && let Some(slot) = Rc::make_mut(st).fields.get_mut(idx)
+        {
+            *slot = new;
+        }
+        Ok(())
+    }
+
     /// `d = the key the map `m` stores for the key in `k``.
     #[inline(never)]
     pub(crate) fn op_canon_key(
@@ -545,14 +600,27 @@ impl Machine {
                 Value::Set(s) => s.iter_hold(),
                 _ => return Err(self.internal(fiber, span, "a `for` over a non-collection")),
             },
-            Op::HoldListPlace { r, site } => {
+            Op::HoldListPlace { r, site } | Op::HoldListLend { r, site } => {
                 let Some(Site::Name(name)) = chunk.sites.get(usize::from(site)) else {
                     return Err(self.internal(fiber, span, "a hold without its name"));
                 };
-                match &fiber.regs[base + usize::from(r)] {
-                    Value::List(l) => l.place_hold(name),
+                let at = base + usize::from(r);
+                let token = match &fiber.regs[at] {
+                    Value::List(l) => {
+                        // The slot of an element may be lent only while nobody else can see the
+                        // list: the source local and this register are the two owners, the body
+                        // cannot name the local, and nobody can take a new reference to a list
+                        // they do not hold (it has no weak references).
+                        let sole = Rc::strong_count(l) == 2;
+                        let token = l.place_hold(name);
+                        (token, sole)
+                    }
                     _ => return Err(self.internal(fiber, span, "a `for mut` over a non-list")),
+                };
+                if let Op::HoldListLend { .. } = op {
+                    Self::put_reg(fiber, at + 3, Value::Bool(token.1));
                 }
+                token.0
             }
             _ => return Err(self.internal(fiber, span, "not a hold instruction")),
         };
@@ -564,6 +632,7 @@ impl Machine {
     /// item left, without its dispatch on the kind of loop. The end of the list and every
     /// failure are `op_for_next`'s.
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn op_for_list_next(
         &mut self,
         fiber: &mut VmFiber,
@@ -572,8 +641,28 @@ impl Machine {
         pc: usize,
         [d, a]: [u16; 2],
         var: bool,
+        lend: bool,
     ) -> Result<bool, Ctl> {
         let src = base + usize::from(a);
+        if lend
+            && let [Value::List(list), Value::Int(i), _, Value::Bool(true)] =
+                &mut fiber.regs[src..src + 4]
+            && (*i as usize) < list.len()
+        {
+            // One budget step per trip, before the slot is touched: a failing step leaves the
+            // element where it is.
+            if !chunk.hidden {
+                self.core.budget.left -= 1;
+                if self.core.budget.left < 0 {
+                    let span = chunk.spans[pc - 1];
+                    return Err(self.step_failure(fiber, span));
+                }
+            }
+            let item = list.lend_at(*i as usize).unwrap_or(Value::Unit);
+            *i += 1;
+            Self::put_reg(fiber, base + usize::from(d), item);
+            return Ok(true);
+        }
         if let [Value::List(list), Value::Int(i)] = &mut fiber.regs[src..src + 2]
             && let Some(item) = list.at(*i as usize)
         {

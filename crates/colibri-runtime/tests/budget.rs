@@ -532,3 +532,66 @@ fn a_budget_that_runs_out_inside_a_closure_built_in_stops_both_engines_at_the_sa
         assert_eq!(stack.last().unwrap().function, "main", "{kind:?}");
     }
 }
+
+#[test]
+fn a_for_mut_over_structs_that_lends_its_slots_charges_what_copying_them_did() {
+    let source = "struct P { x: int, y: float }
+fn main() {
+    let mut ps = [P { x: 0, y: 0.5 }, P { x: 1, y: 1.5 }, P { x: 2, y: 2.5 }]
+    for round in 0..4 {
+        for mut p in ps {
+            p.x += round
+            p.y *= 2.0
+        }
+    }
+    print(\"{ps[0].x} {ps[1].x} {ps[2].x} {ps[2].y}\")
+}";
+    // A VM-only regression guard, not a contract between engines: step counts are approximate and
+    // engine-specific (EMBEDDING §5), so the exact number is pinned for this engine alone.
+    // The count was 47 before the loop lent the slot (the tree-walker charges one more; that
+    // difference is older than the lending).
+    let vm = steps_of(colibri::EngineKind::Bytecode, source);
+    assert_eq!(vm, 47);
+}
+
+#[test]
+fn a_budget_that_runs_out_in_a_for_mut_trip_writes_the_elements_back_before_the_defers() {
+    // The loop lends the element's slot to the loop variable on the VM. The budget dies in the
+    // middle of a trip; the trip's landing pad puts the variable back, so a deferred statement
+    // of the function (outside the loop, so it may name the list) sees every element.
+    let run = |kind: colibri::EngineKind| {
+        let out = colibri::SharedBuffer::new();
+        let mut vm = colibri::Vm::builder()
+            .engine(kind)
+            .stdout(Box::new(out.clone()))
+            .instruction_budget(60)
+            .build();
+        vm.load_source(
+            "a.colibri",
+            "struct P { x: int }
+fn main() {
+    let mut ps = [P { x: 0 }, P { x: 0 }, P { x: 0 }, P { x: 0 }]
+    defer print(\"{ps[0].x} {ps[1].x} {ps[2].x} {ps[3].x}\")
+    for round in 0..1000 {
+        for mut p in ps {
+            p.x += 1
+        }
+    }
+}",
+        )
+        .unwrap();
+        let err = vm.run_main().unwrap_err();
+        exhausted(&err);
+        (out.contents(), vm.steps_used())
+    };
+    let tree = run(colibri::EngineKind::Tree);
+    let vm = run(colibri::EngineKind::Bytecode);
+    assert_eq!(vm, tree);
+    // Some trips ran, and the elements are all there (not `()`, not the old values only).
+    let sum: i64 =
+        vm.0.trim()
+            .split(' ')
+            .map(|n| n.parse::<i64>().unwrap())
+            .sum();
+    assert!(sum > 4, "{}", vm.0);
+}

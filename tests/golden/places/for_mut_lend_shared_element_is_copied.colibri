@@ -1,0 +1,19 @@
+// The same struct is in two slots: a write through the loop variable must not show in the other.
+struct P { x: int, y: int }
+
+fn main() {
+    let a = P { x: 1, y: 1 }
+    let mut ps = [a, a, a]
+    for mut p in ps {
+        p.x += 10
+        p.y *= 3
+    }
+    print("{ps[0].x} {ps[1].x} {ps[2].x} {a.x}")
+    for mut p in ps {
+        p.x += 1
+    }
+    print("{ps[0].x} {ps[1].y} {ps[2].x}")
+}
+
+// expect: 11 11 11 1
+// expect: 12 3 12

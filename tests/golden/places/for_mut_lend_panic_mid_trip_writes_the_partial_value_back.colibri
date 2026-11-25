@@ -1,0 +1,22 @@
+// A panic in the middle of a trip, after the first field write: the partial value is written back
+// before the function's own deferred call reads the list.
+struct P { x: int, y: int }
+
+impl P {
+    fn tweak(mut self) {
+        self.x += 10
+        let zero = self.y - 2
+        self.y = 100 / zero
+    }
+}
+
+fn main() {
+    let mut ps = [P { x: 1, y: 1 }, P { x: 2, y: 2 }, P { x: 3, y: 3 }]
+    defer print("{ps[0].x} {ps[1].x} {ps[2].x}")
+    for mut p in ps {
+        p.tweak()
+    }
+}
+
+// expect: 11 12 3
+// panic: division by zero

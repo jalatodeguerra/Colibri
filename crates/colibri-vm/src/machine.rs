@@ -74,6 +74,10 @@ pub struct Machine {
     pub(crate) refused: bool,
     pub(crate) env: CompileEnv,
     pub(crate) max_depth: usize,
+    /// Closure built-ins never run in a native loop (tests that compare the two paths).
+    pub(crate) leaf_off: bool,
+    /// How many closure built-in calls ran in a native loop.
+    pub(crate) leaf_runs: u64,
     pub(crate) native_stack_budget: usize,
     /// The host functions and class hooks the runtime installed.
     pub(crate) host_impls: HostImpls,
@@ -124,6 +128,8 @@ impl Machine {
             refused: false,
             env: CompileEnv::default(),
             max_depth: max_call_depth,
+            leaf_off: false,
+            leaf_runs: 0,
             native_stack_budget: DEFAULT_NATIVE_STACK_BUDGET,
             host_impls: HostImpls::default(),
             host_stacks: HostStacks::default(),

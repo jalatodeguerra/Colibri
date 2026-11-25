@@ -1,0 +1,21 @@
+// A loop over a list that is not a local: a call result, and a field of a struct.
+struct P { x: int }
+struct Holder { items: List[P] }
+
+fn make() -> List[P] => [P { x: 1 }, P { x: 2 }]
+
+fn main() {
+    for mut p in make() {
+        p.x += 10
+        print(p.x)
+    }
+    let mut h = Holder { items: [P { x: 5 }, P { x: 6 }] }
+    for mut p in h.items {
+        p.x *= 2
+    }
+    print("{h.items[0].x} {h.items[1].x}")
+}
+
+// expect: 11
+// expect: 12
+// expect: 10 12

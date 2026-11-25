@@ -53,6 +53,10 @@ pub(crate) struct LocalFlags {
     pub read: bool,
     /// An unused-variable warning applies to it if nothing reads it: a plain `let` or `let mut`.
     pub lint_unused: bool,
+    /// How many times a name has been resolved to it (a read, a place, a capture). A `for mut`
+    /// loop compares the count before and after its body to learn whether the body names its
+    /// source list.
+    pub names: u32,
 }
 
 /// One variable a closure captures, as recorded while its body is checked.
@@ -401,6 +405,9 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     /// closure in between.
     pub fn lookup_local(&mut self, name: &str) -> Option<LocalId> {
         if let Some(id) = self.lookup_own(name) {
+            if let Some(f) = self.flags.get_mut(id.0 as usize) {
+                f.names = f.names.wrapping_add(1);
+            }
             return Some(id);
         }
         if self.parents.is_empty() {

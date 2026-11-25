@@ -29,6 +29,12 @@ pub struct Outcome {
     pub drops: Vec<String>,
     /// The program did not compile: `panic` holds the diagnostics.
     pub compile_error: bool,
+    /// The budget steps the last entry (`main`, else the module) used, grace included.
+    #[doc(hidden)] // testing only, no stability promise
+    pub steps: u64,
+    /// How many closure built-in calls ran in a native loop (see `Options::no_leaf`).
+    #[doc(hidden)] // testing only, no stability promise
+    pub leaf_runs: u64,
 }
 
 /// How [`run_source_with`] runs a program.
@@ -39,6 +45,10 @@ pub struct Options {
     /// The instruction budget of the run (`None`: unlimited).
     pub instruction_budget: Option<u64>,
     pub trace_drops: bool,
+    /// Never run a closure built-in in a native loop: the prelude's code does every call, as it
+    /// did before leaf closures got their own loops (for tests that compare the two).
+    #[doc(hidden)] // testing only, no stability promise
+    pub no_leaf: bool,
 }
 
 impl Default for Options {
@@ -47,6 +57,7 @@ impl Default for Options {
             max_call_depth: 10_000,
             instruction_budget: None,
             trace_drops: false,
+            no_leaf: false,
         }
     }
 }
@@ -146,6 +157,7 @@ pub fn run_source_with(src: &str, options: &Options) -> Outcome {
     if options.trace_drops {
         machine.core_mut().set_trace_drops(true);
     }
+    machine.leaf_off = options.no_leaf;
     machine.load(&program);
     let mut fiber = VmFiber::new();
     let mut failure = machine.run_module(&mut fiber).err();
@@ -158,6 +170,8 @@ pub fn run_source_with(src: &str, options: &Options) -> Outcome {
         }
     }
     machine.core_mut().flush();
+    let steps = machine.core().steps_used();
+    let leaf_runs = machine.leaf_runs;
     machine.shutdown();
     let drops = machine.core_mut().take_trace();
     let (panic, trace) = match failure {
@@ -187,5 +201,7 @@ pub fn run_source_with(src: &str, options: &Options) -> Outcome {
         trace,
         drops,
         compile_error: false,
+        steps,
+        leaf_runs,
     }
 }

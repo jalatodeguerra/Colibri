@@ -1,0 +1,21 @@
+// A Drop hook panicked while the arguments of `show` were being made: the panic is folded in at the
+// first closure call, before `show` runs, whether or not the closure is a leaf run by a native loop.
+class Res { name: str }
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.name}")
+        panic("hook {self.name}")
+    }
+}
+fn show(a: (), b: List[int]) {
+    print("show {b.len()}")
+}
+fn main() {
+    let mut ys = [Res { name: "r" }]
+    let xs = [1, 2, 3]
+    show(ys.clear(), xs.map(fn(x) => x * 2))
+    print("after")
+}
+
+// expect: drop r
+// panic: hook r

@@ -55,9 +55,45 @@ pub struct CompileEnv {
     /// The built-ins that take a closure and the function written in Colibri that stands for
     /// each: a call of the built-in is compiled as a call of that function.
     pub builtin_fns: Vec<(Builtin, FnId)>,
+    /// By type id: a struct or enum with no `Drop` hook whose fields are all release-inert
+    /// (type parameters count as inert; a use checks its arguments). See [`CompileEnv::inert`].
+    pub type_inert: Vec<bool>,
 }
 
 impl CompileEnv {
+    /// Whether releasing a value of the type can never be observed (DESIGN §11.2: no `Drop`, no
+    /// weak reference anywhere in it): scalars, strings, and structs, tuples, enums and
+    /// collections of such types. A class, a closure, an interface value or a type parameter is
+    /// not inert. Such a value may be released earlier or later than the lexical rule says.
+    pub(crate) fn inert(&self, ty: &Ty) -> bool {
+        self.inert_in(ty, false)
+    }
+
+    /// `inert`, where `params` says whether a type parameter counts as inert.
+    fn inert_in(&self, ty: &Ty, params: bool) -> bool {
+        match ty {
+            Ty::Int(_)
+            | Ty::Float
+            | Ty::F32
+            | Ty::Bool
+            | Ty::Char
+            | Ty::Str
+            | Ty::Bytes
+            | Ty::Unit
+            | Ty::Never
+            | Ty::Ptr(_) => true,
+            Ty::Tuple(ts) => ts.iter().all(|t| self.inert_in(t, params)),
+            Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Range(t) => self.inert_in(t, params),
+            Ty::Map(k, v) => self.inert_in(k, params) && self.inert_in(v, params),
+            Ty::Adt(t, args) => {
+                self.type_inert.get(t.0 as usize).copied().unwrap_or(false)
+                    && args.iter().all(|a| self.inert_in(a, params))
+            }
+            Ty::Param(..) => params,
+            Ty::Fn(..) | Ty::Dyn(..) | Ty::Infer(_) | Ty::Error => false,
+        }
+    }
+
     /// The function that does what the built-in `b` does, if it is written in Colibri.
     pub(crate) fn builtin_fn(&self, b: Builtin) -> Option<FnId> {
         self.builtin_fns
@@ -85,7 +121,9 @@ impl CompileEnv {
                 *slot = true;
             }
         }
+        let type_inert = inert_types(program);
         CompileEnv {
+            type_inert,
             checked_globals,
             hook_fns,
             type_names: program.types.iter().map(|t| t.name.clone()).collect(),
@@ -95,6 +133,68 @@ impl CompileEnv {
                 .iter()
                 .map(|f| Rc::from(f.body.name.as_str()))
                 .collect(),
+        }
+    }
+}
+
+/// Which types of the program are release-inert: the greatest fixed point of "a struct or enum
+/// without a `Drop` hook whose field types are inert" (a recursive enum is inert when its other
+/// parts are).
+///
+/// The lending `for mut` relies on this being conservative: a type that can run user code when
+/// it is cloned, moved or released (a hook, a class, a closure, an interface value, or any new
+/// kind with a finaliser) must stay out of the set, or a lent slot could be seen empty.
+fn inert_types(program: &Program) -> Vec<bool> {
+    use colibri_check::hir::TypeDefKind;
+    let mut hooked = vec![false; program.types.len()];
+    for imp in &program.impls {
+        if imp.iface == colibri_check::types::DROP
+            && let colibri_check::hir::TypeKey::Adt(t) = imp.key
+            && let Some(h) = hooked.get_mut(t.0 as usize)
+        {
+            *h = true;
+        }
+    }
+    let mut inert: Vec<bool> = program
+        .types
+        .iter()
+        .zip(&hooked)
+        .map(|(t, &h)| {
+            !h && matches!(
+                t.kind,
+                TypeDefKind::Struct { .. } | TypeDefKind::Enum { .. }
+            )
+        })
+        .collect();
+    loop {
+        let env = CompileEnv {
+            type_inert: inert.clone(),
+            ..CompileEnv::default()
+        };
+        let mut changed = false;
+        for (i, t) in program.types.iter().enumerate() {
+            if !inert[i] {
+                continue;
+            }
+            let fields: Box<dyn Iterator<Item = &colibri_check::hir::FieldDef>> = match &t.kind {
+                TypeDefKind::Struct { fields } => Box::new(fields.iter()),
+                TypeDefKind::Enum { variants } => {
+                    Box::new(variants.iter().flat_map(|v| v.fields.iter()))
+                }
+                _ => Box::new(std::iter::empty()),
+            };
+            for f in fields {
+                // A type parameter stands for whatever the use gives, which the use checks.
+                if !f.weak && env.inert_in(&f.ty, true) {
+                    continue;
+                }
+                inert[i] = false;
+                changed = true;
+                break;
+            }
+        }
+        if !changed {
+            return inert;
         }
     }
 }
@@ -191,6 +291,8 @@ pub(crate) enum Item {
     Place { site: u16, a: Reg, b: Reg, r: Reg },
     /// The binding of a `for mut` iteration: its final value goes back into the list.
     ForBack { l: Reg, a: Reg },
+    /// `ForBack` of a loop that may lend the slot of the element.
+    ForBackLend { l: Reg, a: Reg },
     /// The receiver of a `mut self` interface call, unwrapped from its interface value in
     /// `shell`: boxed again before it is written back.
     Rewrap { shell: Reg, recv: Reg },
@@ -266,6 +368,7 @@ fn cannot_fail(op: &Op) -> bool {
             | Op::Unhold
             | Op::Rewrap { .. }
             | Op::ForWriteBack { .. }
+            | Op::ForWriteBackLend { .. }
             | Op::SkipIfDead { .. }
             | Op::FoldHooks
             | Op::Resume
@@ -404,7 +507,10 @@ impl<'a> FnCompiler<'a> {
             nregs: nregs as u16,
             nparams: body.param_count as u16,
             hidden: colibri_check::is_prelude_span(body.span),
+            leaf: None,
         };
+        let mut chunk = chunk;
+        chunk.leaf = crate::leaf::Leaf::build(&chunk);
         // The dispatch loop indexes registers unchecked; this is what makes that sound.
         chunk.verify_registers().map_err(Fail::Message)?;
         Ok(chunk)
@@ -888,6 +994,10 @@ impl<'a> FnCompiler<'a> {
                     self.emit(Op::ForWriteBack { l, a }, span);
                     self.releases += 1;
                 }
+                Item::ForBackLend { l, a } => {
+                    self.emit(Op::ForWriteBackLend { l, a }, span);
+                    self.releases += 1;
+                }
                 Item::Rewrap { shell, recv } => {
                     self.emit(Op::Rewrap { shell, recv }, span);
                 }
@@ -1036,6 +1146,9 @@ impl<'a> FnCompiler<'a> {
                     }
                     Item::ForBack { l, a } => {
                         self.emit(Op::ForWriteBack { l, a }, span);
+                    }
+                    Item::ForBackLend { l, a } => {
+                        self.emit(Op::ForWriteBackLend { l, a }, span);
                     }
                     Item::Rewrap { shell, recv } => {
                         self.emit(Op::Rewrap { shell, recv }, span);

@@ -50,6 +50,28 @@ The tree-walking interpreter on 2026-11-19 (Linux x86-64, CPython 3.13), in mill
 | `closures` | 917 | 169 | 5.4× |
 | `strings` | 238 | 63 | 3.8× |
 
+## Bytecode VM
+
+The bytecode VM (`COLIBRI_ENGINE=vm`) on 2026-11-25 (Linux x86-64, fat LTO, CPython 3.13, the
+lowest of three runs of best-of-five, machine load below 1.2), in milliseconds:
+
+| Program | VM | CPython | VM is |
+|---------|---:|--------:|------:|
+| `fib` | 62 | 79 | faster |
+| `loop` | 37 | 147 | faster |
+| `list` | 60 | 84 | faster |
+| `map` | 116 | 90 | 1.3× slower |
+| `structs` | 27 | 27 | level |
+| `objs` | 210 | 168 | 1.25× slower |
+| `closures` | 67 | 129 | faster |
+| `strings` | 52 | 45 | 1.15× slower |
+
+Simple lambdas given to the list built-ins (`map`, `filter`, `any`, `all`, `find`, `find_index`,
+`fold`), those that only compute over their arguments, run as native loops. Closure code that
+captures, calls or prints runs in the bytecode loop like any other code and is slower than
+CPython there; the `closures` program above is mostly the first kind. `for mut` over a list of
+structs moves each element into the binding instead of copying it.
+
 ### Map hashing
 
 `map` after the keys of `Map` and `Set` got a cheap hash (an FxHash-style fold with a full

@@ -645,6 +645,55 @@ pub enum Op {
         s: Reg,
         idx: u16,
     },
+    /// `l.<idx> += b` on a local that holds a struct whose field is a `float`: one
+    /// instruction for `GetField`, `AddF` and `SetField` (the old field is read after `b`).
+    FieldAddF {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> -= b` on a local that holds a struct whose field is a `float`: one
+    /// instruction for `GetField`, `SubF` and `SetField` (the old field is read after `b`).
+    FieldSubF {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> *= b` on a local that holds a struct whose field is a `float`: one
+    /// instruction for `GetField`, `MulF` and `SetField` (the old field is read after `b`).
+    FieldMulF {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> /= b` on a local that holds a struct whose field is a `float`: one
+    /// instruction for `GetField`, `DivF` and `SetField` (the old field is read after `b`).
+    FieldDivF {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> += b` on a local that holds a struct whose field is an `int`, checked: one
+    /// instruction for `GetField`, `AddI` and `SetField` (the old field is read after `b`).
+    FieldAddI {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> -= b` on a local that holds a struct whose field is an `int`, checked: one
+    /// instruction for `GetField`, `SubI` and `SetField` (the old field is read after `b`).
+    FieldSubI {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
+    /// `l.<idx> *= b` on a local that holds a struct whose field is an `int`, checked: one
+    /// instruction for `GetField`, `MulI` and `SetField` (the old field is read after `b`).
+    FieldMulI {
+        idx: u8,
+        l: Reg,
+        b: Reg,
+    },
     /// `d = the key the map in `m` stores for the key in `k``: another key when a user `Eq` says
     /// the two are equal, else a clone of `k`.
     CanonKey {
@@ -661,6 +710,13 @@ pub enum Op {
         r: Reg,
         site: u16,
     },
+    /// `HoldListPlace` of a `for mut` loop that may lend the element slot (see `ForListNextLend`):
+    /// it also leaves `true` in `r + 3` when nothing but the source local and `r` holds the list,
+    /// `false` otherwise.
+    HoldListLend {
+        r: Reg,
+        site: u16,
+    },
 
     // ---- `for` over collections and iterators ----
     // Each loop keeps its source in `a` and its position in `a + 1`. When an item is there, the
@@ -672,6 +728,14 @@ pub enum Op {
     },
     /// `for mut` over a list: also leaves a clone of the item in `a + 2`.
     ForListNextVar {
+        d: Reg,
+        a: Reg,
+    },
+    /// `for mut` over a list that may lend the slot (the loop's `r + 3` says): the item is moved
+    /// out of the list, which keeps `()` in its place until `ForWriteBackLend`, so the binding
+    /// holds the only reference and a field write does not copy the struct. When `r + 3` is
+    /// `false` it is `ForListNextVar`.
+    ForListNextLend {
         d: Reg,
         a: Reg,
     },
@@ -693,6 +757,12 @@ pub enum Op {
     /// writes it into the list `a` at the index before the one in `a + 1` unless it is the
     /// element `a + 2` already is; releases both.
     ForWriteBack {
+        l: Reg,
+        a: Reg,
+    },
+    /// `ForWriteBack` of a loop that may have lent the slot: puts the binding back into it (the
+    /// slot holds `()`); when `a + 3` is `false` it is `ForWriteBack`.
+    ForWriteBackLend {
         l: Reg,
         a: Reg,
     },
@@ -984,6 +1054,9 @@ pub struct Chunk {
     /// The body is the prelude's own code (a closure built-in written in Colibri): a stack trace
     /// leaves its frame out, and a panic in it is reported at the call of the built-in.
     pub hidden: bool,
+    /// The typed form of the body when it is a leaf (see `crate::leaf`), built once with the
+    /// chunk.
+    pub(crate) leaf: Option<crate::leaf::Leaf>,
 }
 
 impl Op {
@@ -1025,8 +1098,18 @@ impl Op {
             | Op::StrLen { d, s }
             | Op::ListPush { l: d, v: s }
             | Op::Unpack { d, s, .. } => end(&[d, s]),
+            Op::FieldAddF { l, b, .. }
+            | Op::FieldSubF { l, b, .. }
+            | Op::FieldMulF { l, b, .. }
+            | Op::FieldDivF { l, b, .. }
+            | Op::FieldAddI { l, b, .. }
+            | Op::FieldSubI { l, b, .. }
+            | Op::FieldMulI { l, b, .. } => end(&[l, b]),
             Op::ForListNext { d, a } => end(&[d, a.saturating_add(1)]),
             Op::ForListNextVar { d, a } => end(&[d, a.saturating_add(2)]),
+            Op::ForListNextLend { d, a } => end(&[d, a.saturating_add(3)]),
+            Op::ForWriteBackLend { l, a } => end(&[l, a.saturating_add(3)]),
+            Op::SetField { l, s, .. } => end(&[l, s]),
             Op::Drop { r }
             | Op::DropInert { r }
             | Op::DropCheck { r }
@@ -1117,10 +1200,10 @@ impl Op {
             | Op::MapGetAt { .. }
             | Op::MapSetAt { .. }
             | Op::SetPath { .. }
-            | Op::SetField { .. }
             | Op::CanonKey { .. }
             | Op::HoldIter { .. }
             | Op::HoldListPlace { .. }
+            | Op::HoldListLend { .. }
             | Op::ForMapNext { .. }
             | Op::ForSetNext { .. }
             | Op::ForIterNext { .. }
@@ -1337,18 +1420,30 @@ impl Chunk {
             Op::Unhold => "Unhold".to_string(),
             Op::GetField { d, s, idx } => format!("GetField r{d} r{s} .{idx}"),
             Op::SetField { l, s, idx } => format!("SetField r{l} r{s} .{idx}"),
+            Op::FieldAddF { idx, l, b } => format!("FieldAddF r{l}.{idx} r{b}"),
+            Op::FieldSubF { idx, l, b } => format!("FieldSubF r{l}.{idx} r{b}"),
+            Op::FieldMulF { idx, l, b } => format!("FieldMulF r{l}.{idx} r{b}"),
+            Op::FieldDivF { idx, l, b } => format!("FieldDivF r{l}.{idx} r{b}"),
+            Op::FieldAddI { idx, l, b } => format!("FieldAddI r{l}.{idx} r{b}"),
+            Op::FieldSubI { idx, l, b } => format!("FieldSubI r{l}.{idx} r{b}"),
+            Op::FieldMulI { idx, l, b } => format!("FieldMulI r{l}.{idx} r{b}"),
             Op::SetPath { l, s, site } => format!("SetPath r{l} r{s} {}", self.site_text(site)),
             Op::CanonKey { d, m, k } => format!("CanonKey r{d} map=r{m} r{k}"),
             Op::HoldIter { r } => format!("HoldIter r{r}"),
             Op::HoldListPlace { r, site } => {
                 format!("HoldListPlace r{r} {}", self.site_text(site))
             }
+            Op::HoldListLend { r, site } => {
+                format!("HoldListLend r{r} {}", self.site_text(site))
+            }
             Op::ForListNext { d, a } => format!("ForListNext r{d} src=r{a}"),
             Op::ForListNextVar { d, a } => format!("ForListNextVar r{d} src=r{a}"),
+            Op::ForListNextLend { d, a } => format!("ForListNextLend r{d} src=r{a}"),
             Op::ForMapNext { d, a } => format!("ForMapNext r{d} src=r{a}"),
             Op::ForSetNext { d, a } => format!("ForSetNext r{d} src=r{a}"),
             Op::ForIterNext { d, a } => format!("ForIterNext r{d} src=r{a}"),
             Op::ForWriteBack { l, a } => format!("ForWriteBack r{l} src=r{a}"),
+            Op::ForWriteBackLend { l, a } => format!("ForWriteBackLend r{l} src=r{a}"),
             Op::TestVariant { r, v } => format!("TestVariant r{r} .{v}"),
             Op::TestInt { r, k } => format!("TestInt r{r} {k}"),
             Op::TestLit { r, site } => format!("TestLit r{r} {}", self.site_text(site)),

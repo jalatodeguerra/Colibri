@@ -1,0 +1,17 @@
+// The body of a `for mut` reads the list it walks, by name: the element under the loop variable is
+// still the old one in the list until the trip ends.
+struct P { x: int }
+
+fn main() {
+    let mut ps = [P { x: 1 }, P { x: 2 }, P { x: 3 }]
+    for mut p in ps {
+        p.x += 10
+        print("{ps[0].x} {ps[1].x} {ps[2].x}")
+    }
+    print("{ps[0].x} {ps[1].x} {ps[2].x}")
+}
+
+// expect: 1 2 3
+// expect: 11 2 3
+// expect: 11 12 3
+// expect: 11 12 13

@@ -1,0 +1,17 @@
+// The body names the list only in a deferred call and in a closure made in the trip.
+struct P { x: int }
+
+fn main() {
+    let mut ps = [P { x: 1 }, P { x: 2 }]
+    for mut p in ps {
+        p.x += 10
+        defer print("deferred {ps[0].x} {ps[1].x}")
+        let look = fn() => ps[1].x
+        print("look {look()}")
+    }
+}
+
+// expect: look 2
+// expect: deferred 1 2
+// expect: look 2
+// expect: deferred 11 2

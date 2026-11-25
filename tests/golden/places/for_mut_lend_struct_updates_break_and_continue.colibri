@@ -1,0 +1,33 @@
+// The ordinary case: a struct with float and str fields updated through the loop variable and a
+// `mut self` method, with `continue` and `break` leaving the trip.
+struct P { x: float, name: str, n: int }
+
+impl P {
+    fn bump(mut self, d: float) {
+        self.x += d
+        self.n += 1
+        self.name = self.name + "!"
+    }
+}
+
+fn main() {
+    let mut ps = [P { x: 0.5, name: "a", n: 0 }, P { x: 1.5, name: "b", n: 0 }, P { x: 2.5, name: "c", n: 0 }]
+    for round in 0..3 {
+        for mut p in ps {
+            if p.name == "b" {
+                continue
+            }
+            p.bump(0.25)
+            if round == 2 && p.name == "c!!!" {
+                break
+            }
+        }
+    }
+    for p in ps {
+        print("{p.name} {p.x} {p.n}")
+    }
+}
+
+// expect: a!!! 1.25 3
+// expect: b 1.5 0
+// expect: c!!! 3.25 3

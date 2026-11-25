@@ -1,0 +1,22 @@
+// A global holds the same list; a function the body calls reads it.
+struct P { x: int }
+
+let mut shared: List[P] = []
+
+fn peek() {
+    print("{shared[0].x} {shared[1].x}")
+}
+
+fn main() {
+    let mut ps = [P { x: 1 }, P { x: 2 }]
+    shared = ps
+    for mut p in ps {
+        p.x += 10
+        peek()
+    }
+    peek()
+}
+
+// expect: 1 2
+// expect: 11 2
+// expect: 11 12

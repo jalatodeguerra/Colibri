@@ -227,6 +227,45 @@ impl Machine {
                 }
             }};
         }
+        // `l.idx op= b` for a float field of a struct this register holds alone; a struct that is
+        // shared (it is copied first), or anything unexpected, is `op_field_update`'s.
+        macro_rules! field_f {
+            ($op:expr, $idx:expr, $l:expr, $b:expr, $sym:tt) => {{
+                let y = match rd!($b) {
+                    Value::Float(y) => *y,
+                    _ => internal!("ill-typed field update"),
+                };
+                if let Value::Struct(st) = wr!($l)
+                    && let Some(sv) = Rc::get_mut(st)
+                    && let Some(Value::Float(x)) = sv.fields.get_mut(usize::from($idx))
+                {
+                    *x $sym y;
+                } else {
+                    sync!();
+                    tri!(self.op_field_update(fiber, &chunk, base, pc, $op));
+                }
+            }};
+        }
+        macro_rules! field_i {
+            ($op:expr, $idx:expr, $l:expr, $b:expr, $f:ident) => {{
+                let y = match rd!($b) {
+                    Value::Int(y) => *y,
+                    _ => internal!("ill-typed field update"),
+                };
+                if let Value::Struct(st) = wr!($l)
+                    && let Some(sv) = Rc::get_mut(st)
+                    && let Some(Value::Int(x)) = sv.fields.get_mut(usize::from($idx))
+                {
+                    match x.$f(y) {
+                        Some(v) => *x = v,
+                        None => fault!("integer overflow"),
+                    }
+                } else {
+                    sync!();
+                    tri!(self.op_field_update(fiber, &chunk, base, pc, $op));
+                }
+            }};
+        }
         macro_rules! jump {
             ($off:expr) => {
                 pc = (pc as isize + $off as isize) as usize
@@ -712,7 +751,32 @@ impl Machine {
                         None => internal!("ill-typed projection"),
                     }
                 }
+                Op::FieldAddF { idx, l, b } => field_f!(op, idx, l, b, +=),
+                Op::FieldSubF { idx, l, b } => field_f!(op, idx, l, b, -=),
+                Op::FieldMulF { idx, l, b } => field_f!(op, idx, l, b, *=),
+                Op::FieldDivF { idx, l, b } => field_f!(op, idx, l, b, /=),
+                Op::FieldAddI { idx, l, b } => field_i!(op, idx, l, b, checked_add),
+                Op::FieldSubI { idx, l, b } => field_i!(op, idx, l, b, checked_sub),
+                Op::FieldMulI { idx, l, b } => field_i!(op, idx, l, b, checked_mul),
                 Op::SetField { l, s, idx } => {
+                    // The common write: a scalar over a scalar field of a struct nothing else
+                    // holds, with nothing to release and nothing to copy.
+                    if is_scalar_value(rd!(s))
+                        && let Value::Struct(st) = rd!(l)
+                        && Rc::strong_count(st) == 1
+                        && Rc::weak_count(st) == 0
+                    {
+                        let v = std::mem::replace(wr!(s), Value::Unit);
+                        if let Value::Struct(st) = wr!(l)
+                            && let Some(sv) = Rc::get_mut(st)
+                            && let Some(slot) = sv.fields.get_mut(usize::from(idx))
+                            && is_scalar_value(slot)
+                        {
+                            std::mem::forget(std::mem::replace(slot, v));
+                            continue;
+                        }
+                        put!(s, v);
+                    }
                     sync!();
                     tri!(self.op_set_field(fiber, &chunk, base, pc, [l, s, idx]));
                 }
@@ -783,12 +847,15 @@ impl Machine {
                     sync!();
                     tri!(self.op_canon_key(fiber, &chunk, base, pc, [d, m, k]));
                 }
-                Op::HoldIter { .. } | Op::HoldListPlace { .. } => {
+                Op::HoldIter { .. } | Op::HoldListPlace { .. } | Op::HoldListLend { .. } => {
                     sync!();
                     tri!(self.op_hold(fiber, &chunk, base, pc, op));
                 }
-                Op::ForListNext { d, a } | Op::ForListNextVar { d, a } => {
-                    let var = matches!(op, Op::ForListNextVar { .. });
+                Op::ForListNext { d, a }
+                | Op::ForListNextVar { d, a }
+                | Op::ForListNextLend { d, a } => {
+                    let var = !matches!(op, Op::ForListNext { .. });
+                    let lend = matches!(op, Op::ForListNextLend { .. });
                     // The common trip, with no call out: an item is there, the budget lasts, and
                     // the item is bound. Everything else (the end of the list, a failing step, a
                     // source that is not a list) is `op_for_list_next`'s, which starts over.
@@ -802,7 +869,13 @@ impl Machine {
                         if !chunk.hidden && self.core.budget.left <= 0 {
                             break 'trip false;
                         }
-                        let Some(item) = list.at(i as usize) else {
+                        // A lent slot: the item moves out and nothing keeps a second reference.
+                        let lent = lend && matches!(rd!(a + 3), Value::Bool(true));
+                        let Some(item) = (if lent {
+                            list.lend_at(i as usize)
+                        } else {
+                            list.at(i as usize)
+                        }) else {
                             break 'trip false;
                         };
                         if !chunk.hidden {
@@ -811,7 +884,7 @@ impl Machine {
                         if let Value::Int(n) = wr!(a + 1) {
                             *n += 1;
                         }
-                        if var {
+                        if var && !lent {
                             put!(a + 2, item.dup());
                         }
                         put!(d, item);
@@ -822,7 +895,7 @@ impl Machine {
                         pc += 1;
                     } else {
                         sync!();
-                        if tri!(self.op_for_list_next(fiber, &chunk, base, pc, [d, a], var)) {
+                        if tri!(self.op_for_list_next(fiber, &chunk, base, pc, [d, a], var, lend)) {
                             pc += 1;
                         }
                     }
@@ -837,6 +910,24 @@ impl Machine {
                 Op::ForWriteBack { l, a } => {
                     sync!();
                     self.op_for_write_back(fiber, base, l, a);
+                }
+                Op::ForWriteBackLend { l, a } => {
+                    if let Value::Bool(true) = rd!(a + 3)
+                        && let Value::Int(next) = *rd!(a + 1)
+                        && let Value::List(list) = rd!(a)
+                    {
+                        // The binding goes back into the slot it was lent from. The binding is a
+                        // plain slot (the compiler checked), and the slot holds `()`.
+                        let list = Rc::clone(list);
+                        let v = std::mem::replace(wr!(l), Value::Unit);
+                        if let Err(lost) = list.unlend_at((next - 1) as usize, v) {
+                            sync!();
+                            self.release(lost);
+                        }
+                    } else {
+                        sync!();
+                        self.op_for_write_back(fiber, base, l, a);
+                    }
                 }
 
                 // Only the variant is compared: the checker's types make the enum and the arity
@@ -1406,6 +1497,21 @@ impl Machine {
             && let Some(n) = colibri_core::work_of(*b, fiber.regs.get(at))
         {
             self.charge(fiber, span, n)?;
+        }
+        // A closure that is a leaf runs in a native loop; anything it cannot do alone is the
+        // prelude's function below, from the start.
+        if let Some(
+            b @ (colibri_check::hir::Builtin::ListMap
+            | colibri_check::hir::Builtin::ListFilter
+            | colibri_check::hir::Builtin::ListAny
+            | colibri_check::hir::Builtin::ListAll
+            | colibri_check::hir::Builtin::ListFind
+            | colibri_check::hir::Builtin::ListFindIndex
+            | colibri_check::hir::Builtin::ListFold),
+        ) = work
+            && self.leaf_hof(fiber, base, a, d, *b)
+        {
+            return Ok(());
         }
         let callee = self.callee_chunk(fiber, chunk, pc, *f)?;
         // No depth check against the limit: the built-in adds no visible call, and the closure it
