@@ -298,9 +298,9 @@ impl Value {
     #[inline]
     pub fn unsugar(&self) -> std::borrow::Cow<'_, Value> {
         match self {
-            Value::SomeObj(rc) => std::borrow::Cow::Owned(Value::option(Some(Value::Obj(
-                Rc::clone(rc),
-            )))),
+            Value::SomeObj(rc) => {
+                std::borrow::Cow::Owned(Value::option(Some(Value::Obj(Rc::clone(rc)))))
+            }
             other => std::borrow::Cow::Borrowed(other),
         }
     }
