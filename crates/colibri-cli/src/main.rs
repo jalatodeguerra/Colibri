@@ -108,6 +108,25 @@ enum Command {
         #[command(flatten)]
         deps: DepFlags,
     },
+    /// Write one executable that holds a script or package, its dependencies and the standard
+    /// library, and runs it when started: `colibri build app -o app-bin`. It is a copy of this
+    /// `colibri` with the program's source files appended, so it needs no `colibri` and no
+    /// source files where it runs, and it runs like `colibri run` (the same output, exit
+    /// codes and `os.args()`, every capability granted). Arguments given to it go to the
+    /// program, never to `colibri`. The program is checked first; git dependencies are
+    /// resolved as for `run`. It runs on the platform of this `colibri`
+    Build {
+        /// A script, or a package folder (the current folder by default)
+        file: Option<PathBuf>,
+        /// Where to write the executable (by default the name of the script, or of the
+        /// package folder, in the current folder)
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        #[command(flatten)]
+        build: BuildFlags,
+        #[command(flatten)]
+        deps: DepFlags,
+    },
     /// Type-check a Colibri script or package without running it
     Check {
         file: Option<PathBuf>,
@@ -245,7 +264,27 @@ fn warn_if_the_removed_engine_is_asked_for() {
     }
 }
 
+/// An executable made by `colibri build` is a program, not the tool: it runs what it holds and
+/// every argument is the program's.
+fn run_built(pack: colibri_lang::pack::Pack) -> ExitCode {
+    colibri_lang::set_build_cfg(pack.cfg.clone());
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    on_big_stack(move || colibri_lang::runcmd::run_pack(&pack, args))
+}
+
 fn main() -> ExitCode {
+    // One seek and one read of 32 bytes tell whether this executable holds a program.
+    match colibri_lang::pack::read_own() {
+        Ok(None) => {}
+        Ok(Some(pack)) => return run_built(pack),
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::from(1);
+        }
+    }
     let cli = Cli::parse();
     warn_if_the_removed_engine_is_asked_for();
     on_big_stack(move || match cli.command {
@@ -265,6 +304,20 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(code) => code,
             }
+        }
+        Command::Build {
+            file,
+            output,
+            build,
+            deps,
+        } => {
+            colibri_lang::set_build_cfg(build.cfg());
+            let file = file.unwrap_or_else(|| PathBuf::from("."));
+            colibri_lang::buildcmd::build(&colibri_lang::buildcmd::Options {
+                path: &file,
+                out: output.as_deref(),
+                deps,
+            })
         }
         Command::Run {
             file,

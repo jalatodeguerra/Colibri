@@ -2,15 +2,14 @@
 //! the old and the new program, and deciding between patching function bodies and restarting.
 //! The `Vm` methods that use these pieces are in `vm.rs`.
 
-use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write as _;
 use std::hash::Hasher;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use colibri_check::hir::{Program, TypeDefKind};
-use colibri_check::package::{Entry, SourceFs};
+use colibri_check::package::{Entry, RecordingFs};
 
 use crate::error::Report;
 
@@ -108,7 +107,7 @@ impl ReloadState {
     pub fn set_files(&mut self, reads: Vec<(PathBuf, u64)>) {
         let mut reads = reads;
         // Even a load that failed before reading the entry should notice it appearing.
-        // As `RecordingFs::into_reads` writes them: the entry may have been given relative.
+        // As `reads_of` writes them: the entry may have been given relative.
         let entry = match &self.entry {
             OwnedEntry::File(p) => p.clone(),
             OwnedEntry::Package(p) => p.join(colibri_check::package::MAIN_FILE),
@@ -177,72 +176,16 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
-/// A [`SourceFs`] that remembers what was read through it.
-pub(crate) struct RecordingFs<'a> {
-    inner: &'a dyn SourceFs,
-    reads: RefCell<Vec<(PathBuf, u64)>>,
-}
-
-impl<'a> RecordingFs<'a> {
-    pub fn new(inner: &'a dyn SourceFs) -> Self {
-        RecordingFs {
-            inner,
-            reads: RefCell::new(Vec::new()),
-        }
-    }
-
-    /// The files read, as absolute paths, each once.
-    pub fn into_reads(self) -> Vec<(PathBuf, u64)> {
-        let mut out: Vec<(PathBuf, u64)> = Vec::new();
-        for (path, hash) in self.reads.into_inner() {
-            let path = std::path::absolute(&path).unwrap_or(path);
-            match out.iter_mut().find(|(p, _)| *p == path) {
-                Some(slot) => slot.1 = hash,
-                None => out.push((path, hash)),
-            }
-        }
-        out
-    }
-}
-
-impl SourceFs for RecordingFs<'_> {
-    fn read(&self, path: &Path) -> Result<String, String> {
-        let text = self.inner.read(path)?;
-        self.reads
-            .borrow_mut()
-            .push((path.to_path_buf(), hash_bytes(text.as_bytes())));
-        Ok(text)
-    }
-
-    /// Forwarded as it is: the start of a file (a `CACHEDIR.TAG`) is not a read of the program,
-    /// and the default would read the whole file and watch it.
-    fn read_prefix(&self, path: &Path, n: usize) -> Option<Vec<u8>> {
-        self.inner.read_prefix(path, n)
-    }
-
-    fn is_file(&self, path: &Path) -> bool {
-        self.inner.is_file(path)
-    }
-
-    fn is_dir(&self, path: &Path) -> bool {
-        self.inner.is_dir(path)
-    }
-
-    fn list(&self, dir: &Path) -> Vec<String> {
-        self.inner.list(dir)
-    }
-
-    fn is_symlink(&self, path: &Path) -> bool {
-        self.inner.is_symlink(path)
-    }
-
-    fn canonical(&self, path: &Path) -> PathBuf {
-        self.inner.canonical(path)
-    }
-
-    fn display_name(&self, path: &Path) -> String {
-        self.inner.display_name(path)
-    }
+/// What a load read, for watching: each file as an absolute path with the hash of its text.
+pub(crate) fn reads_of(recorder: RecordingFs<'_>) -> Vec<(PathBuf, u64)> {
+    recorder
+        .into_files()
+        .into_iter()
+        .map(|f| {
+            let path = std::path::absolute(&f.path).unwrap_or(f.path);
+            (path, hash_bytes(f.text.as_bytes()))
+        })
+        .collect()
 }
 
 /// What makes two programs "the same declarations" for patching, in labelled parts, plus one
@@ -388,6 +331,8 @@ fn hash_without_spans(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use colibri_check::package::SourceFs;
+    use std::path::Path;
 
     #[test]
     fn spans_do_not_count() {
@@ -427,6 +372,6 @@ mod tests {
             fs.read_prefix(Path::new("CACHEDIR.TAG"), 43).as_deref(),
             Some(&b"Signature:"[..])
         );
-        assert!(fs.into_reads().is_empty());
+        assert!(reads_of(fs).is_empty());
     }
 }

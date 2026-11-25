@@ -168,7 +168,10 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 /// }
 /// ```
 pub use colibri_bind::export;
-pub use colibri_check::package::{BuildCfg, feature_name_problem};
+pub use colibri_check::package::{
+    BuildCfg, COMPLETE_MARKER, DiskFs, Entry, MemoryFs, Recorded, RecordingFs, SourceFs,
+    cache_root, checkout_dir, feature_name_problem,
+};
 /// Git dependencies and `colibri.lock`: what the command line tool does before it loads a
 /// program (the loader itself never uses the network).
 pub use colibri_check::package::{
@@ -212,8 +215,6 @@ pub mod reflect {
 }
 
 use std::path::Path;
-
-use colibri_check::package::{DiskFs, Entry, MemoryFs, SourceFs};
 
 /// What `#[colibri::export]` expands to. Not part of the API: the names may change with the
 /// VM, which is why the macro only goes through this module (EMBEDDING §0 C).
@@ -470,6 +471,20 @@ pub fn check_path_lazy(
     lazy_names: &[String],
     interface: &mut dyn FnMut(&str) -> Option<Interface>,
 ) -> Result<Report, Error> {
+    check_path_lazy_on(&DiskFs, path, config, all_modules, lazy_names, interface)
+}
+
+/// [`check_path_lazy`] reading through `fs` instead of the disk (`path` still says whether the
+/// entry is a folder by looking at the disk): a tool that wants to know which files a program
+/// reads wraps the disk in a [`RecordingFs`].
+pub fn check_path_lazy_on(
+    fs: &dyn SourceFs,
+    path: impl AsRef<Path>,
+    config: &CheckConfig,
+    all_modules: bool,
+    lazy_names: &[String],
+    interface: &mut dyn FnMut(&str) -> Option<Interface>,
+) -> Result<Report, Error> {
     let path = path.as_ref();
     let entry = if path.is_dir() {
         Entry::Package(path)
@@ -477,7 +492,7 @@ pub fn check_path_lazy(
         Entry::File(path)
     };
     let all_modules = all_modules && path.is_dir();
-    check_entry_lazy(&DiskFs, entry, config, all_modules, lazy_names, interface)
+    check_entry_lazy(fs, entry, config, all_modules, lazy_names, interface)
 }
 
 /// Like [`check_source`], reading the source from a file. The file's folder is its implicit

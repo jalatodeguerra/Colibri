@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use colibri_check::HostEnv;
 use colibri_check::hir::{HostFnId, Program, TestDef};
 use colibri_check::host::{DEFAULT_MODULE, float_literal, is_module_name, is_std_module_name};
-use colibri_check::package::{BuildCfg, DiskFs, Entry, MemoryFs, SourceFs};
+use colibri_check::package::{BuildCfg, DiskFs, Entry, MemoryFs, RecordingFs, SourceFs};
 use colibri_check::types::{RESULT_TYPE, Ty, VARIANT_ERR};
 use colibri_core::clock::Clock;
 use colibri_core::host::HostFault;
@@ -26,9 +26,7 @@ use crate::error::{Error, Report};
 use crate::func::Fn;
 use crate::host::{HostFn, Registration, payload_message};
 use crate::iface::{self, ConstEntry, ConstValue, HostFnEntry, Rendered};
-use crate::reload::{
-    Fingerprint, OwnedEntry, RecordingFs, ReloadOptions, ReloadOutcome, ReloadState,
-};
+use crate::reload::{Fingerprint, OwnedEntry, ReloadOptions, ReloadOutcome, ReloadState, reads_of};
 use crate::types::{TypeDesc, TypeRegistry};
 use colibri_core::leaks::Leak;
 
@@ -1445,6 +1443,14 @@ impl Vm {
         self.load_entry(&fs, Entry::File(Path::new(entry)), LoadMode::Run, None)
     }
 
+    /// Reads, checks and runs the program that starts at `entry` in the files of `fs`, as
+    /// [`Vm::load_file`] and [`Vm::load_package`] do for the disk: a host that keeps a whole
+    /// program somewhere else (packed into its own executable) gives it as a [`SourceFs`]. The
+    /// program is not watched for changes.
+    pub fn load_from(&mut self, fs: &dyn SourceFs, entry: Entry<'_>) -> Result<(), Error> {
+        self.load_entry(fs, entry, LoadMode::Run, None)
+    }
+
     /// `watch` is set for programs read from disk by `load_file` and `load_package`: it makes
     /// the `Vm` remember the files, for [`Vm::reload_changed`].
     fn load_entry(
@@ -1457,10 +1463,18 @@ impl Vm {
         if self.program.is_some() {
             return Err(Error::AlreadyLoaded);
         }
-        let recorder = RecordingFs::new(fs);
-        let checked = self.check_entry(&recorder, entry, mode);
-        self.reload = watch.map(|owned| ReloadState::new(owned, recorder.into_reads()));
-        let checked = checked?;
+        let checked = match watch {
+            Some(owned) => {
+                let recorder = RecordingFs::new(fs);
+                let checked = self.check_entry(&recorder, entry, mode);
+                self.reload = Some(ReloadState::new(owned, reads_of(recorder)));
+                checked
+            }
+            None => {
+                self.reload = None;
+                self.check_entry(fs, entry, mode)
+            }
+        }?;
         self.warn(&checked);
         self.install(checked, mode)
     }
@@ -1710,7 +1724,7 @@ impl Vm {
     /// Records what a reload attempt read as the new baseline.
     fn accept_reads(&mut self, recorder: RecordingFs<'_>) {
         if let Some(r) = self.reload.as_mut() {
-            r.set_files(recorder.into_reads());
+            r.set_files(reads_of(recorder));
         }
     }
 

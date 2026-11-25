@@ -34,6 +34,22 @@ pub fn run(
     run_with(&mut vm, file, leaks, profile, rc)
 }
 
+/// Runs the program of a built executable (`colibri build`): the same as `colibri run` on the
+/// files it was built from, with every capability granted, but read from the pack.
+pub fn run_pack(pack: &crate::pack::Pack, args: Vec<String>) -> ExitCode {
+    let (fs, start) = pack.file_system();
+    let mut vm = crate::build_vm(crate::vm_builder().allow_all(), args);
+    let color = io::stderr().is_terminal();
+    vm.on_warnings(move |report| eprint!("{}", report.render(color)));
+    let loaded = match &start {
+        crate::pack::Start::File(path) => vm.load_from(&fs, colibri::Entry::File(Path::new(path))),
+        crate::pack::Start::Package(dir) => {
+            vm.load_from(&fs, colibri::Entry::Package(Path::new(dir)))
+        }
+    };
+    finish_run(&mut vm, loaded, None, None, false, color)
+}
+
 /// [`run`] in a `Vm` that has the standard library installed.
 pub fn run_in(vm: &mut colibri::Vm, file: &Path, leaks: Option<LeakMode>) -> ExitCode {
     run_with(vm, file, leaks, None, false)
@@ -61,6 +77,18 @@ pub fn run_with(
         profilecmd::start(vm, options);
     }
     let loaded = vm.load_path(file);
+    finish_run(vm, loaded, leaks, profile, rc, color)
+}
+
+/// Runs a program that was loaded by `loaded`, as `colibri run` does.
+fn finish_run(
+    vm: &mut colibri::Vm,
+    loaded: Result<(), colibri::Error>,
+    leaks: Option<LeakMode>,
+    profile: Option<&profilecmd::Options>,
+    rc: bool,
+    color: bool,
+) -> ExitCode {
     // After `main`, coroutines keep running (timed by the real clock) until none is left.
     let outcome = loaded
         .and_then(|()| vm.run_main())
