@@ -74,13 +74,23 @@ impl Machine {
         let body = std::rc::Rc::clone(&chunk.body);
         let overflow = fiber.visible_depth() >= self.max_depth;
         self.core.budget.left -= 1;
-        let over_budget = self.core.budget.left < 0;
+        let mut over_budget = false;
+        let mut safepoint_failure = None;
+        if self.core.budget.left < 0 {
+            if self.core.slice_ended() {
+                safepoint_failure = self.safepoint(fiber).err();
+            } else {
+                over_budget = true;
+            }
+        }
         let too_deep = !overflow
             && !over_budget
             && stack_position().abs_diff(fiber.stack_base) > self.native_stack_budget;
-        if overflow || over_budget || too_deep {
+        if overflow || over_budget || too_deep || safepoint_failure.is_some() {
             let span = Self::position(fiber).unwrap_or(body.span);
-            let ctl = if overflow {
+            let ctl = if let Some(ctl) = safepoint_failure {
+                ctl
+            } else if overflow {
                 self.overflow(fiber, span)
             } else if too_deep {
                 let message = format!(
@@ -89,7 +99,7 @@ impl Machine {
                 );
                 self.panic(fiber, span, message)
             } else {
-                self.step_failure(fiber, span)
+                self.budget_exhausted(fiber, span)
             };
             let receiver = if body.mutates_self && !args.is_empty() {
                 Some(args.remove(0))
@@ -188,6 +198,11 @@ impl Engine for Machine {
     #[inline]
     fn fiber_state_mut(fiber: &mut VmFiber) -> &mut FiberState {
         &mut fiber.state
+    }
+
+    #[inline]
+    fn safepoint(&mut self, fiber: &mut VmFiber) -> Eval<()> {
+        Machine::safepoint(self, fiber)
     }
 
     #[inline]

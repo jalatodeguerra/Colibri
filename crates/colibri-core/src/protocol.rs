@@ -64,7 +64,7 @@ pub trait Protocol: Engine {
         let budget = &mut self.core_mut().budget;
         budget.left -= 1;
         if budget.left < 0 {
-            return Err(self.budget_exhausted(fiber, span));
+            return self.step_over(fiber, span);
         }
         Ok(())
     }
@@ -77,16 +77,20 @@ pub trait Protocol: Engine {
             .left
             .saturating_sub(i64::try_from(n).unwrap_or(i64::MAX));
         if budget.left < 0 {
-            return Err(self.budget_exhausted(fiber, span));
+            return self.step_over(fiber, span);
         }
         Ok(())
     }
 
-    /// The failure of a step already counted: the budget is exhausted.
+    /// The window of the budget ended below zero after a step was counted. When only a slice
+    /// ended, the safepoint runs and the step stands; when the budget is used up, `Err`.
     #[cold]
     #[inline(never)]
-    fn step_failure(&mut self, fiber: &mut Self::Fiber, span: Span) -> Ctl {
-        self.budget_exhausted(fiber, span)
+    fn step_over(&mut self, fiber: &mut Self::Fiber, span: Span) -> crate::ctl::Eval<()> {
+        if self.core_mut().slice_ended() {
+            return self.safepoint(fiber);
+        }
+        Err(self.budget_exhausted(fiber, span))
     }
 
     #[cold]

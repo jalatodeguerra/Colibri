@@ -35,6 +35,9 @@ pub struct Outcome {
     /// How many closure built-in calls ran in a native loop (see `Options::no_leaf`).
     #[doc(hidden)] // testing only, no stability promise
     pub leaf_runs: u64,
+    /// How many safepoints ran (`Options::safepoint_slice`).
+    #[doc(hidden)] // testing only, no stability promise
+    pub safepoints: u64,
 }
 
 /// How [`run_source_with`] runs a program.
@@ -49,6 +52,10 @@ pub struct Options {
     /// did before leaf closures got their own loops (for tests that compare the two).
     #[doc(hidden)] // testing only, no stability promise
     pub no_leaf: bool,
+    /// Ask for a profiler safepoint every this many steps, so the run counts them in
+    /// `Outcome::safepoints` (for tests that run the same programs under slices).
+    #[doc(hidden)] // testing only, no stability promise
+    pub safepoint_slice: Option<u32>,
 }
 
 impl Default for Options {
@@ -58,6 +65,7 @@ impl Default for Options {
             instruction_budget: None,
             trace_drops: false,
             no_leaf: false,
+            safepoint_slice: None,
         }
     }
 }
@@ -158,6 +166,11 @@ pub fn run_source_with(src: &str, options: &Options) -> Outcome {
         machine.core_mut().set_trace_drops(true);
     }
     machine.leaf_off = options.no_leaf;
+    if let Some(every) = options.safepoint_slice.and_then(std::num::NonZeroU32::new) {
+        machine
+            .core_mut()
+            .want_safepoints(colibri_core::safepoint::SafepointKind::Profiler, every);
+    }
     machine.load(&program);
     let mut fiber = VmFiber::new();
     let mut failure = machine.run_module(&mut fiber).err();
@@ -172,6 +185,9 @@ pub fn run_source_with(src: &str, options: &Options) -> Outcome {
     machine.core_mut().flush();
     let steps = machine.core().steps_used();
     let leaf_runs = machine.leaf_runs;
+    let safepoints = machine
+        .core()
+        .safepoint_hits(colibri_core::safepoint::SafepointKind::Profiler);
     machine.shutdown();
     let drops = machine.core_mut().take_trace();
     let (panic, trace) = match failure {
@@ -203,5 +219,6 @@ pub fn run_source_with(src: &str, options: &Options) -> Outcome {
         compile_error: false,
         steps,
         leaf_runs,
+        safepoints,
     }
 }

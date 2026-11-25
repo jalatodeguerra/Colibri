@@ -178,7 +178,9 @@ impl Machine {
                 if self.core.budget.left < 0 {
                     sync!();
                     let span = chunk.spans[pc - 1];
-                    throw!(self.step_failure(fiber, span));
+                    if let Err(ctl) = self.step_over(fiber, span) {
+                        throw!(ctl);
+                    }
                 }
             }};
         }
@@ -867,7 +869,7 @@ impl Machine {
                         let Value::Int(i) = *rd!(a + 1) else {
                             break 'trip false;
                         };
-                        if !chunk.hidden && self.core.budget.left <= 0 {
+                        if !chunk.hidden && self.core.budget.real_left() <= 0 {
                             break 'trip false;
                         }
                         // A lent slot: the item moves out and nothing keeps a second reference.
@@ -1461,7 +1463,7 @@ impl Machine {
         }
         self.core.budget.left -= i64::from(steps);
         if fiber.visible_depth() >= self.max_depth || self.core.budget.left < 0 {
-            return Err(self.call_refused(fiber, caller, pc));
+            self.call_refused(fiber, caller, pc)?;
         }
         let need = new_base + callee.nregs as usize;
         if fiber.regs.len() < need {
@@ -1540,15 +1542,17 @@ impl Machine {
         Ok(())
     }
 
-    /// A call that cannot be made: too deep, or out of budget.
+    /// A call that may not be made: too deep, or the window of the budget ended. `Ok` when only
+    /// a slice ended (its safepoint ran) and the call goes on; `Err` when it is refused: too deep,
+    /// or out of budget.
     #[cold]
     #[inline(never)]
-    fn call_refused(&mut self, fiber: &mut VmFiber, caller: &Chunk, pc: usize) -> Ctl {
+    fn call_refused(&mut self, fiber: &mut VmFiber, caller: &Chunk, pc: usize) -> Result<(), Ctl> {
         let span = caller.spans[pc - 1];
         if fiber.visible_depth() >= self.max_depth {
-            self.overflow(fiber, span)
+            Err(self.overflow(fiber, span))
         } else {
-            self.step_failure(fiber, span)
+            self.step_over(fiber, span)
         }
     }
 

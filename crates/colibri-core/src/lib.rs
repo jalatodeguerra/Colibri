@@ -35,6 +35,7 @@ pub mod pattern;
 pub(crate) mod protocol;
 pub mod release;
 pub(crate) mod results;
+pub mod safepoint;
 pub mod sched;
 pub(crate) mod show;
 pub(crate) mod state;

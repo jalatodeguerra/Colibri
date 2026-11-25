@@ -103,6 +103,8 @@ pub struct Machine {
     /// Text the string instructions build in before they make the string: kept between
     /// instructions so its capacity is reused.
     pub(crate) scratch: String,
+    /// Tests only (`Machine::set_safepoint_probe`): told of each safepoint that runs.
+    pub(crate) safepoint_probe: Option<crate::safepoint::Probe>,
     /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
     /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
     #[cfg(test)]
@@ -139,6 +141,7 @@ impl Machine {
             fibers: FiberSlab::default(),
             pending_refusal: None,
             stack_root: 0,
+            safepoint_probe: None,
             scratch: String::new(),
             #[cfg(test)]
             print_hook: None,
