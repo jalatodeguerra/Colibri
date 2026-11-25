@@ -45,21 +45,30 @@ fn the_default_is_the_vm_and_the_environment_can_select_the_tree_walker() {
     let file = script("steps");
     std::fs::write(file.with_file_name("walk.colibri"), STEPS).unwrap();
     let file = file.with_file_name("walk.colibri");
-    let tests = |env: Option<&str>| {
+    let tests_with = |budget: &str, env: Option<&str>| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
-        cmd.args(["test", "--budget", "47"]).arg(&file);
+        cmd.args(["test", "--budget", budget]).arg(&file);
         cmd.env_remove("COLIBRI_ENGINE");
         if let Some(env) = env {
             cmd.env("COLIBRI_ENGINE", env);
         }
         cmd.output().expect("the colibri binary runs")
     };
+    let tests = |env: Option<&str>| tests_with("47", env);
     let default = tests(None);
     assert!(default.status.success(), "{}", stderr(&default));
     let vm = tests(Some("vm"));
     assert!(vm.status.success(), "{}", stderr(&vm));
     let tree = tests(Some("tree"));
     assert!(!tree.status.success(), "the tree-walker needs 48 steps");
+    let report = format!("{}{}", String::from_utf8_lossy(&tree.stdout), stderr(&tree));
+    assert!(
+        report.contains("--budget <steps>"),
+        "the tree-walker fails on the budget: {report}"
+    );
+    // One more step lets the tree-walker finish too, so the margin above is the engines' difference.
+    let tree = tests_with("48", Some("tree"));
+    assert!(tree.status.success(), "{}", stderr(&tree));
 }
 
 const STEPS: &str = r#"struct P { x: int, y: float }
