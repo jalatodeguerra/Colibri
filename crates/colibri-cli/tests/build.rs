@@ -449,7 +449,10 @@ fn a_cut_executable_is_the_plain_tool_and_not_a_program() {
     );
     let out = {
         let target = dir.path(&exe("short"));
-        let mut cut = good[..good.len() - 5].to_vec();
+        // More than the whole trailer is cut, so that no part of its magic is left (on a Mac a
+        // file that is signed again has padding where the cut was, and the reader looks
+        // before the signature).
+        let mut cut = good[..good.len() - 40].to_vec();
         common::fit(&mut cut, good.len() as u64);
         fs::write(&target, &cut).unwrap();
         common::sign(&target);

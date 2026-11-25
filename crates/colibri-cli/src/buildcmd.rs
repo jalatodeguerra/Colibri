@@ -92,12 +92,14 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
         )));
     }
     let mac = crate::build_cfg().os == "macos";
-    write_executable(&runner, &out, &pack, mac).map_err(fail)?;
+    let thin = mac && is_thin_file(&runner);
+    // On a Mac the program is signed before it is moved into place, so a failure leaves any
+    // earlier program of that name as it was.
+    let sign = |tmp: &Path| codesign(tmp, &out);
+    let signer: Option<&Signer<'_>> = (thin && cfg!(target_os = "macos")).then_some(&sign);
+    write_executable(&runner, &out, &pack, mac, signer).map_err(fail)?;
     if mac {
-        sign_or_warn(&out, &runner).map_err(|e| {
-            let _ = fs::remove_file(&out);
-            fail(e)
-        })?;
+        warn_unsigned(&out, thin);
     }
     let sources = pack
         .files
@@ -270,6 +272,9 @@ fn check_runner(runner: &Path, target: Target) -> Result<(), String> {
     }
     platform::check_format(&mut file, target).map_err(|e| format!("`{shown}`: {e}"))?;
     // (A runner that is a built program already is refused when it is copied.)
+    use std::io::Seek;
+    file.rewind()
+        .map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?;
     match platform::runner_version(&mut file)
         .map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?
     {
@@ -284,40 +289,60 @@ fn check_runner(runner: &Path, target: Target) -> Result<(), String> {
     }
 }
 
-/// Signs the program on a Mac, and elsewhere says that it must be signed there.
-fn sign_or_warn(out: &Path, runner: &Path) -> Result<(), String> {
-    let thin = fs::File::open(runner).is_ok_and(|mut f| {
+/// Whether the file is a thin Mach-O (the kind that is prepared for signing).
+fn is_thin_file(path: &Path) -> bool {
+    fs::File::open(path).is_ok_and(|mut f| {
         let mut b = [0u8; 4];
         std::io::Read::read_exact(&mut f, &mut b).is_ok() && macho::is_thin(&b)
-    });
+    })
+}
+
+/// What signs the file at a path (a temporary file, before it is moved into place).
+type Signer<'a> = dyn Fn(&Path) -> Result<(), String> + 'a;
+
+/// Signs `file` ad hoc, as the program that will be called `out` (that name is the identifier
+/// of the signature).
+fn codesign(file: &Path, out: &Path) -> Result<(), String> {
+    let hint = "a program for macOS must be signed, and arm64 Macs refuse an unsigned one: install the Xcode command line tools (`xcode-select --install`), or build on a system that has `codesign`";
+    let name = out
+        .file_name()
+        .map_or_else(|| "program".into(), |n| n.to_string_lossy().into_owned());
+    let result = std::process::Command::new("codesign")
+        .args(["-s", "-", "-f", "-i", &name])
+        .arg(file)
+        .output()
+        .map_err(|e| {
+            format!(
+                "cannot run `codesign` to sign `{}`: {e}; {hint}",
+                out.display()
+            )
+        })?;
+    if result.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`codesign -s -` failed for `{}`: {}; {hint}",
+            out.display(),
+            String::from_utf8_lossy(&result.stderr).trim()
+        ))
+    }
+}
+
+/// Says what is left to do when the program for macOS was not signed here.
+fn warn_unsigned(out: &Path, thin: bool) {
     if !thin {
         eprintln!(
-            "warning: the runner is a universal Mach-O file, which cannot be prepared for signing: \
-             take one slice with `lipo -thin`, or the program stays unsigned"
+            "warning: the runner is not a thin Mach-O file (a universal one): the program was added to it as it is. \
+             The slices keep their own signatures, but `codesign` cannot sign the whole again: \
+             take one slice with `lipo -thin` to sign the program yourself"
         );
-        return Ok(());
-    }
-    if cfg!(target_os = "macos") {
-        let result = std::process::Command::new("codesign")
-            .args(["-s", "-"])
-            .arg(out)
-            .output()
-            .map_err(|e| format!("cannot run `codesign` to sign `{}`: {e}", out.display()))?;
-        if !result.status.success() {
-            return Err(format!(
-                "`codesign -s -` failed on `{}`: {}",
-                out.display(),
-                String::from_utf8_lossy(&result.stderr).trim()
-            ));
-        }
-    } else {
+    } else if !cfg!(target_os = "macos") {
         eprintln!(
             "warning: the program for macOS is not signed, and arm64 Macs refuse unsigned programs: \
              on a Mac, run `codesign -s - {}` (or sign it with your identity)",
             out.display()
         );
     }
-    Ok(())
 }
 
 /// The name of a source file of the program that `out` would overwrite, if there is one.
@@ -377,7 +402,13 @@ fn create_temp(out: &Path) -> std::io::Result<(fs::File, PathBuf)> {
 ///
 /// With `mac`, a Mach-O runner has its signature taken off and `__LINKEDIT` extended over the
 /// pack (see [`crate::macho`]).
-fn write_executable(runner: &Path, out: &Path, pack: &Pack, mac: bool) -> Result<(), String> {
+fn write_executable(
+    runner: &Path,
+    out: &Path,
+    pack: &Pack,
+    mac: bool,
+    sign: Option<&Signer<'_>>,
+) -> Result<(), String> {
     let cannot = |e: std::io::Error| format!("cannot write `{}`: {e}", out.display());
     let mut source = fs::File::open(runner)
         .map_err(|e| format!("cannot read the runner `{}`: {e}", runner.display()))?;
@@ -412,10 +443,13 @@ fn write_executable(runner: &Path, out: &Path, pack: &Pack, mac: bool) -> Result
             file.write_all(&p.head_with(total))?;
         }
         file.set_permissions(permissions)?;
-        file.sync_all()?;
-        fs::rename(&tmp, out)
+        file.sync_all()
     })()
     .map_err(cannot);
+    drop(file);
+    let result = result
+        .and_then(|()| sign.map_or(Ok(()), |sign| sign(&tmp)))
+        .and_then(|()| fs::rename(&tmp, out).map_err(cannot));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
@@ -473,7 +507,13 @@ mod tests {
         // the file has been made and filled.
         fs::create_dir_all(dir.join("out")).unwrap();
         fs::write(dir.join("out").join("keep"), b"x").unwrap();
-        let err = write_executable(&dir.join("runner"), &dir.join("out"), &tiny_pack(), false);
+        let err = write_executable(
+            &dir.join("runner"),
+            &dir.join("out"),
+            &tiny_pack(),
+            false,
+            None,
+        );
         assert!(err.is_err());
         let mut names: Vec<String> = fs::read_dir(&dir)
             .unwrap()
@@ -513,7 +553,7 @@ mod tests {
         let mut pack = tiny_pack();
         pack.assets = vec![crate::pack::PackAsset::held("a.txt", vec![5; 1000])];
         let out = dir.join("out");
-        write_executable(&dir.join("runner"), &out, &pack, true).unwrap();
+        write_executable(&dir.join("runner"), &out, &pack, true, None).unwrap();
         let built = fs::read(&out).unwrap();
         // The runner's own signature is gone, and what is left of it is untouched.
         assert_eq!(built.len(), 0x7f00 + pack.append_to(0x7f00).unwrap().len());
@@ -533,8 +573,58 @@ mod tests {
             assert!(pack::has_pack(&mut file).unwrap());
         }
         // Without `mac`, the runner is copied as it is.
-        write_executable(&dir.join("runner"), &out, &pack, false).unwrap();
+        write_executable(&dir.join("runner"), &out, &pack, false, None).unwrap();
         assert_eq!(&fs::read(&out).unwrap()[..0x8000], &runner[..]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_signing_leaves_the_earlier_program_and_no_temporary_file() {
+        let dir = scratch("sign");
+        fs::write(dir.join("runner"), b"runner code").unwrap();
+        fs::write(dir.join("out"), b"the earlier program").unwrap();
+        let out = dir.join("out");
+        let failing = |_: &Path| Err("no codesign here".to_string());
+        let err = write_executable(
+            &dir.join("runner"),
+            &out,
+            &tiny_pack(),
+            false,
+            Some(&failing),
+        )
+        .unwrap_err();
+        assert!(err.contains("no codesign here"), "{err}");
+        assert_eq!(fs::read(&out).unwrap(), b"the earlier program");
+        let mut names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["out", "runner"]);
+        // A signer that works sees the temporary file, complete, while `out` is still the old
+        // one, and what it leaves is what is moved into place.
+        let seen = std::cell::RefCell::new(Vec::new());
+        let signing = |tmp: &Path| {
+            let mut bytes = fs::read(tmp).unwrap();
+            seen.borrow_mut().push((
+                tmp != out,
+                bytes.starts_with(b"runner code"),
+                fs::read(&out).unwrap() == b"the earlier program",
+            ));
+            bytes.extend(b"+signature");
+            fs::write(tmp, bytes).map_err(|e| e.to_string())
+        };
+        write_executable(
+            &dir.join("runner"),
+            &out,
+            &tiny_pack(),
+            false,
+            Some(&signing),
+        )
+        .unwrap();
+        assert_eq!(*seen.borrow(), [(true, true, true)]);
+        assert!(fs::read(&out).unwrap().ends_with(b"+signature"));
         let _ = fs::remove_dir_all(&dir);
     }
 

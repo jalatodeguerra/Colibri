@@ -587,6 +587,13 @@ fn trailer_ending_at<R: Read + Seek>(
     Ok(Some((offset, len)))
 }
 
+/// Where the payload of the pack in a file starts and how long it is (the trailer follows it),
+/// found as the reader finds it. For tests.
+#[doc(hidden)]
+pub fn payload_range<R: Read + Seek>(file: &mut R) -> Result<Option<(u64, u64)>, String> {
+    trailer(file)
+}
+
 /// Whether a file already holds a pack (a runner must not).
 pub fn has_pack<R: Read + Seek>(file: &mut R) -> Result<bool, String> {
     trailer(file).map(|t| t.is_some())

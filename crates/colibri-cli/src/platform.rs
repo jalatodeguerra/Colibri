@@ -126,6 +126,12 @@ pub fn check_format<R: Read + Seek>(file: &mut R, target: Target) -> Result<(), 
         }
     };
     if start.starts_with(b"\x7fELF") && n >= 20 {
+        // Class 2 is 64-bit and data 1 little-endian: the only kind `colibri` is built as.
+        if start[4] != 2 || start[5] != 1 {
+            return Err(wrong(
+                "a Linux (ELF) program that is not 64-bit little-endian".to_string(),
+            ));
+        }
         let machine = u16::from_le_bytes([start[18], start[19]]);
         let arch = match machine {
             0x3e => "x86_64",
@@ -285,6 +291,8 @@ mod tests {
     fn elf(machine: u16) -> Vec<u8> {
         let mut b = vec![0u8; 64];
         b[..4].copy_from_slice(b"\x7fELF");
+        b[4] = 2;
+        b[5] = 1;
         b[18..20].copy_from_slice(&machine.to_le_bytes());
         b
     }
@@ -329,6 +337,13 @@ mod tests {
         assert!(ok(&macho(0x0100_000c), "macos-aarch64").is_ok());
         assert!(ok(&fat(&[0x0100_0007, 0x0100_000c]), "macos-aarch64").is_ok());
         assert!(ok(&fat(&[0x0100_0007, 0x0100_000c]), "macos-x86_64").is_ok());
+        // A 32-bit or big-endian ELF is not taken even when the machine matches.
+        let mut small = elf(0x3e);
+        small[4] = 1;
+        assert!(ok(&small, "linux-x86_64").is_err());
+        let mut big = elf(0x3e);
+        big[5] = 2;
+        assert!(ok(&big, "linux-x86_64").is_err());
         // Wrong processor, wrong system, not an executable.
         assert!(ok(&elf(0x3e), "linux-aarch64").is_err());
         assert!(ok(&pe(0xaa64), "windows-x86_64").is_err());

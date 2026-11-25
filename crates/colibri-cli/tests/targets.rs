@@ -73,6 +73,8 @@ fn marker(version: &str) -> Vec<u8> {
 fn elf(machine: u16) -> Vec<u8> {
     let mut b = vec![0u8; 64];
     b[..4].copy_from_slice(b"\x7fELF");
+    b[4] = 2;
+    b[5] = 1;
     b[18..20].copy_from_slice(&machine.to_le_bytes());
     b
 }

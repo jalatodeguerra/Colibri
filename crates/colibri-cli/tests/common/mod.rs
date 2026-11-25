@@ -65,11 +65,10 @@ pub fn plain(signed: Vec<u8>) -> Vec<u8> {
     if !macho::is_thin(&signed) {
         return signed;
     }
-    let at = signed
-        .windows(12)
-        .rposition(|w| w == colibri_lang::pack::MAGIC)
+    let (offset, len) = colibri_lang::pack::payload_range(&mut std::io::Cursor::new(&signed))
+        .expect("a readable trailer")
         .expect("a built program has a trailer");
-    let end = at + colibri_lang::pack::TRAILER_LEN;
+    let end = (offset + len) as usize + colibri_lang::pack::TRAILER_LEN;
     let head = macho::head_len(&signed).expect("a Mach-O head");
     let prepared = macho::prepare(&signed[..head], signed.len() as u64).expect("a signed runner");
     let mut out = signed[..end].to_vec();

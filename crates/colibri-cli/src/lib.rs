@@ -9,6 +9,7 @@ mod flame;
 pub mod fmt;
 pub mod golden;
 pub mod leakcmd;
+#[doc(hidden)]
 pub mod macho;
 pub mod newcmd;
 pub mod pack;
