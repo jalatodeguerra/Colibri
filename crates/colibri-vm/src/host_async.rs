@@ -271,3 +271,31 @@ impl Machine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    /// A cancel hook that panics, when the waiter gives up, leaves nothing of the operation in
+    /// the scheduler (not even the completion that had already arrived), and the panic is passed
+    /// on.
+    #[test]
+    fn a_cancel_hook_that_panics_still_forgets_the_operation() {
+        let mut machine = Machine::new(Box::new(std::io::sink()), 100);
+        let (completer, _pending) = machine.core.sched.begin_completion::<u8>();
+        let op = completer.op();
+        let token = Arc::clone(completer.token());
+        token.on_cancel(|| panic!("the hook panics"));
+        // The completion arrived before the waiter noticed the cancellation.
+        drop(completer);
+        machine.core.sched.ext().drain();
+        assert!(machine.core.sched.ext().is_completed(op));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            machine.cancel_completion(op, &token)
+        }));
+        assert!(outcome.is_err(), "the panic is passed on");
+        assert!(machine.core.sched.ext().is_idle());
+    }
+}
