@@ -482,6 +482,21 @@ impl Graph {
             .collect()
     }
 
+    /// The node an edge into `to` leads to for a report: the object inside a boxed `some(obj)`,
+    /// or `to` itself.
+    fn through_option_box(&self, to: usize) -> usize {
+        let node = &self.nodes[to];
+        match (&node.value, node.edges.as_slice()) {
+            (Value::Enum(e), [(_, inner)])
+                if e.ty == colibri_check::types::OPTION_TYPE
+                    && e.variant == colibri_check::types::VARIANT_SOME =>
+            {
+                *inner
+            }
+            _ => to,
+        }
+    }
+
     /// A shortest cycle through `start` inside `comp`, rendered, and the visible nodes on it.
     fn path(&self, namer: &Namer, comp: &[usize], start: usize) -> (String, Vec<usize>) {
         let mut parent: HashMap<usize, (usize, Edge)> = HashMap::new();
@@ -490,6 +505,9 @@ impl Graph {
         let mut closing = None;
         'search: while let Some(v) = queue.pop_front() {
             for &(edge, to) in &self.nodes[v].edges {
+                // A boxed `some(obj)` is not a hop: its edge into the object takes the place of
+                // the edge into the box, as an unboxed one is, so both engines read the same.
+                let to = self.through_option_box(to);
                 if comp.binary_search(&to).is_err() {
                     continue;
                 }

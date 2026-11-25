@@ -253,3 +253,79 @@ fn main() {
     vm.run_main().unwrap();
     assert!(vm.find_leaks().is_empty());
 }
+
+/// The leaks one program makes on an engine: the path and the `allocated at` sites of each.
+fn leak_reports(kind: colibri::EngineKind, source: &str) -> Vec<(String, Vec<String>)> {
+    let mut vm = colibri::Vm::builder()
+        .engine(kind)
+        .track_leaks(true)
+        .build();
+    vm.load_source("leaks.colibri", source).unwrap();
+    vm.run_main().unwrap();
+    vm.find_leaks()
+        .into_iter()
+        .map(|l| (l.path, l.sites))
+        .collect()
+}
+
+/// The same report on both engines, whatever form of `some(obj)` each makes.
+fn same_report_on_both(source: &str) -> Vec<(String, Vec<String>)> {
+    let tree = leak_reports(colibri::EngineKind::Tree, source);
+    assert_eq!(leak_reports(colibri::EngineKind::Bytecode, source), tree);
+    tree
+}
+
+#[test]
+fn a_path_through_an_optional_field_is_the_same_on_both_engines_with_a_shorter_route_beside_it() {
+    let reports = same_report_on_both(
+        r#"
+class M {
+    name: str
+    xs: List[M]
+    next: M?
+}
+fn main() {
+    let a = M { name: "a", xs: [], next: none }
+    let b = M { name: "b", xs: [], next: none }
+    a.xs.push(b)
+    a.next = some(b)
+    b.next = some(a)
+}
+"#,
+    );
+    assert_eq!(reports.len(), 1);
+    assert_eq!(
+        reports[0].0,
+        r#"M(name: "a") -> next -> M(name: "b") -> next -> M(name: "a")"#
+    );
+    assert!(
+        reports[0].1[0].starts_with("M at leaks.colibri:"),
+        "{:?}",
+        reports[0].1
+    );
+}
+
+#[test]
+fn a_path_through_a_list_holding_both_forms_of_some_is_the_same_on_both_engines() {
+    let reports = same_report_on_both(
+        r#"
+class L {
+    name: str
+    xs: List[L?]
+    m: Map[int, L?]
+}
+fn main() {
+    let c = L { name: "c", xs: [], m: {:} }
+    let d = L { name: "d", xs: [], m: {:} }
+    c.xs.push([d].first())
+    c.xs.push(some(d))
+    d.m[7] = [c].first()
+}
+"#,
+    );
+    assert_eq!(reports.len(), 1);
+    assert_eq!(
+        reports[0].0,
+        r#"L(name: "c") -> xs[0] -> L(name: "d") -> m[7] -> L(name: "c")"#
+    );
+}
