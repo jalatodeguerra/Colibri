@@ -395,7 +395,9 @@ pub fn open_below(
             .read(true)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
         if last {
-            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+            // Backup semantics so that a folder (or a link to one) opens too and is then told
+            // apart below: without it Windows answers "access denied" for a folder.
+            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
         } else {
             options
                 .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
