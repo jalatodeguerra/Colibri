@@ -479,3 +479,66 @@ fn integers_in_strings_print_as_show_does() {
         "0|-7|9223372036854775807|-9223372036854775808|1234567890\n-9223372036854775808\n-7\n"
     );
 }
+
+/// Runs `main` of `src` with the probe of safepoints hung on it; the kinds that ran, in order.
+fn safepoint_run(
+    src: &str,
+    wants: &[(colibri_core::safepoint::SafepointKind, u32)],
+) -> (Vec<colibri_core::safepoint::SafepointKind>, u64) {
+    let (mut m, program, _out) = load(src);
+    for (kind, every) in wants {
+        m.core
+            .want_safepoints(*kind, std::num::NonZeroU32::new(*every).unwrap());
+    }
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&seen);
+    m.set_safepoint_probe(Some(Box::new(move |kind| sink.borrow_mut().push(kind))));
+    let mut fiber = VmFiber::new();
+    m.call(&mut fiber, fn_id(&program, "main"), Vec::new())
+        .expect("main runs");
+    let steps = m.core().steps_used();
+    let seen = seen.borrow().clone();
+    (seen, steps)
+}
+
+const SPIN: &str = "fn main() {\n    let mut t = 0\n    for i in 0..200 {\n        t += i\n    }\n}";
+
+#[test]
+fn the_consumers_of_a_safepoint_run_memory_then_debugger_then_profiler() {
+    use colibri_core::safepoint::SafepointKind::{Debugger, Memory, Profiler};
+    // Asked for in the reverse order, with the same interval: they come out in the fixed one.
+    let (seen, _) = safepoint_run(SPIN, &[(Profiler, 10), (Debugger, 10), (Memory, 10)]);
+    assert!(seen.len() >= 3 * 10, "{}", seen.len());
+    for group in seen.chunks(3) {
+        assert_eq!(group, [Memory, Debugger, Profiler]);
+    }
+}
+
+#[test]
+fn each_consumer_runs_about_every_interval_it_asked_for() {
+    use colibri_core::safepoint::SafepointKind::{Debugger, Memory, Profiler};
+    let (seen, steps) = safepoint_run(SPIN, &[(Memory, 100), (Debugger, 10), (Profiler, 50)]);
+    let count = |k| seen.iter().filter(|s| **s == k).count() as u64;
+    // The slice is the smallest interval, so nobody runs more often than asked, and every
+    // consumer runs about as often as asked (a window ends at an instruction boundary).
+    for (kind, every) in [(Memory, 100), (Debugger, 10), (Profiler, 50)] {
+        let n = count(kind);
+        assert!(n <= steps / every, "{kind:?} ran {n} times in {steps} steps");
+        assert!(n + 2 >= steps / every, "{kind:?} ran {n} times in {steps} steps");
+    }
+}
+
+#[test]
+fn nothing_runs_without_a_consumer_or_after_it_is_dropped() {
+    use colibri_core::safepoint::SafepointKind::Profiler;
+    let (seen, _) = safepoint_run(SPIN, &[]);
+    assert!(seen.is_empty());
+    let (mut m, program, _out) = load(SPIN);
+    let every = std::num::NonZeroU32::new(5).unwrap();
+    m.core.want_safepoints(Profiler, every);
+    m.core.drop_safepoints(Profiler);
+    let mut fiber = VmFiber::new();
+    m.call(&mut fiber, fn_id(&program, "main"), Vec::new())
+        .unwrap();
+    assert_eq!(m.core().safepoint_hits(Profiler), 0);
+}

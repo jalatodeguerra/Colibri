@@ -5,9 +5,22 @@ use std::rc::Rc;
 
 use colibri_runtime as colibri;
 
+/// A builder for the tests of this file. `COLIBRI_TEST_SLICE=n` runs every test with the budget
+/// counted in slices of `n` steps: nothing may change (the file's numbers are exact).
+fn builder() -> colibri::VmBuilder {
+    let b = colibri::Vm::builder();
+    match std::env::var("COLIBRI_TEST_SLICE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+    {
+        Some(n) => b.safepoint_slice(n),
+        None => b,
+    }
+}
+
 fn vm_with(budget: u64) -> (colibri::Vm, colibri::SharedBuffer) {
     let out = colibri::SharedBuffer::new();
-    let vm = colibri::Vm::builder()
+    let vm = builder()
         .stdout(Box::new(out.clone()))
         .instruction_budget(budget)
         .build();
@@ -375,7 +388,7 @@ fn a_host_function_sees_the_steps_so_far() {
 
 #[test]
 fn an_unlimited_vm_never_runs_out() {
-    let mut vm = colibri::Vm::builder()
+    let mut vm = builder()
         .stdout(Box::new(colibri::SharedBuffer::new()))
         .build();
     vm.load_source(
@@ -463,7 +476,7 @@ fn host_eq_hooks_and_key_scans_are_charged() {
 
 /// The steps of one run of `main`.
 fn steps_of(source: &str) -> u64 {
-    let mut vm = colibri::Vm::builder()
+    let mut vm = builder()
         .stdout(Box::new(colibri::SharedBuffer::new()))
         .instruction_budget(10_000_000)
         .build();
@@ -514,7 +527,7 @@ fn the_closure_built_ins_cost_a_step_for_each_element_and_the_calls_of_the_closu
 #[test]
 fn a_budget_that_runs_out_inside_a_closure_built_in_stops_at_the_call() {
     {
-        let mut vm = colibri::Vm::builder()
+        let mut vm = builder()
             .stdout(Box::new(colibri::SharedBuffer::new()))
             .instruction_budget(40)
             .build();
@@ -555,7 +568,7 @@ fn a_budget_that_runs_out_in_a_for_mut_trip_writes_the_elements_back_before_the_
     // of the function (outside the loop, so it may name the list) sees every element.
     let run = || {
         let out = colibri::SharedBuffer::new();
-        let mut vm = colibri::Vm::builder()
+        let mut vm = builder()
             .stdout(Box::new(out.clone()))
             .instruction_budget(60)
             .build();
@@ -581,4 +594,49 @@ fn main() {
     // written back with its trip's increment (the first two elements went round once more than
     // the last two), and the run stops one step past the budget of 60.
     assert_eq!(run(), ("6 6 5 5\n".to_string(), 61));
+}
+
+/// What one run shows: the output, how it ended, and the steps it took.
+fn observe(slice: Option<u32>, budget: u64, source: &str) -> (String, String, u64, u64) {
+    let out = colibri::SharedBuffer::new();
+    let mut b = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .instruction_budget(budget);
+    if let Some(n) = slice {
+        b = b.safepoint_slice(n);
+    }
+    let mut vm = b.build();
+    vm.load_source("a.colibri", source).unwrap();
+    let ended = match vm.run_main() {
+        Ok(()) => "ok".to_string(),
+        Err(e) => e.render(false),
+    };
+    (out.contents(), ended, vm.steps_used(), vm.safepoints_run())
+}
+
+/// A slice changes nothing a program or the host can see: the same output, the same ending, and
+/// the same step count, whether the budget runs out (grace included) or not.
+#[test]
+fn slices_of_the_budget_change_neither_the_steps_nor_the_outcome() {
+    let programs = [
+        "fn main() {\n    let mut t = 0\n    for i in 0..3000 {\n        t += i\n    }\n    print(t)\n}",
+        "fn main() {\n    defer print(\"deferred\")\n    while true {\n    }\n}",
+        "fn f(n: int) -> int => if n == 0 { 0 } else { f(n - 1) + 1 }\nfn main() {\n    print(f(400))\n}",
+        "fn main() {\n    let xs = (0..500).to_list()\n    print(xs.map(fn(x) => x + 1).filter(fn(x) => x % 2 == 0).fold(0, fn(a, x) => a + x))\n}",
+        "fn main() {\n    let mut ps = [0, 0, 0, 0]\n    for round in 0..300 {\n        for mut p in ps {\n            p += 1\n        }\n    }\n    print(ps[0])\n}",
+    ];
+    for source in programs {
+        for budget in [50, 1_000, 5_000, 1_000_000] {
+            let (out, ended, steps, none) = observe(None, budget, source);
+            assert_eq!(none, 0);
+            for slice in [1, 7, 4096] {
+                let (o, e, s, hits) = observe(Some(slice), budget, source);
+                let what = format!("slice {slice}, budget {budget}: {source}");
+                assert_eq!((&o, &e, s), (&out, &ended, steps), "{what}");
+                if steps > u64::from(slice) + 200 {
+                    assert!(hits > 0, "no safepoint ran, {what}");
+                }
+            }
+        }
+    }
 }

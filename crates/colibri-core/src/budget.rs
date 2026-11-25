@@ -27,7 +27,8 @@ pub(crate) enum BudgetState {
 
 /// The counters of the budget.
 ///
-/// `left` is the part of the budget the hot path counts down: a window of at most `slice` steps
+/// `left` is the part of the budget the hot path counts down: a window of `slice` steps (the last
+/// one is the step that takes `left` below zero)
 /// (see [`Core::want_safepoints`]), or all of what is left when nobody asked for slices. The
 /// rest waits in `reserve`. Only the sum, [`Budget::real_left`], says whether the budget is used
 /// up; everything but the decrement-and-test of the hot path reads that.
@@ -109,7 +110,7 @@ impl Budget {
         let real = self.left.saturating_add(self.reserve);
         match self.slice {
             Some(slice) if real >= 0 => {
-                self.left = real.min(i64::from(slice.get()));
+                self.left = real.min(i64::from(slice.get()) - 1);
                 self.reserve = real - self.left;
             }
             _ => {
@@ -160,13 +161,14 @@ impl Budget {
     #[cold]
     #[inline(never)]
     pub(crate) fn refill(&mut self) -> Option<u64> {
-        let slice = i64::from(self.slice?.get());
+        // The window holds `slice - 1` steps below the step that ends it: `slice` steps in all.
+        let cap = i64::from(self.slice?.get()) - 1;
         if self.real_left() < 0 {
             return None;
         }
         let spent = self.window.saturating_sub(self.left);
         // The overdraft of the last charge comes out of the new window.
-        let take = self.reserve.min(slice.saturating_sub(self.left));
+        let take = self.reserve.min(cap.saturating_sub(self.left));
         self.left += take;
         self.reserve -= take;
         self.window = self.left;
