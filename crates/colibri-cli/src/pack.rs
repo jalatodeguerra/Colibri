@@ -411,7 +411,7 @@ mod tests {
                 PackFile {
                     kind: Kind::Source,
                     path: "app/main.colibri".to_string(),
-                    name: "app/main.colibri".to_string(),
+                    name: "shown\\main.colibri".to_string(),
                     data: b"print(1)\n".to_vec(),
                 },
                 PackFile {
@@ -465,6 +465,19 @@ mod tests {
                 let err = read_from(&mut Cursor::new(bad)).unwrap_err();
                 assert!(err.contains("program's data"), "{what}: {err}");
             }
+        }
+        // Lengths that no file can have: refused before anything is allocated or read.
+        for (offset, len) in [
+            (0u64, 1u64 << 62),
+            (u64::MAX, 1),
+            (1, u64::MAX),
+            (u64::MAX, u64::MAX),
+        ] {
+            let mut bad = good.clone();
+            bad[n - 20..n - 12].copy_from_slice(&offset.to_le_bytes());
+            bad[n - 12..n - 4].copy_from_slice(&len.to_le_bytes());
+            let err = read_from(&mut Cursor::new(bad)).unwrap_err();
+            assert!(err.contains("does not fit"), "{offset} {len}: {err}");
         }
         let mut bad = good.clone();
         bad[n - 4..].copy_from_slice(&(VERSION + 1).to_le_bytes());
@@ -553,7 +566,7 @@ mod tests {
         );
         assert_eq!(
             fs.display_name(Path::new("./app/main.colibri")),
-            "app/main.colibri"
+            "shown\\main.colibri"
         );
         let cache = fs.cache_root().unwrap();
         let dep = cache.join("git/checkouts/x/abc/lib.colibri");
