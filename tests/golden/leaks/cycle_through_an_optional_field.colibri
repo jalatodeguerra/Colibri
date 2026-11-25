@@ -1,0 +1,15 @@
+// A cycle whose link is a `T?` field: the report names the objects, not the `Option`.
+class Node {
+    name: str
+    next: Node?
+}
+
+fn main() {
+    let a = Node { name: "a", next: none }
+    let b = Node { name: "b", next: some(a) }
+    a.next = some(b)
+    print(a.next.is_some())
+}
+
+// expect: true
+// leaks: Node, Node
