@@ -176,8 +176,19 @@ fn lsp() -> ExitCode {
     }
 }
 
+/// `COLIBRI_ENGINE` used to choose between the VM and the tree-walking interpreter. The
+/// variable is ignored now; a script that still asks for the interpreter is told once.
+fn warn_if_the_removed_engine_is_asked_for() {
+    if std::env::var("COLIBRI_ENGINE").is_ok_and(|v| v == "tree") {
+        eprintln!(
+            "warning: COLIBRI_ENGINE=tree is ignored: the tree-walking interpreter was removed, and the VM runs the program"
+        );
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    warn_if_the_removed_engine_is_asked_for();
     on_big_stack(move || match cli.command {
         Command::Check {
             file,
