@@ -1,6 +1,6 @@
 // allow: unused
 // A generic type whose arguments grow at each level never repeats a type, so the walks that look
-// into types for a send stop at a depth instead (what is deeper is left to the copy at run time).
+// into types for a send stop at a size instead (what is deeper is left to the copy at run time).
 // Checking these must finish.
 struct Nest[T] {
     v: T
@@ -19,6 +19,8 @@ fn channels(n: Nest[int], c: Chain[int]) {
     let u = task.run(fn() => c.v)
     a.send(n.clone())
     b.send(c.clone())
+    b.send(c)
+    a.send(n) // error: sending a `Nest[int]` copies it
     let s = Shared(c)
 }
 

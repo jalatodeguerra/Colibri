@@ -97,15 +97,11 @@ enum Seg {
 /// The most steps of a path that an error shows, as at run time.
 const SHOWN_STEPS: usize = 12;
 
-/// How many steps down a walk follows. A generic type whose arguments grow at each level
-/// (`struct Nest[T] { inner: List[Nest[List[T]]] }`) never repeats a type, so only a depth stops
-/// it. What lies deeper is left to the copy at run time, like a type parameter.
-const MAX_TYPE_DEPTH: usize = 64;
-
-/// How big a type a walk follows into, counted in type constructors. A type whose arguments double
-/// at each level (`struct Chain[T] { next: Chain[(T, T)]? }`) is out of reach long before the
-/// depth is.
-const MAX_TYPE_SIZE: usize = 1024;
+/// How big a type a walk follows into, counted in type constructors. A generic type whose
+/// arguments grow at each level (`struct Nest[T] { inner: List[Nest[List[T]]] }`, or double:
+/// `struct Chain[T] { next: Chain[(T, T)]? }`) never repeats a type, so only a size stops the walk.
+/// What lies beyond it is left to the copy at run time, like a type parameter.
+const MAX_TYPE_SIZE: usize = 256;
 
 /// The number of constructors in `ty`, counting no further than `limit`.
 fn type_size(ty: &Ty, limit: usize) -> usize {
@@ -234,11 +230,8 @@ impl Checker<'_> {
                     return refuse(self, path, Refusal::Host(def.display_name().into_owned()));
                 }
                 // A type that holds itself (a list of its own kind) is looked at once, and one
-                // that keeps growing is looked at to a depth.
-                if done.contains(ty)
-                    || path.len() >= MAX_TYPE_DEPTH
-                    || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE
-                {
+                // that keeps growing is looked at up to a size.
+                if done.contains(ty) || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE {
                     return Ok(());
                 }
                 done.push(ty.clone());
@@ -328,16 +321,14 @@ impl Checker<'_> {
     /// through a second name (a list, a map, a set, an object, a closure, an interface value), or
     /// that holds one. Handles and plain values are not.
     pub(crate) fn holds_reference(&self, ty: &Ty) -> bool {
-        self.holds_ref_walk(ty, &mut Vec::new(), 0)
+        self.holds_ref_walk(ty, &mut Vec::new())
     }
 
-    fn holds_ref_walk(&self, ty: &Ty, done: &mut Vec<Ty>, depth: usize) -> bool {
+    fn holds_ref_walk(&self, ty: &Ty, done: &mut Vec<Ty>) -> bool {
         match ty {
             Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Fn(..) | Ty::Dyn(..) => true,
-            Ty::Tuple(items) => items
-                .iter()
-                .any(|t| self.holds_ref_walk(t, done, depth + 1)),
-            Ty::Option(t) | Ty::Range(t) => self.holds_ref_walk(t, done, depth + 1),
+            Ty::Tuple(items) => items.iter().any(|t| self.holds_ref_walk(t, done)),
+            Ty::Option(t) | Ty::Range(t) => self.holds_ref_walk(t, done),
             Ty::Adt(id, args) => {
                 if matches!(*id, CHANNEL_TYPE | SHARED_TYPE | MUTEX_TYPE | ERROR_TYPE) {
                     return false;
@@ -345,10 +336,7 @@ impl Checker<'_> {
                 let Some(def) = self.types.get(id.0 as usize) else {
                     return false;
                 };
-                if done.contains(ty)
-                    || depth >= MAX_TYPE_DEPTH
-                    || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE
-                {
+                if done.contains(ty) || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE {
                     return false;
                 }
                 done.push(ty.clone());
@@ -362,11 +350,11 @@ impl Checker<'_> {
                     TypeDefKind::Class { .. } | TypeDefKind::HostClass => true,
                     TypeDefKind::Struct { fields } => fields
                         .iter()
-                        .any(|f| self.holds_ref_walk(&f.ty.subst(&map), done, depth + 1)),
+                        .any(|f| self.holds_ref_walk(&f.ty.subst(&map), done)),
                     TypeDefKind::Enum { variants } => variants.iter().any(|v| {
                         v.fields
                             .iter()
-                            .any(|f| self.holds_ref_walk(&f.ty.subst(&map), done, depth + 1))
+                            .any(|f| self.holds_ref_walk(&f.ty.subst(&map), done))
                     }),
                     TypeDefKind::Interface { .. } => true,
                 }

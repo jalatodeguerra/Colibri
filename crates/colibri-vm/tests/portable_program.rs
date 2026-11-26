@@ -235,7 +235,10 @@ fn seven_shapes_have_the_same_path_in_the_checker_and_at_run_time() {
     );
     // And the shapes that agree read as expected, with the variant named inside a path.
     assert!(
-        found.iter().any(|f| f.starts_with("`.1.runner`")),
+        found.contains(
+            &"`.1.runner` of the result of the task is a `Coroutine`, which cannot be sent to another thread"
+                .to_string()
+        ),
         "{found:?}"
     );
     assert!(
