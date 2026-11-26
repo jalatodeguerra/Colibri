@@ -1,0 +1,5 @@
+[package]
+name = "web_demo"
+
+[build]
+assets = ["greeting.txt"]

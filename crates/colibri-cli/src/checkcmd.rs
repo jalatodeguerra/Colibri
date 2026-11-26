@@ -17,13 +17,39 @@ pub fn check(
     all_modules: bool,
     deps: DepFlags,
 ) -> Result<(), ExitCode> {
-    check_with(
-        file,
-        interface_files,
-        all_modules,
-        deps,
-        &mut colibri_std::interface,
-    )
+    if is_web() {
+        check_with(
+            file,
+            interface_files,
+            all_modules,
+            deps,
+            &mut colibri_std::web_interface,
+        )
+    } else {
+        check_with(
+            file,
+            interface_files,
+            all_modules,
+            deps,
+            &mut colibri_std::interface,
+        )
+    }
+}
+
+/// Whether the program is checked for a page (`--web`): the standard library is the web's.
+fn is_web() -> bool {
+    crate::build_cfg().os == colibri::WEB_OS
+}
+
+/// What a program for this platform may use. The tool trusts what it checks (EMBEDDING §5), so
+/// everything is granted; a page has no files, network or foreign functions to grant, and its
+/// clocks need `os`.
+fn granted() -> colibri::CapSet {
+    if is_web() {
+        std::iter::once(colibri::Cap::Os).collect()
+    } else {
+        colibri::CapSet::all()
+    }
 }
 
 /// [`check`] with the source of the standard library's interfaces: it is asked for the
@@ -66,11 +92,10 @@ pub fn check_on(
             }
         }
     }
-    // The tool trusts what it checks: every capability is granted (EMBEDDING §5).
     let config = colibri::CheckConfig {
         stack_budget: crate::NATIVE_STACK_BUDGET,
         interfaces,
-        caps: colibri::CapSet::all(),
+        caps: granted(),
         cfg: crate::build_cfg(),
         sources: colibri_std::sources(),
     };

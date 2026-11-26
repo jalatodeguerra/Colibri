@@ -767,7 +767,8 @@ entry, and two `@when` variants of one name are both kept. `colibri repl` takes 
 | `colibri repl` | interactive session |
 | `colibri lsp` | language server on stdin and stdout |
 | `colibri build [file or folder] [-o FILE]` | write one executable that holds the program and runs it (see below) |
-| `colibri build --web` | **(planned)** the same for the browser, through WebAssembly |
+| `colibri build --web [file or folder] [-o DIR]` | write a folder for a static web server in which the program runs in the page (see Web) |
+| `colibri check --web` | check a program as `build --web` does |
 
 Arguments after the file go to the program (`os.args()`, or the `args` module for parsing);
 put them after `--` if they could be mistaken for the tool's own flags, such as `--watch`.
@@ -1039,6 +1040,60 @@ fn main() {
   `colibri run` finds what the built program finds. `colibri build` and `assets.list` walk only
   the folders a pattern can reach (not `.git` or `target`, unless a pattern names them).
 
+### Web
+
+`colibri build --web` writes a folder that any static file server can serve, with the program
+running in the page:
+
+```console
+$ colibri build --web examples/web -o site
+built site (1 source file, 1 asset; colibri.wasm 4816792 bytes, app.pack 1488 bytes): serve it with ...
+$ node examples/web/serve.mjs site          # or any static file server
+serving site at http://127.0.0.1:41893/
+```
+
+The folder holds `index.html` (a page with one element for the program's output), `colibri.js` (the
+loop that runs the program), `colibri.wasm` (the runner, 4.8 MB: the engine built for WebAssembly)
+and `app.pack` (the program: its source files, dependencies and assets). Without `-o` the folder is
+`NAME-web`. Files already in it that are not these four stay; the four are replaced whole. A page
+opened straight from disk (`file://`) cannot load its files, so serve the folder. The
+[`examples/web`](examples/web/main.colibri) package is a small program for a page, which CI builds,
+serves and runs under node.
+
+- **What the page does.** What the program prints (`print`) is written into the page, in order;
+  what it prints to the error stream, and a compile error or panic, goes to the page and the
+  browser's console. There is no standard input. The program runs on the page's one thread, so it
+  never blocks it: the top-level statements and `main` are coroutines, and `wait(seconds)` returns
+  control to the browser (the page ticks the coroutines on `requestAnimationFrame` and with
+  timers). A program that waits for a minute takes a minute. When `main` has returned and no
+  coroutine is left that a timer can wake, the program is over.
+- **`os` is `"web"`**, and `arch` is `"wasm32"`: `@when(os == "web")` picks the files and items for
+  the page, and is false everywhere else.
+- **The standard library** of a page is `math`, `json`, `str`, `regex`, `rand`, `time`, `datetime`,
+  `vec`, `base64`, `hex`, `hash`, `toml`, `csv`, `path`, `args` and `assets`. `rand` is seeded from
+  the browser's random numbers; `time.now` and `time.unix` read its clocks; `datetime.now_local`
+  uses the page's time zone (daylight saving included). `assets` reads the files `[build] assets`
+  lists from the pack, as in a built executable.
+- **Not on the web**, and compile errors there: `fs`, `io`, `os`, `process`, `net`, `http` and
+  `httpd` (``error: `fs` is not available in a web build``), `extern` blocks (no foreign functions),
+  `task.run` ("thread tasks are not available in a web build"), `time.sleep` (use `wait`) and
+  `task.tick` called from `main` or from the top level of a script, since those are coroutines
+  there. A function that `main` calls and that ticks is a run-time error instead: the check does not
+  follow calls. `colibri check --web` reports all of them without building anything.
+- **The runner is part of `colibri`.** It is `crates/colibri-web` built for `wasm32-unknown-unknown`
+  and compiled into the `colibri` of a release, gzipped (1.5 MB; the raw module would carry
+  `colibri` over its 15 MB size limit). A `colibri` built from source without it says so, and
+  `--web-runner FILE` names a `colibri.wasm` (or its gzip) to use instead:
+
+  ```console
+  $ rustup target add wasm32-unknown-unknown
+  $ cargo build --release --target wasm32-unknown-unknown -p colibri-web
+  $ gzip -9n -c target/wasm32-unknown-unknown/release/colibri_web.wasm > /abs/path/colibri.wasm.gz
+  $ COLIBRI_WEB_RUNNER=/abs/path/colibri.wasm.gz cargo build --release -p colibri-lang
+  ```
+
+  The runner and the tool must be of the same version: build both from the same source.
+
 ### Formatter
 
 `colibri fmt` has no style settings: there is one canonical layout. `colibri fmt -` formats
@@ -1136,14 +1191,13 @@ they have.
   `Bytes` and file handles.
 - Operator interfaces (`Add`, `Sub`, `Mul`, `Div`, `Neg`) with default type parameters, which
   let a library such as `vec` define its own arithmetic.
-- Tooling: `run`, `check`, `test`, `fmt`, `new`, `build` (single-file executables), `repl`, `lsp`, hot reload and the leak detector.
+- Tooling: `run`, `check`, `test`, `fmt`, `new`, `build` (single-file executables, other platforms, web pages), `repl`, `lsp`, hot reload and the leak detector.
 
 **Next:**
 
 - Speed (in progress): the goal is to beat CPython 3.13 on every program in
   [`benchmarks/`](benchmarks/README.md); the VM is ahead of it on seven of the eight programs
   there and level on one.
-- `colibri build --web` for the browser, and building for another platform than the one running.
 
 **Later:**
 

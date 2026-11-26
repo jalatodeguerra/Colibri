@@ -57,7 +57,8 @@ jobs:
       - name: Size of colibri.wasm
         run: |
           size=$(stat -c %s target/wasm32-unknown-unknown/release/colibri_web.wasm)
-          echo "colibri.wasm: $size bytes"
+          gz=$(gzip -9n -c target/wasm32-unknown-unknown/release/colibri_web.wasm | wc -c)
+          echo "colibri.wasm: $size bytes, gzipped $gz"
       - name: Unit tests of colibri.js
         run: node crates/colibri-web/js/test/unit.mjs
       - name: Packs of the golden programs
@@ -97,18 +98,44 @@ jobs:
           done
 
   # DESIGN §17.4: a stripped release `colibri` is under 15 MB, and a built program starts fast.
+  # The `colibri` measured is the one that ships: with the web runner inside. The runner is built
+  # first (`crates/colibri-web`, 4.8 MB) and gzipped (1.5 MB), and `COLIBRI_WEB_RUNNER` names it for
+  # the build of `colibri` (`crates/colibri-cli/build.rs`); embedded raw it would not fit.
   gates:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p colibri-lang --bin colibri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Web runner
+        run: |
+          cargo build --release --target wasm32-unknown-unknown -p colibri-web
+          cp target/wasm32-unknown-unknown/release/colibri_web.wasm colibri.wasm
+          gzip -9n -c colibri.wasm > "$RUNNER_TEMP/colibri.wasm.gz"
+          echo "colibri.wasm: $(stat -c %s colibri.wasm) bytes, gzipped $(stat -c %s "$RUNNER_TEMP/colibri.wasm.gz")"
+      - name: colibri with the web runner inside
+        run: cargo build --release -p colibri-lang --bin colibri
+        env:
+          COLIBRI_WEB_RUNNER: ${{ runner.temp }}/colibri.wasm.gz
       - name: Size gate
         run: |
           size=$(stat -c %s target/release/colibri)
-          echo "colibri: $size bytes (limit 15000000)"
+          echo "colibri (with the web runner): $size bytes (limit 15000000)"
           test "$size" -le 15000000
+      # The demo page, built by the shipped `colibri`: the runner it writes is the one that was
+      # embedded, byte for byte (the gzip round trip), and the page works when served and run
+      # under node (no browser): `examples/web/smoke.mjs`.
+      - name: Web demo
+        run: |
+          target/release/colibri build --web examples/web -o web-demo
+          cmp web-demo/colibri.wasm colibri.wasm
+          ls -l web-demo
+          node examples/web/smoke.mjs web-demo examples/web/expected.txt
       # The goal is 50 ms. A shared runner is slow and noisy, so the step fails only above 250 ms,
       # which still catches a start-up that has become much slower (reading and checking a large
       # program at start); the best of 10 runs is taken so one slow run does not decide. The

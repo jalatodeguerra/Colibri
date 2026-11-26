@@ -297,6 +297,7 @@ fn hermetic_std(temp: &Path) -> colibri_std::StdConfig {
         // +05:30, so that local time and UTC differ in every golden that uses `datetime`.
         local_offset: Some(19_800),
         assets: None,
+        web: false,
     }
 }
 

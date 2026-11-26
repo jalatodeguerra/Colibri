@@ -1,0 +1,40 @@
+// A program for a web page: `colibri build --web examples/web` writes a folder to serve, and the
+// page shows what the program prints. `wait` pauses a coroutine without blocking the page.
+import assets
+import datetime
+import json
+import math
+
+struct Counter { name: str, steps: int }
+struct Card { name: str, tags: List[str] }
+
+fn count(c: Counter) {
+    for i in 1..=c.steps {
+        wait(0.05)
+        print("{c.name} {i}")
+    }
+}
+
+fn main() {
+    print("Hello from Colibri on the web!")
+    print("os: {os_name()}")
+    print(assets.read("greeting.txt").expect("the asset is in the pack").trim())
+    let mut total = 0
+    for n in 1..=10 {
+        total += n * n
+    }
+    print("sum of squares: {total}")
+    print("sqrt 2 = {math.sqrt(2.0)}")
+    let card = Card { name: "Colibri", tags: ["small", "fast"] }
+    print(json.encode(card).expect("a card is JSON"))
+    print("the clock works: {datetime.now().year >= 2024}")
+    go count(Counter { name: "ticker", steps: 3 })
+    wait(0.5)
+    print("done")
+}
+
+@when(os == "web")
+fn os_name() -> str => "web"
+
+@when(os != "web")
+fn os_name() -> str => "not the web"

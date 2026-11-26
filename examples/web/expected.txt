@@ -1,0 +1,11 @@
+Hello from Colibri on the web!
+os: web
+Hello from an asset in the pack.
+sum of squares: 385
+sqrt 2 = 1.4142135623730951
+{"name":"Colibri","tags":["small","fast"]}
+the clock works: true
+ticker 1
+ticker 2
+ticker 3
+done
