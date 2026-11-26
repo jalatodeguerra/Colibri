@@ -17,6 +17,10 @@ use crate::value::Value;
 
 pub(crate) use crate::builders::builder_text;
 
+/// What one piece of a split text costs at most: its `Value` and the `Rc<str>` allocation with
+/// its counts and the allocator's prefix.
+pub const PIECE_BYTES: usize = 24 + 32;
+
 /// The most integers `range.to_list()` builds.
 pub(crate) const MAX_RANGE_LIST: u64 = 1 << 27;
 
@@ -173,6 +177,19 @@ pub trait StrOps: Engine {
                         "`split` needs a separator that is not empty",
                     ));
                 }
+                // Every piece is a `Value` and an `Rc<str>` with its prefix, even an empty one: a
+                // separator byte can make about 56 bytes. Count the pieces first, when there is a
+                // limit to ask.
+                if self.core().memory_limit().is_some() {
+                    let pieces = text.matches(&*sep).count() + 1;
+                    self.mem_reserve(
+                        fiber,
+                        span,
+                        pieces
+                            .saturating_mul(PIECE_BYTES)
+                            .saturating_add(text.len()),
+                    )?;
+                }
                 // A one-byte ASCII separator splits on a `char`, which searches by byte
                 // instead of running the general substring searcher.
                 let mut one = sep.chars();
@@ -200,7 +217,8 @@ pub trait StrOps: Engine {
                 if to.len() > from.len() {
                     // At most one match per `from.len()` bytes, each now `to.len()` long.
                     let size = (text.len() / from.len()).saturating_mul(to.len());
-                    self.mem_reserve(fiber, span, size)?;
+                    // The result, and the `Rc<str>` made from it.
+                    self.mem_reserve(fiber, span, size.saturating_mul(2))?;
                 }
                 Value::str(&text.replace(&**from, to))
             }

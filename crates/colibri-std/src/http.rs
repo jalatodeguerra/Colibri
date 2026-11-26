@@ -280,7 +280,7 @@ fn run(
     let raw = cx.run_async(move || perform(timeout, &method, &url, &headers, body))?;
     // The body was read on another thread, outside the `Vm`'s account; it is about to be copied
     // into a Colibri value.
-    cx.mem_reserve(raw.body.len().saturating_mul(2));
+    cx.reserve_memory(raw.body.len().saturating_mul(2));
     Ok(raw)
 }
 

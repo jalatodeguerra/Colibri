@@ -122,6 +122,11 @@ pub trait BytesOps: Engine {
                 Value::bytes(&b[lo..hi])
             }
             Builtin::BytesToList => {
+                self.mem_reserve(
+                    fiber,
+                    span,
+                    b.len().saturating_mul(std::mem::size_of::<Value>()),
+                )?;
                 Value::list(b.iter().map(|&x| Value::Int(i64::from(x))).collect())
             }
             Builtin::BytesToStr => match std::str::from_utf8(b) {

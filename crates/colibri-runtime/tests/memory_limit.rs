@@ -4,12 +4,29 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use colibri_runtime as colibri;
 
+/// The most bytes this test binary may hold at once. Far above what any test here needs (the
+/// limits are at most 256 MiB, and most are 8): a regression that stops enforcing a limit then
+/// aborts this binary with "memory allocation failed" instead of being killed by the OOM killer.
+const PROCESS_CAP: usize = 768 << 20;
+
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
 /// The system allocator that also remembers the largest request this thread made, so that a test
-/// can say that a built-in refused *before* it allocated.
+/// can say that a built-in refused *before* it allocated, and that refuses (null) past
+/// [`PROCESS_CAP`].
 struct Biggest;
+
+fn take(size: usize) -> bool {
+    if LIVE.fetch_add(size, Ordering::Relaxed) + size > PROCESS_CAP {
+        LIVE.fetch_sub(size, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
 
 thread_local! {
     static BIGGEST: Cell<usize> = const { Cell::new(0) };
@@ -23,17 +40,31 @@ fn note(size: usize) {
 unsafe impl GlobalAlloc for Biggest {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         note(layout.size());
+        if !take(layout.size()) {
+            return std::ptr::null_mut();
+        }
         unsafe { System.alloc(layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         note(layout.size());
+        if !take(layout.size()) {
+            return std::ptr::null_mut();
+        }
         unsafe { System.alloc_zeroed(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         note(new_size);
+        if new_size > layout.size() {
+            if !take(new_size - layout.size()) {
+                return std::ptr::null_mut();
+            }
+        } else {
+            LIVE.fetch_sub(layout.size() - new_size, Ordering::Relaxed);
+        }
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -87,8 +118,8 @@ fn with_defer() {
         }
         print("cleanup {tmp.len()}")
     }
-    while true {
-        xs.push(1)
+    for k in 0..10_000_000 {
+        xs.push(k)
     }
 }
 
@@ -98,8 +129,8 @@ impl Drop for Hog {
     fn drop(self) {
         print("hook {self.label}")
         let mut more: List[int] = []
-        while true {
-            more.push(1)
+        for k in 0..10_000_000 {
+            more.push(k)
         }
     }
 }
@@ -108,8 +139,8 @@ fn hooks() {
     let a = Hog { label: "a" }
     let b = Hog { label: "b" }
     let mut xs: List[int] = []
-    while true {
-        xs.push(1)
+    for k in 0..10_000_000 {
+        xs.push(k)
     }
 }
 
@@ -118,13 +149,13 @@ fn two_defers() {
     defer {
         print("first")
         let mut more: List[int] = []
-        while true {
-            more.push(1)
+        for k in 0..10_000_000 {
+            more.push(k)
         }
     }
     let mut xs: List[int] = []
-    while true {
-        xs.push(1)
+    for k in 0..10_000_000 {
+        xs.push(k)
     }
 }
 
@@ -135,6 +166,12 @@ fn spin_hosts(n: int) {
 }
 
 fn call_hog(n: int) -> int => hog(n)
+
+fn interpolate(n: int) -> int {
+    let s = "x".pad_left(n)
+    let t = "{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}"
+    return t.len()
+}
 "#;
 
 fn vm(limit: Option<u64>) -> (colibri::Vm, colibri::SharedBuffer) {
@@ -150,7 +187,7 @@ fn vm(limit: Option<u64>) -> (colibri::Vm, colibri::SharedBuffer) {
     .unwrap();
     // A host function that allocates in proportion to its argument and asks first.
     vm.register_fn("hog", |cx: &mut colibri::Ctx, n: i64| -> i64 {
-        cx.mem_reserve(n as usize);
+        cx.reserve_memory(n as usize);
         "x".repeat(n as usize).len() as i64
     })
     .unwrap();
@@ -322,8 +359,8 @@ fn coroutine_vm() -> (colibri::Vm, colibri::SharedBuffer) {
 fn eat() {
     wait(1.0)
     let mut xs: List[int] = []
-    while true {
-        xs.push(1)
+    for k in 0..10_000_000 {
+        xs.push(k)
     }
 }
 fn late(c: Coroutine[()]) {
@@ -497,4 +534,301 @@ fn a_refused_concatenation_allocates_nothing_big() {
     assert!(matches!(res, Err(colibri::Error::MemoryLimit { .. })));
     // The last string that fit is at most the limit; the refused one was never made.
     assert!(biggest <= 8 * MIB as usize, "{biggest}");
+}
+
+#[test]
+fn a_refused_interpolation_leaves_the_vm_usable_and_the_baseline_near() {
+    let (mut vm, _) = vm(Some(8 * MIB));
+    let base = used(&vm);
+    // Ten copies of a 3 MiB string: refused before the scratch text grows, not after.
+    let res = call(&mut vm, "interpolate", 3 << 20);
+    assert!(
+        matches!(res, Err(colibri::Error::MemoryLimit { .. })),
+        "{res:?}"
+    );
+    let after = used(&vm);
+    assert!(after <= base + SLACK, "base {base}, after {after}");
+    // The next entry runs through safepoints without failing.
+    assert_eq!(call(&mut vm, "small", 20_000).unwrap(), 20_000);
+    // An interpolation that fits does not leave its scratch text charged either.
+    assert_eq!(call(&mut vm, "interpolate", 300_000).unwrap(), 3_000_000);
+    let after = used(&vm);
+    assert!(after <= base + SLACK, "base {base}, after {after}");
+    assert_eq!(call(&mut vm, "small", 20_000).unwrap(), 20_000);
+}
+
+const CO_PROGRAM: &str = r#"
+fn a_eats() {
+    wait(1.0)
+    let mut xs: List[int] = []
+    defer {
+        let mut more: List[int] = []
+        for k in 0..10_000_000 {
+            more.push(k)
+        }
+    }
+    for k in 0..10_000_000 {
+        xs.push(k)
+    }
+}
+fn b_quiet() {
+    wait(1.0)
+    defer print("B cleanup")
+    print("B start")
+    let mut t = 0
+    for i in 0..20000 {
+        t += i
+    }
+    print("B done {t}")
+}
+fn eater() {
+    let mut xs: List[int] = []
+    for k in 0..10_000_000 {
+        xs.push(k)
+    }
+}
+fn swallower() {
+    wait(1.0)
+    swallow(eater)
+    print("swallower went on")
+}
+fn start_two() {
+    let a = go a_eats()
+    let b = go b_quiet()
+}
+fn start_swallower() {
+    let c = go swallower()
+}
+"#;
+
+fn co_vm() -> (colibri::Vm, colibri::SharedBuffer) {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .memory_limit(8 * MIB)
+        .build();
+    vm.register_fn(
+        "swallow",
+        |cx: &mut colibri::Ctx, f: colibri::Callback<(), ()>| {
+            // The host function sees the failure and returns as if nothing happened.
+            let r = f.call(cx, ());
+            assert!(
+                matches!(r, Err(colibri::Error::MemoryLimit { .. })),
+                "{r:?}"
+            );
+        },
+    )
+    .unwrap();
+    vm.load_source("co2.colibri", CO_PROGRAM).unwrap();
+    (vm, out)
+}
+
+#[test]
+fn a_breach_in_one_coroutine_does_not_kill_the_others_of_the_tick() {
+    let (mut vm, out) = co_vm();
+    call0(&mut vm, "start_two").unwrap();
+    let err = vm.tick(1.0).unwrap_err();
+    assert!(matches!(err, colibri::Error::MemoryLimit { .. }), "{err:?}");
+    // B ran in the same tick, after A was unwound, and ended in its own good time.
+    assert_eq!(out.contents(), "B start\nB done 199990000\nB cleanup\n");
+}
+
+#[test]
+fn a_memory_panic_a_coroutine_swallowed_is_still_reported() {
+    let (mut vm, out) = co_vm();
+    call0(&mut vm, "start_swallower").unwrap();
+    let err = vm.tick(1.0).unwrap_err();
+    assert!(matches!(err, colibri::Error::MemoryLimit { .. }), "{err:?}");
+    assert_eq!(out.contents(), "swallower went on\n");
+}
+
+const LATE: &str = r#"
+class Late { label: str }
+
+impl Drop for Late {
+    fn drop(self) {
+        let mut more: List[int] = []
+        for k in 0..3_000_000 {
+            more.push(k)
+        }
+        print("hook done {more.len()}")
+    }
+}
+
+let keeper = Late { label: "k" }
+"#;
+
+fn late_vm() -> (colibri::Vm, colibri::SharedBuffer) {
+    let out = colibri::SharedBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .stdout(Box::new(out.clone()))
+        .memory_limit(8 * MIB)
+        .build();
+    vm.load_source("late.colibri", LATE).unwrap();
+    (vm, out)
+}
+
+#[test]
+fn a_vm_dropped_by_the_hosts_unwind_runs_its_hooks_under_the_limit() {
+    // Dropped normally, the hook is cut off ...
+    let (vm, out) = late_vm();
+    drop(vm);
+    assert_eq!(out.contents(), "");
+    // ... and so it is when the host panics with the `Vm` on its stack.
+    let (vm, out) = late_vm();
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _vm = vm;
+        std::panic::resume_unwind(Box::new("the host failed"));
+    }));
+    assert!(r.is_err());
+    assert_eq!(out.contents(), "");
+}
+
+/// One row of [`every_reserve_site_refuses_before_it_allocates`]: a function of the program
+/// below that builds its input under the limit, calls `mark()` and then does the one thing that
+/// would take more than the limit.
+const SITES: &[&str] = &[
+    "site_extend",
+    "site_join",
+    "site_windows",
+    "site_replace",
+    "site_range",
+    "site_str_builder",
+    "site_bytes_to_bytes",
+    "site_bytes_push",
+    "site_str_concat",
+    "site_bytes_concat",
+    "site_interpolation",
+    "site_pad",
+    "site_split",
+    "site_bytes_to_list",
+];
+
+// The limit is 4 MiB. Inputs are built so that no step of building them goes over it.
+const SITE_PROGRAM: &str = r#"
+fn chunk() -> Bytes {
+    let piece = "y".pad_left(100_000).to_bytes()
+    let mut b = BytesBuilder()
+    for i in 0..15 {
+        b.push_bytes(piece)
+    }
+    return b.to_bytes()
+}
+fn site_extend() {
+    let mut a: List[int] = []
+    let mut b: List[int] = []
+    for i in 0..60_000 {
+        a.push(i)
+        b.push(i)
+    }
+    mark()
+    a.extend(b)
+}
+fn site_join() {
+    let s = "x".pad_left(100_000)
+    let mut xs: List[str] = []
+    for i in 0..50 {
+        xs.push(s)
+    }
+    mark()
+    let t = xs.join(",")
+}
+fn site_windows() {
+    let mut xs: List[int] = []
+    for i in 0..1000 {
+        xs.push(i)
+    }
+    mark()
+    let w = xs.windows(500)
+}
+fn site_replace() {
+    let s = "a".pad_left_with(500_000, 'a')
+    mark()
+    let t = s.replace("a", "bbbbbbbb")
+}
+fn site_range() {
+    mark()
+    let xs = (0..300_000).to_list()
+}
+fn site_str_builder() {
+    let s = "x".pad_left(200_000)
+    let mut b = StrBuilder()
+    for i in 0..20 {
+        b.push(s)
+    }
+    mark()
+    let t = b.to_str()
+}
+fn site_bytes_to_bytes() {
+    let piece = "y".pad_left(100_000).to_bytes()
+    let mut b = BytesBuilder()
+    for i in 0..30 {
+        b.push_bytes(piece)
+    }
+    mark()
+    let all = b.to_bytes()
+}
+fn site_bytes_push() {
+    let c = chunk()
+    let mut b = BytesBuilder()
+    b.push_bytes(c)
+    mark()
+    b.push_bytes(c)
+}
+fn site_str_concat() {
+    let s = "x".pad_left(1_200_000)
+    mark()
+    let t = s + s
+}
+fn site_bytes_concat() {
+    let c = chunk()
+    mark()
+    let d = c + c
+}
+fn site_interpolation() {
+    let s = "x".pad_left(1_200_000)
+    mark()
+    let t = "{s}{s}{s}{s}{s}{s}{s}{s}{s}{s}"
+}
+fn site_pad() {
+    mark()
+    let t = "x".pad_left(100_000_000)
+}
+fn site_split() {
+    let s = " ".pad_left(100_000)
+    mark()
+    let parts = s.split(" ")
+}
+fn site_bytes_to_list() {
+    let b = "x".pad_left(200_000).to_bytes()
+    mark()
+    let xs = b.to_list()
+}
+"#;
+
+#[test]
+fn every_reserve_site_refuses_before_it_allocates() {
+    let mut vm = colibri::Vm::builder().memory_limit(4 * MIB).build();
+    vm.register_fn("mark", || BIGGEST.with(|b| b.set(0)))
+        .unwrap();
+    vm.load_source("sites.colibri", SITE_PROGRAM).unwrap();
+    let base = used(&vm);
+    for name in SITES {
+        let res = call0(&mut vm, name);
+        let biggest = BIGGEST.with(Cell::get);
+        assert!(
+            matches!(res, Err(colibri::Error::MemoryLimit { .. })),
+            "{name}: {res:?}"
+        );
+        assert!(
+            biggest < MIB as usize,
+            "{name} allocated {biggest} bytes before it was refused"
+        );
+        // Every site leaves the Vm as it was.
+        assert!(
+            used(&vm) <= base + SLACK,
+            "{name}: base {base}, {}",
+            used(&vm)
+        );
+    }
 }

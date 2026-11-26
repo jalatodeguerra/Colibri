@@ -379,6 +379,8 @@ impl HostType for File {
                     this.path
                 )));
             };
+            // At most the file: a whole-file read is what it can come to.
+            crate::fs::reserve_file_up_to(cx, &this.path, n);
             on_handle(cx, this, move |g, path| g.read(path, n))
         });
         // Everything from the current position to the end of the file.

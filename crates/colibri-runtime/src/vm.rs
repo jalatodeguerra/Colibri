@@ -2609,6 +2609,7 @@ fn trampoline(name: &str, module: &str, raw: crate::host::RawHostFn) -> HostFnIm
                 HostFault::Message(message) => HostFault::Message(message),
                 HostFault::Cancel => HostFault::Cancel,
                 HostFault::MemoryLimit => HostFault::MemoryLimit,
+                other => other,
             }),
             Err(payload) => Err(match payload.downcast::<crate::ctx::RaisedPanic>() {
                 Ok(raised) => HostFault::Message(raised.0),

@@ -65,6 +65,14 @@ impl MemLimit {
     }
 }
 
+/// The memory state of the entry a fresh coroutine resumption interrupted (see
+/// [`Core::begin_resumption_memory`]).
+#[derive(Clone, Copy, Debug)]
+pub struct SavedMemState {
+    state: MemState,
+    grace_limit: u64,
+}
+
 /// What ran out in an entry whose program swallowed the panic that said so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Exhaustion {
@@ -481,6 +489,35 @@ impl Core {
             MemState::Dead => {}
         }
         limit
+    }
+
+    /// A coroutine resumption of the scheduler gets a memory state of its own, as it gets a budget
+    /// of its own: it starts `Normal` under the host's limit, so one coroutine's breach (and its
+    /// grace) does not decide the fate of the others in the same tick. Gives what to restore.
+    pub fn begin_resumption_memory(&mut self) -> SavedMemState {
+        let saved = SavedMemState {
+            state: self.memlimit.state,
+            grace_limit: self.memlimit.grace_limit,
+        };
+        if self.memlimit.limit.is_some() {
+            self.memlimit.state = MemState::Normal;
+            self.mem.set_limit(self.memlimit.limit);
+        }
+        saved
+    }
+
+    /// The resumption is over: the interrupted entry's state comes back.
+    pub fn end_resumption_memory(&mut self, saved: SavedMemState) {
+        if self.memlimit.limit.is_none() {
+            return;
+        }
+        self.memlimit.state = saved.state;
+        self.memlimit.grace_limit = saved.grace_limit;
+        let limit = match saved.state {
+            MemState::Normal => self.memlimit.limit,
+            _ => Some(saved.grace_limit),
+        };
+        self.mem.set_limit(limit);
     }
 
     /// Whether the current entry passed the memory limit (even if the program swallowed the

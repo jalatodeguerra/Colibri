@@ -26,7 +26,7 @@ pub struct Ctx<'a> {
 /// panic with exactly this message.
 pub(crate) struct RaisedPanic(pub String);
 
-/// The payload of the Rust panic [`Ctx::mem_reserve`] starts when the limit would be passed.
+/// The payload of the Rust panic [`Ctx::reserve_memory`] starts when the limit would be passed.
 pub(crate) struct RaisedMemory;
 
 /// Why [`Ctx::try_await_completion`] gave no value.
@@ -130,7 +130,7 @@ impl<'a> Ctx<'a> {
     /// allocating in proportion to an argument (a repeat count, the size of a file), so that one
     /// call cannot allocate gigabytes between two checks of the limit. With no limit it costs a
     /// comparison. `bytes` is an estimate of the whole allocation.
-    pub fn mem_reserve(&mut self, bytes: usize) {
+    pub fn reserve_memory(&mut self, bytes: usize) {
         if !self.eng.core().mem_reserve(bytes) {
             if cfg!(target_family = "wasm") {
                 std::panic::panic_any(RaisedMemory)

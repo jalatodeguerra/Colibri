@@ -66,6 +66,34 @@ fn read(path: str) -> int {
     }
 }
 
+fn lines(text: str) -> int {
+    return str.lines(text).len()
+}
+
+fn read_part(path: str, n: int) -> int {
+    match fs.open(path) {
+        ok(f) => {
+            match f.read(n) {
+                ok(b) => return b.len()
+                err(_) => return -1
+            }
+        }
+        err(_) => return -1
+    }
+}
+
+fn read_all(path: str) -> int {
+    match fs.open(path) {
+        ok(f) => {
+            match f.read_all() {
+                ok(b) => return b.len()
+                err(_) => return -1
+            }
+        }
+        err(_) => return -1
+    }
+}
+
 fn decode(text: str) -> int {
     match json.decode[List[int]](text) {
         ok(xs) => return xs.len()
@@ -87,6 +115,17 @@ fn refused<R: std::fmt::Debug>(res: Result<R, colibri::Error>, biggest: usize) {
         biggest < MIB as usize,
         "it allocated {biggest} bytes before failing"
     );
+}
+
+fn call_path_n(
+    vm: &mut colibri::Vm,
+    name: &str,
+    path: String,
+    n: i64,
+) -> Result<i64, colibri::Error> {
+    vm.get_fn::<(String, i64), i64>(name)
+        .unwrap()
+        .call(vm, (path, n))
 }
 
 fn call_int(vm: &mut colibri::Vm, name: &str, n: i64) -> Result<i64, colibri::Error> {
@@ -143,4 +182,42 @@ fn json_decode_fails_before_it_parses() {
         3
     );
     drop(text);
+}
+
+#[test]
+fn lines_refuses_before_it_splits() {
+    let mut vm = vm();
+    // A million empty lines are 56 bytes each as a list, and a megabyte as a text.
+    let text = "\n".repeat(1_000_000);
+    BIGGEST.with(|b| b.set(0));
+    let res = call_text(&mut vm, "lines", text);
+    // The argument is made before the entry; what must not happen is a list of lines.
+    assert!(
+        matches!(res, Err(colibri::Error::MemoryLimit { .. })),
+        "{res:?}"
+    );
+    assert_eq!(
+        call_text(&mut vm, "lines", "a\nb\nc".to_string()).unwrap(),
+        3
+    );
+}
+
+#[test]
+fn file_reads_ask_for_the_file_not_the_count() {
+    let dir = std::env::temp_dir().join(format!("colibri-memlimit-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let big = dir.join("big.bin");
+    std::fs::write(&big, vec![b'a'; 6 << 20]).unwrap();
+    let path = big.to_string_lossy().into_owned();
+    let mut vm = vm();
+    BIGGEST.with(|b| b.set(0));
+    let res = call_path_n(&mut vm, "read_part", path.clone(), 1 << 40);
+    refused(res, BIGGEST.with(Cell::get));
+    BIGGEST.with(|b| b.set(0));
+    let res = call_text(&mut vm, "read_all", path.clone());
+    refused(res, BIGGEST.with(Cell::get));
+    // A small count of a big file is fine.
+    assert_eq!(call_path_n(&mut vm, "read_part", path, 1000).unwrap(), 1000);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

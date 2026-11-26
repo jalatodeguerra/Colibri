@@ -262,7 +262,9 @@ pub trait ListFnOps: Engine {
                             .sum::<usize>()
                             .saturating_add(sep.len().saturating_mul(items.len().saturating_sub(1)))
                     });
-                    self.mem_reserve(fiber, span, guess)?;
+                    // `guess` is a floor (8 bytes for what is not a string): the result, and
+                    // the `Rc<str>` made from it.
+                    self.mem_reserve(fiber, span, guess.saturating_mul(2))?;
                 }
                 // One buffer, and no copy of the list or per-item `String`.
                 let types = &self.core().types;

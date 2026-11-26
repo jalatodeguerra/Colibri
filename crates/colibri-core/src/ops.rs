@@ -202,14 +202,16 @@ fn binary_of<E: Engine>(
             _ => Err(engine.internal(fiber, span, "ill-typed bitwise operation")),
         },
         (BinOp::Concat, Value::Str(a), Value::Str(b)) => {
-            engine.mem_reserve(fiber, span, a.len() + b.len())?;
+            // The result is built, then copied into its `Rc`.
+            engine.mem_reserve(fiber, span, 2 * (a.len() + b.len()))?;
             let mut s = String::with_capacity(a.len() + b.len());
             s.push_str(a);
             s.push_str(b);
             Ok(Value::Str(Rc::from(s)))
         }
         (BinOp::Concat, Value::Bytes(a), Value::Bytes(b)) => {
-            engine.mem_reserve(fiber, span, a.len() + b.len())?;
+            // The result is built, then copied into its `Rc`.
+            engine.mem_reserve(fiber, span, 2 * (a.len() + b.len()))?;
             let mut bytes = Vec::with_capacity(a.len() + b.len());
             bytes.extend_from_slice(a);
             bytes.extend_from_slice(b);

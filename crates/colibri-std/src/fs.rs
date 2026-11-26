@@ -220,12 +220,14 @@ fn append_to(path: &str, data: &[u8]) -> Result<(), TypedError> {
 /// Asks the memory limit for the room a whole-file read needs (the file, and the Colibri value
 /// made from it) before reading it.
 pub(crate) fn reserve_file(cx: &mut Ctx, path: &str) {
+    reserve_file_up_to(cx, path, u64::MAX);
+}
+
+/// [`reserve_file`] for a read of at most `n` bytes.
+pub(crate) fn reserve_file_up_to(cx: &mut Ctx, path: &str, n: u64) {
     if let Ok(meta) = std::fs::metadata(path) {
-        cx.mem_reserve(
-            usize::try_from(meta.len())
-                .unwrap_or(usize::MAX)
-                .saturating_mul(2),
-        );
+        let len = meta.len().min(n);
+        cx.reserve_memory(usize::try_from(len).unwrap_or(usize::MAX).saturating_mul(2));
     }
 }
 

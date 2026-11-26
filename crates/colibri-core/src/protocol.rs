@@ -85,6 +85,15 @@ pub trait Protocol: Engine {
     #[cold]
     #[inline(never)]
     fn memory_exceeded(&mut self, fiber: &mut Self::Fiber, span: Span) -> Ctl {
+        // A host function that says the limit was passed when none is set has made a mistake:
+        // an ordinary panic says so, and no grace begins.
+        if self.core().memory_limit().is_none() {
+            return self.panic(
+                fiber,
+                span,
+                "a host function reported that the memory limit was passed, but none is set",
+            );
+        }
         let limit = self.core_mut().exhaust_memory();
         let message = crate::mem::limit_message(limit);
         match self.panic(fiber, span, message) {

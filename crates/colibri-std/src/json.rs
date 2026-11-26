@@ -1082,7 +1082,7 @@ impl Decoder<'_, '_> {
 
 fn decode(cx: &mut Ctx, text: &str) -> Result<Value, TypedError> {
     // The parsed document and the value made of it take several times the text.
-    cx.mem_reserve(text.len().saturating_mul(4));
+    cx.reserve_memory(text.len().saturating_mul(4));
     let json = Parser {
         text,
         pos: 0,
@@ -1144,7 +1144,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     // fn parse(text: str) -> Result[Value]: any JSON, without a type to read it into.
     plain(
         m.register_fn_named("parse", ["text"], |cx: &mut Ctx, text: String| {
-            cx.mem_reserve(text.len().saturating_mul(4));
+            cx.reserve_memory(text.len().saturating_mul(4));
             let json = Parser {
                 text: &text,
                 pos: 0,

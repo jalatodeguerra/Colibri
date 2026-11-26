@@ -21,6 +21,9 @@ use crate::fiber::{Frame, FrameKind, VmFiber, is_scalar_value};
 use crate::machine::Machine;
 use crate::unchecked;
 
+/// The largest scratch text kept between two concatenations when a memory limit is set.
+const SCRATCH_KEPT: usize = 4096;
+
 /// How `exec` ends when it does not fail.
 pub(crate) enum Exit {
     /// The entry frame returned this value.
@@ -1342,6 +1345,22 @@ impl Machine {
             unreachable!("op_str_concat is called for its own instruction")
         };
         let span = chunk.spans[pc - 1];
+        // With a memory limit, ask for the room before anything is pushed: the scratch and the
+        // string made from it, with what the known parts add up to (an integer is at most 20
+        // bytes; what has to be shown is asked for once it is made).
+        if self.core.memory_limit().is_some() {
+            let mut want = 0usize;
+            for i in 0..n {
+                want += match &fiber.regs[base + usize::from(a + i)] {
+                    Value::Str(s) => s.len(),
+                    Value::Int(_) => 20,
+                    _ => 0,
+                };
+            }
+            if !self.core.mem_reserve(want.saturating_mul(2)) {
+                return Err(self.memory_exceeded(fiber, span));
+            }
+        }
         // The scratch text keeps its capacity from one string to the next: the only allocation
         // of a concatenation is the string it makes.
         let mut out = std::mem::take(&mut self.scratch);
@@ -1355,18 +1374,33 @@ impl Machine {
                     let v = std::mem::replace(&mut fiber.regs[at], Value::Unit);
                     let text = self.show_deep(fiber, &v, span);
                     fiber.regs[at] = v;
-                    out.push_str(&text?);
+                    let text = text?;
+                    if !self.core.mem_reserve(text.len().saturating_add(out.len())) {
+                        self.keep_scratch(out);
+                        return Err(self.memory_exceeded(fiber, span));
+                    }
+                    out.push_str(&text);
                 }
             }
         }
         if !self.core.mem_reserve(out.len()) {
-            self.scratch = out;
+            self.keep_scratch(out);
             return Err(self.memory_exceeded(fiber, span));
         }
         let text: Rc<str> = Rc::from(out.as_str());
-        self.scratch = out;
+        self.keep_scratch(out);
         Self::put_reg(fiber, base + usize::from(d), Value::Str(text));
         Ok(())
+    }
+
+    /// Puts the scratch text back for the next concatenation. With a memory limit a large one is
+    /// dropped instead: it was allocated inside an entry, so keeping it would keep it charged to
+    /// the `Vm` for good.
+    #[inline]
+    fn keep_scratch(&mut self, out: String) {
+        if out.capacity() <= SCRATCH_KEPT || self.core.memory_limit().is_none() {
+            self.scratch = out;
+        }
     }
 
     #[inline(never)]
