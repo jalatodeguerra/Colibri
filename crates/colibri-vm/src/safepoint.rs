@@ -42,8 +42,9 @@ impl Machine {
                 Err(self.panic(fiber, span, "a safepoint consumer failed"))
             } else {
                 match due.kind {
-                    // No consumer is built yet: each arrives with its own step.
-                    SafepointKind::Memory | SafepointKind::Debugger => Ok(()),
+                    // No memory limit is built yet: it arrives with its own step.
+                    SafepointKind::Memory => Ok(()),
+                    SafepointKind::Debugger => self.debug_safepoint(fiber),
                     SafepointKind::Profiler => {
                         if let Some(profiler) = self.profiler.as_mut() {
                             profiler.sample(due, fiber, self.core.sched.idle_nanos());

@@ -117,6 +117,7 @@ impl Machine {
         self.epoch = self.epoch.wrapping_add(1);
         self.env = CompileEnv::for_program(program);
         self.env.count_rc = self.rc.is_some();
+        self.env.debug = self.debug.as_ref().map(|d| Rc::clone(&d.shared));
         // Only the host functions' (empty) bodies: `load_host` would also
         // forget the host classes and hooks the runtime installed after loading, which a reload
         // keeps.

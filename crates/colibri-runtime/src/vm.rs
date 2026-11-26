@@ -1620,6 +1620,7 @@ impl Vm {
             warnings,
         } = checked;
         self.sources = Rc::new(sources);
+        self.sync_debug_locator();
         self.warnings = warnings;
         self.epoch += 1;
         self.engine.load(&program);
@@ -1752,6 +1753,7 @@ impl Vm {
             return self.restart(checked, fingerprint, why, Some(&old));
         }
         self.sources = Rc::new(checked.sources);
+        self.sync_debug_locator();
         self.warnings = checked.warnings;
         self.engine
             .core_mut()
@@ -2413,6 +2415,68 @@ impl Vm {
         self.engine.finish_rc_profile(&locate)
     }
 
+    /// Attaches a debugger (hidden: the interface is not settled; see `crate::debug`). Debug mode
+    /// applies to the code loaded from now on, so call it before loading the program: the
+    /// compiler then emits a step per statement and keeps what a debugger needs, and nothing
+    /// runs as a leaf. The debugger is called when the program stops (a breakpoint, a step, a
+    /// pause, an uncaught panic when [`Vm::debug_break_on_panic`] is on) and every 1,024
+    /// steps while it runs; it must not run program code. Output and results are the same as
+    /// without it.
+    #[doc(hidden)]
+    pub fn set_debugger(&mut self, debugger: Box<dyn crate::debug::Debugger>) {
+        let locator = self.debug_locator();
+        self.engine.set_debugger(debugger, locator);
+    }
+
+    /// Detaches the debugger; its breakpoints go out of the code.
+    #[doc(hidden)]
+    pub fn clear_debugger(&mut self) {
+        self.engine.clear_debugger();
+    }
+
+    /// Replaces the breakpoints of the source file `file` (its name as `sources()` has it). One
+    /// result per breakpoint; a breakpoint in a function that is not compiled yet is not
+    /// verified until it is. `None` when the program has no such file.
+    #[doc(hidden)]
+    pub fn debug_set_breakpoints(
+        &mut self,
+        file: &str,
+        specs: &[crate::debug::BreakpointSpec],
+    ) -> Option<Vec<crate::debug::BreakpointInfo>> {
+        let id = self.debug_file(file)?;
+        Some(self.engine.debug_set_breakpoints(id, specs))
+    }
+
+    /// The id of the loaded source file called `name`.
+    #[doc(hidden)]
+    pub fn debug_file(&self, name: &str) -> Option<crate::debug::FileId> {
+        (0..self.sources.next_file_id().0)
+            .map(crate::debug::FileId)
+            .find(|f| self.sources.name(*f) == name)
+    }
+
+    /// Stop at a panic that nothing handles, before anything unwinds.
+    #[doc(hidden)]
+    pub fn debug_break_on_panic(&mut self, on: bool) {
+        self.engine.debug_break_on_panic(on);
+    }
+
+    /// The handle that pauses the running program at its next safepoint, from any thread.
+    #[doc(hidden)]
+    pub fn debug_pause_handle(&self) -> crate::debug::PauseHandle {
+        self.engine.debug_pause_handle()
+    }
+
+    fn debug_locator(&self) -> Rc<dyn colibri_vm::debug::Locator> {
+        Rc::new(SourceLines(Rc::clone(&self.sources)))
+    }
+
+    /// A program was loaded or patched: the debugger reads its lines from the new sources.
+    fn sync_debug_locator(&mut self) {
+        let locator = self.debug_locator();
+        self.engine.set_debug_locator(locator);
+    }
+
     /// Turns a span into a file name and a 1-based line, for the profilers.
     fn locator(&self) -> impl std::ops::Fn(colibri_syntax::Span) -> Option<(String, u32)> + use<> {
         let sources = Rc::clone(&self.sources);
@@ -2432,6 +2496,26 @@ impl Vm {
     #[doc(hidden)]
     pub fn take_drop_trace(&mut self) -> Vec<String> {
         self.engine.core_mut().take_trace()
+    }
+}
+
+/// What the debugger reads lines and file names from.
+struct SourceLines(Rc<SourceMap>);
+
+impl colibri_vm::debug::Locator for SourceLines {
+    fn line(&self, span: colibri_syntax::Span) -> Option<u32> {
+        // A span of the prelude or of a file the program no longer has has no line.
+        if !self.0.contains(span.file) || colibri_check::is_prelude_span(span) {
+            return None;
+        }
+        Some(self.0.line_col(span.file, span.start).0)
+    }
+
+    fn file(&self, span: colibri_syntax::Span) -> Option<String> {
+        if !self.0.contains(span.file) || colibri_check::is_prelude_span(span) {
+            return None;
+        }
+        Some(self.0.name(span.file).to_string())
     }
 }
 

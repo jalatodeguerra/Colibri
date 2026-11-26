@@ -21,6 +21,8 @@ mod calls;
 mod cffi;
 mod compile;
 mod coro;
+#[doc(hidden)]
+pub mod debug;
 mod embed;
 mod engine;
 mod fiber;
@@ -55,5 +57,7 @@ pub use profile::{PROFILE_SLICE, Profile, ProfileSample, ProfileWeight};
 pub use rc::{RcLine, RcProfile};
 pub use source::{Options, Outcome, compile_source, run_source, run_source_with};
 
+#[cfg(test)]
+mod debug_tests;
 #[cfg(test)]
 mod tests;

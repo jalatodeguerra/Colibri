@@ -25,6 +25,7 @@ fn run_sliced(
             trace_drops: false,
             no_leaf,
             safepoint_slice: slice,
+            debug: false,
         },
     )
 }

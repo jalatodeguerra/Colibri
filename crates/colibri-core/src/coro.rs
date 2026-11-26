@@ -31,6 +31,7 @@ fn bare_panic_info(message: &str) -> Box<PanicInfo> {
         stack: Vec::new(),
         notes: Vec::new(),
         budget: false,
+        debug_serial: 0,
     })
 }
 

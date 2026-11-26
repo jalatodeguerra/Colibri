@@ -62,6 +62,11 @@ pub struct CompileEnv {
     /// clones or releases a reference-counted value, so a run can say which lines do it. Off,
     /// the code is the same as if the mode did not exist.
     pub count_rc: bool,
+    /// Compile for a debugger (`Machine::set_debug`): every statement gets a `Step` of its own
+    /// (the totals are the same), the chunk keeps a statement table and its scopes, jumps are
+    /// not fused, nothing runs as a leaf, and the chunk is entered in the debugger's list so a
+    /// breakpoint can be put into it (`crate::debug`).
+    pub(crate) debug: Option<Rc<crate::debug::DebugShared>>,
 }
 
 impl CompileEnv {
@@ -128,6 +133,7 @@ impl CompileEnv {
         let type_inert = inert_types(program);
         CompileEnv {
             count_rc: false,
+            debug: None,
             type_inert,
             checked_globals,
             hook_fns,
@@ -218,7 +224,8 @@ pub fn compile_body(
     fn_id: Option<FnId>,
     env: &CompileEnv,
 ) -> Result<Chunk, String> {
-    match FnCompiler::compile(body, fn_id, env, true) {
+    // A debugger sees one instruction per step of the source, so nothing is fused for it.
+    match FnCompiler::compile(body, fn_id, env, env.debug.is_none()) {
         Err(Fail::TooFar) => match FnCompiler::compile(body, fn_id, env, false) {
             Ok(chunk) => Ok(chunk),
             Err(Fail::TooFar) => Err("a jump is too far for the bytecode".to_string()),
@@ -412,6 +419,8 @@ pub(crate) struct Mark {
 /// An enclosing loop, for `break` and `continue`.
 pub(crate) struct LoopCtx {
     pub id: colibri_check::hir::LoopId,
+    /// The loop's own span: a `break` with this span is the loop's lowering, not source.
+    pub span: Span,
     /// How many items were on the stack when the loop began.
     pub cleanups: usize,
     pub brk: Label,
@@ -450,6 +459,15 @@ pub(crate) struct FnCompiler<'a> {
     pub loops: Vec<LoopCtx>,
     /// The `Step` instruction of the straight-line run being emitted.
     step_at: Option<usize>,
+    /// Debug mode: the statement table and the scopes (see `Chunk::stmts`, `Chunk::scopes`).
+    stmts: Vec<(u32, Span)>,
+    /// Debug mode: the statement being counted is a lowering (a `while`'s `break`) and is not
+    /// in the table.
+    pub(crate) unlisted: bool,
+    /// Debug mode: the body's locals by where they start (span start, span end, file, index),
+    /// built when the first statement needs it.
+    pub(crate) locals_by_start: Option<Vec<(u32, u32, colibri_syntax::FileId, u32)>>,
+    scopes: Vec<crate::bytecode::ScopeInfo>,
     /// The body is the prelude's own code: it takes no budget steps (the call that reaches it
     /// charges what the native built-in did, see `Op::CallHidden`).
     pub(crate) free: bool,
@@ -492,6 +510,10 @@ impl<'a> FnCompiler<'a> {
             bound_at: usize::MAX,
             loops: Vec::new(),
             step_at: None,
+            stmts: Vec::new(),
+            unlisted: false,
+            locals_by_start: None,
+            scopes: Vec::new(),
             free: colibri_check::is_prelude_span(body.span),
             failure: None,
             stmt_span: body.span,
@@ -513,7 +535,7 @@ impl<'a> FnCompiler<'a> {
         let chunk = Chunk {
             fn_id,
             body: Rc::clone(body),
-            code: c.code.into_boxed_slice(),
+            code: c.code.into_iter().map(std::cell::Cell::new).collect(),
             spans: c.spans.into_boxed_slice(),
             consts: c.consts.into_boxed_slice(),
             sites: c.sites.into_boxed_slice(),
@@ -521,10 +543,20 @@ impl<'a> FnCompiler<'a> {
             nregs: nregs as u16,
             nparams: body.param_count as u16,
             hidden: colibri_check::is_prelude_span(body.span),
+            debug: env.debug.is_some().then(|| {
+                Box::new(crate::bytecode::DebugInfo {
+                    stmts: c.stmts.into_boxed_slice(),
+                    scopes: c.scopes.into_boxed_slice(),
+                    patches: Default::default(),
+                })
+            }),
             leaf: None,
         };
         let mut chunk = chunk;
-        chunk.leaf = crate::leaf::Leaf::build(&chunk);
+        // A debugger stops in every function, so there is no native loop for a closure.
+        if env.debug.is_none() {
+            chunk.leaf = crate::leaf::Leaf::build(&chunk);
+        }
         // The dispatch loop indexes registers unchecked; this is what makes that sound.
         chunk.verify_registers().map_err(Fail::Message)?;
         Ok(chunk)
@@ -702,6 +734,10 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    pub(crate) fn code_len(&self) -> usize {
+        self.code.len()
+    }
+
     fn emit_op(&mut self, op: Op, span: Span) -> usize {
         let node = self.state_override.unwrap_or_else(|| self.stack.top());
         // Without a pad or a receiver to hand back, the empty stack has nothing to run.
@@ -838,6 +874,12 @@ impl<'a> FnCompiler<'a> {
     pub(crate) fn back_edge(&mut self, head: Label, span: Span) {
         let op = if self.free {
             Op::Jmp { off: 0 }
+        } else if self.env.debug.is_some() {
+            // The edge's step is its own, and the jump is plain: a `Loop` would take the step
+            // of the first statement of the loop with it and skip the instruction a
+            // breakpoint or a step stops at.
+            self.emit(Op::Step { n: 1 }, span);
+            Op::Jmp { off: 0 }
         } else {
             Op::Loop { off: 0 }
         };
@@ -856,6 +898,15 @@ impl<'a> FnCompiler<'a> {
         if self.free {
             return;
         }
+        if self.env.debug.is_some() {
+            // One `Step` per statement, in the statement table.
+            let at = self.emit(Op::Step { n: 1 }, span);
+            self.step_at = None;
+            if !self.unlisted {
+                self.list_stmt(at, span);
+            }
+            return;
+        }
         match self.step_at {
             Some(at) => {
                 if let Op::Step { n } = &mut self.code[at] {
@@ -867,6 +918,20 @@ impl<'a> FnCompiler<'a> {
                 self.step_at = Some(at);
             }
         }
+    }
+
+    /// Debug mode: puts the statement (or tail) starting at `at` in the statement table. A
+    /// statement that starts at the next instruction with the same span is the first one's
+    /// lowering (the `if` inside a `while`): only the inner one is listed, so a breakpoint on
+    /// the line hits where the condition is evaluated.
+    pub(crate) fn list_stmt(&mut self, at: usize, span: Span) {
+        if let Some(&(prev, prev_span)) = self.stmts.last()
+            && prev as usize + 1 == at
+            && prev_span == span
+        {
+            self.stmts.pop();
+        }
+        self.stmts.push((at as u32, span));
     }
 
     // ---- registers ----

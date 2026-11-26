@@ -367,6 +367,33 @@ fn count_rc_forced() -> bool {
     }
 }
 
+/// `COLIBRI_TEST_DEBUG=1` runs every golden in debug mode (`Vm::set_debugger`) with a
+/// debugger attached that has no breakpoint and never stops: the output must not change.
+/// `0` or unset leaves it out; anything else is a mistake in the CI file and fails the run.
+fn debug_forced() -> bool {
+    match std::env::var("COLIBRI_TEST_DEBUG") {
+        Err(_) => false,
+        Ok(v) => match v.as_str() {
+            "1" => true,
+            "0" => false,
+            _ => panic!("COLIBRI_TEST_DEBUG must be 0 or 1, not {v:?}"),
+        },
+    }
+}
+
+/// The debugger of `COLIBRI_TEST_DEBUG`: it only lets the program run, at every stop.
+struct Idle;
+
+impl colibri::debug::Debugger for Idle {
+    fn stopped(
+        &mut self,
+        _view: &mut colibri::debug::DebugView<'_>,
+        _stop: &colibri::debug::Stop,
+    ) -> colibri::debug::Resume {
+        colibri::debug::Resume::Continue
+    }
+}
+
 fn run_with(
     load: impl FnOnce(&mut colibri::Vm) -> Result<(), colibri::Error>,
     dir: Option<&Path>,
@@ -399,6 +426,12 @@ fn run_with(
     let mut vm = builder.clock(clock.clone()).build();
     if count_rc_forced() {
         vm.start_rc_profile();
+    }
+    if debug_forced() {
+        vm.set_debugger(Box::new(Idle));
+        // Every panic of the goldens passes the hook of `Machine::catch`, which stops (and goes
+        // on at once) before anything unwinds.
+        vm.debug_break_on_panic(true);
     }
     colibri_std::install_with(&mut vm, hermetic_std(&temp.0))
         .expect("the standard library registers into a new Vm");

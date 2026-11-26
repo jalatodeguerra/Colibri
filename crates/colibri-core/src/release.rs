@@ -349,6 +349,7 @@ pub trait Release: Engine {
                 stack: Vec::new(),
                 notes: Vec::new(),
                 budget: false,
+                debug_serial: 0,
             });
             return false;
         }

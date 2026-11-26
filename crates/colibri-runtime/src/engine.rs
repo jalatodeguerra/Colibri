@@ -206,6 +206,24 @@ pub(crate) trait RuntimeEngine: HostCx {
         locate: &dyn Fn(colibri_syntax::Span) -> Option<(String, u32)>,
     ) -> Option<colibri_vm::Profile>;
 
+    /// Attaches a debugger: debug mode for the code loaded from now on.
+    fn set_debugger(
+        &mut self,
+        debugger: Box<dyn colibri_vm::debug::Debugger>,
+        locator: std::rc::Rc<dyn colibri_vm::debug::Locator>,
+    );
+    /// Detaches it and takes its breakpoints out of the code.
+    fn clear_debugger(&mut self);
+    /// Gives the debugger the lines of the program that is loaded now.
+    fn set_debug_locator(&mut self, locator: std::rc::Rc<dyn colibri_vm::debug::Locator>);
+    fn debug_set_breakpoints(
+        &mut self,
+        file: colibri_syntax::FileId,
+        specs: &[colibri_vm::debug::BreakpointSpec],
+    ) -> Vec<colibri_vm::debug::BreakpointInfo>;
+    fn debug_break_on_panic(&mut self, on: bool);
+    fn debug_pause_handle(&self) -> colibri_vm::debug::PauseHandle;
+
     /// Makes the code compiled from now on count reference-count traffic by line.
     fn start_rc_profile(&mut self);
     /// Stops counting; `locate` turns a span into a file name and a line.

@@ -36,6 +36,10 @@ impl Machine {
         // the program stopped, and nothing it wrote runs.
         let refusal = matches!(&ctl, Ctl::Panic(info) if info.message.starts_with(REFUSAL))
             || (self.refused && matches!(ctl, Ctl::Cancel));
+        // A debugger that breaks on panics sees it here, with every frame as it was.
+        if !skip_top && self.debug.is_some() {
+            self.debug_panic(fiber, &mut ctl);
+        }
         loop {
             let frame = fiber.frames.last_mut().expect("a frame to unwind");
             if !skip_top && !refusal {

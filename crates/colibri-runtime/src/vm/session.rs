@@ -109,6 +109,7 @@ impl Vm {
         let old_sources = Rc::clone(&self.sources);
         let undo = self.engine.session_extend(&program, map, &reinit_ids);
         self.sources = Rc::new(sources);
+        self.sync_debug_locator();
         self.engine
             .core_mut()
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));

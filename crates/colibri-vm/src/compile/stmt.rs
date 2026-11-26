@@ -11,6 +11,12 @@ use colibri_syntax::Span;
 use super::{FnCompiler, Item, Kind, Label, LoopCtx, is_scalar, kind_of};
 use crate::bytecode::{Op, Reg, Site};
 
+/// A block's scope while it is being compiled (debug mode).
+pub(super) struct ScopeBuild {
+    start: u32,
+    live: Vec<(colibri_check::hir::LocalId, u32)>,
+}
+
 /// What a `for` loop that is not over a range steps through.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Each {
@@ -84,12 +90,15 @@ impl FnCompiler<'_> {
     /// the tail goes to `dst`; its temporaries die once it has its value.
     pub(super) fn block(&mut self, b: &Block, dst: Option<Reg>) {
         let depth = self.cleanup_depth();
+        let mut scope = self.begin_scope();
         self.push_fold();
         for s in &b.stmts {
             self.stmt(s);
+            self.note_declared(&mut scope, s);
         }
         match &b.tail {
             Some(tail) => {
+                self.mark_tail(tail.span);
                 let m = self.mark();
                 match dst {
                     Some(d) => self.expr(tail, d),
@@ -114,11 +123,89 @@ impl FnCompiler<'_> {
             let keep = dst.filter(|_| !is_scalar(&b.ty));
             self.end_scope(depth, keep, b.span);
         }
+        self.finish_scope(scope, b);
+    }
+
+    /// Debug mode: where a block's code begins, and what its locals are live from.
+    fn begin_scope(&self) -> ScopeBuild {
+        ScopeBuild {
+            start: self.code_len() as u32,
+            live: Vec::new(),
+        }
+    }
+
+    /// Debug mode: the statement `s` of the block has been compiled: the locals it declares
+    /// (the ones whose declaration lies inside it) hold their values from here on.
+    fn note_declared(&mut self, scope: &mut ScopeBuild, s: &Stmt) {
+        if self.env.debug.is_none() {
+            return;
+        }
+        let at = self.code_len() as u32;
+        let locals = self.locals_by_start.get_or_insert_with(|| {
+            let mut v: Vec<_> = self
+                .body
+                .locals
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (l.span.start, l.span.end, l.span.file, i as u32))
+                .collect();
+            v.sort_unstable();
+            v
+        });
+        // The locals declared inside the statement start between its start and its end.
+        let from = locals.partition_point(|l| l.0 < s.span.start);
+        let mut ids = Vec::new();
+        for &(start, end, file, i) in &locals[from..] {
+            if start > s.span.end {
+                break;
+            }
+            if file == s.span.file && end <= s.span.end {
+                ids.push((colibri_check::hir::LocalId(i), at));
+            }
+        }
+        scope.live.extend(ids);
+    }
+
+    /// Debug mode: the start of a block's tail expression gets a place in the statement table.
+    fn mark_tail(&mut self, span: Span) {
+        if self.env.debug.is_none() || self.free {
+            return;
+        }
+        let at = self.emit(Op::Mark, span);
+        self.list_stmt(at, span);
+        self.step_at = None;
+    }
+
+    fn finish_scope(&mut self, scope: ScopeBuild, b: &Block) {
+        if self.env.debug.is_none() || self.free {
+            return;
+        }
+        let mut live = std::collections::HashMap::new();
+        for &(id, pc) in &scope.live {
+            live.entry(id).or_insert(pc);
+        }
+        let locals = b
+            .locals
+            .iter()
+            .map(|&l| (l, live.get(&l).copied().unwrap_or(scope.start)))
+            .collect();
+        self.scopes.push(crate::bytecode::ScopeInfo {
+            start: scope.start,
+            end: self.code_len() as u32,
+            locals,
+        });
     }
 
     pub(super) fn stmt(&mut self, s: &Stmt) {
         self.stmt_span = s.span;
+        self.unlisted = match &s.kind {
+            StmtKind::Break(id) | StmtKind::Continue(id) => {
+                self.loops.iter().any(|c| c.id == *id && c.span == s.span)
+            }
+            _ => false,
+        };
         self.count_statement(s.span);
+        self.unlisted = false;
         let span = s.span;
         if let StmtKind::Defer(deferred) = &s.kind {
             self.register_defer(deferred);
@@ -285,6 +372,7 @@ impl FnCompiler<'_> {
         let cleanups = self.cleanup_depth();
         self.loops.push(LoopCtx {
             id,
+            span,
             cleanups,
             brk,
             cont,
@@ -443,6 +531,7 @@ impl FnCompiler<'_> {
         }
         self.loops.push(LoopCtx {
             id: f.id,
+            span,
             cleanups,
             brk: exit,
             cont,
@@ -513,6 +602,7 @@ impl FnCompiler<'_> {
         }
         self.loops.push(LoopCtx {
             id: f.id,
+            span,
             cleanups,
             brk: exit,
             cont,

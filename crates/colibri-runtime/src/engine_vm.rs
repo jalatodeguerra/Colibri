@@ -298,6 +298,38 @@ impl RuntimeEngine for VmEngine {
         self.machine.finish_profile(locate)
     }
 
+    fn set_debugger(
+        &mut self,
+        debugger: Box<dyn colibri_vm::debug::Debugger>,
+        locator: std::rc::Rc<dyn colibri_vm::debug::Locator>,
+    ) {
+        self.machine.set_debugger(debugger, locator);
+    }
+
+    fn clear_debugger(&mut self) {
+        self.machine.clear_debugger();
+    }
+
+    fn set_debug_locator(&mut self, locator: std::rc::Rc<dyn colibri_vm::debug::Locator>) {
+        self.machine.set_debug_locator(locator);
+    }
+
+    fn debug_set_breakpoints(
+        &mut self,
+        file: colibri_syntax::FileId,
+        specs: &[colibri_vm::debug::BreakpointSpec],
+    ) -> Vec<colibri_vm::debug::BreakpointInfo> {
+        self.machine.debug_set_breakpoints(file, specs)
+    }
+
+    fn debug_break_on_panic(&mut self, on: bool) {
+        self.machine.debug_break_on_panic(on);
+    }
+
+    fn debug_pause_handle(&self) -> colibri_vm::debug::PauseHandle {
+        self.machine.debug_pause_handle()
+    }
+
     fn start_rc_profile(&mut self) {
         self.machine.start_rc_profile();
     }

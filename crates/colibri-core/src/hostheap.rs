@@ -412,6 +412,7 @@ impl Core {
                 stack: Vec::new(),
                 notes: Vec::new(),
                 budget: false,
+                debug_serial: 0,
             });
         }
     }

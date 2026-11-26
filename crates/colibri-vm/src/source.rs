@@ -56,6 +56,9 @@ pub struct Options {
     /// `Outcome::safepoints` (for tests that run the same programs under slices).
     #[doc(hidden)] // testing only, no stability promise
     pub safepoint_slice: Option<u32>,
+    /// Compile for a debugger (`Machine::set_debug`), with none attached.
+    #[doc(hidden)] // testing only, no stability promise
+    pub debug: bool,
 }
 
 impl Default for Options {
@@ -66,6 +69,7 @@ impl Default for Options {
             trace_drops: false,
             no_leaf: false,
             safepoint_slice: None,
+            debug: false,
         }
     }
 }
@@ -166,6 +170,7 @@ pub fn run_source_with(src: &str, options: &Options) -> Outcome {
         machine.core_mut().set_trace_drops(true);
     }
     machine.leaf_off = options.no_leaf;
+    machine.set_debug(options.debug);
     if let Some(every) = options.safepoint_slice.and_then(std::num::NonZeroU32::new) {
         machine
             .core_mut()
