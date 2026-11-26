@@ -19,14 +19,21 @@ pub enum SafepointKind {
     Memory,
     Debugger,
     Profiler,
+    /// A thread task's worker: the pool asks the running task to stop (see
+    /// `Core::set_cancel_flag`). Runs last, and only ever fails.
+    Cancel,
 }
+
+/// How many kinds there are.
+const KINDS: usize = 4;
 
 impl SafepointKind {
     /// Every kind, in the order the consumers run.
-    pub const ALL: [SafepointKind; 3] = [
+    pub const ALL: [SafepointKind; KINDS] = [
         SafepointKind::Memory,
         SafepointKind::Debugger,
         SafepointKind::Profiler,
+        SafepointKind::Cancel,
     ];
 
     fn index(self) -> usize {
@@ -49,11 +56,11 @@ pub struct Due {
 #[derive(Debug, Default)]
 pub struct Safepoints {
     /// The interval each kind asked for.
-    every: [Option<NonZeroU32>; 3],
+    every: [Option<NonZeroU32>; KINDS],
     /// The steps since each kind last ran.
-    since: [u64; 3],
+    since: [u64; KINDS],
     /// How many intervals of each kind have run (a sample that stood for several counts them all).
-    hits: [u64; 3],
+    hits: [u64; KINDS],
     /// The smallest interval asked for.
     slice: Option<NonZeroU32>,
     /// The steps spent in the slice that is running, across budgets: a host that calls in for 42
@@ -90,6 +97,21 @@ impl Core {
     /// slice changes: the steps are only counted differently.
     pub fn want_safepoints(&mut self, kind: SafepointKind, every: NonZeroU32) {
         self.resync(|sp| sp.every[kind.index()] = Some(every), kind);
+    }
+
+    /// Gives this engine a flag that stops it: once the flag is set, the next safepoint of the
+    /// kind `Cancel` (asked for with [`Core::want_safepoints`]) ends the running entry with the
+    /// panic that the budget's exhaustion raises. A worker of the thread pool gets the flag of
+    /// its pool, which is set when the `Vm` that owns the pool is dropped.
+    pub fn set_cancel_flag(&mut self, flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) {
+        self.cancel = flag;
+    }
+
+    /// Whether the flag given to [`Core::set_cancel_flag`] is set.
+    pub fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire))
     }
 
     /// Stops the safepoints of `kind`. With no consumer left the budget counts as before.
@@ -149,9 +171,9 @@ impl Core {
     /// The consumers whose interval has passed, in the order they run (`None` for the others);
     /// takes the safepoint off the due list. Every due consumer is taken at once: the engine's
     /// `safepoint` gives each its sample even when an earlier one fails.
-    pub fn take_due_safepoints(&mut self) -> [Option<Due>; 3] {
+    pub fn take_due_safepoints(&mut self) -> [Option<Due>; KINDS] {
         self.safepoint_due = false;
-        let mut due = [None; 3];
+        let mut due = [None; KINDS];
         let sp = &mut self.safepoints;
         for kind in SafepointKind::ALL {
             let i = kind.index();

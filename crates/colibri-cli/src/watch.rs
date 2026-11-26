@@ -31,7 +31,7 @@ pub fn run(file: &Path, args: Vec<String>) -> ExitCode {
     let mut vm = crate::build_vm_with_assets(
         crate::vm_builder().allow_all(),
         args,
-        Some(crate::assets::for_entry(file)),
+        Some(crate::assets::factory_for_entry(file)),
     );
     let mut watcher = Watcher {
         color: io::stderr().is_terminal(),

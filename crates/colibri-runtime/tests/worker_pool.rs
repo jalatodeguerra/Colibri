@@ -195,6 +195,21 @@ fn the_table_hash_changes_with_what_an_id_means() {
     );
 }
 
+#[test]
+fn the_table_hash_includes_the_capture_layout_of_closures() {
+    let hash = |source: &str| {
+        let mut vm = colibri::Vm::builder().worker_threads(1).build();
+        vm.load_source("h.colibri", source).unwrap();
+        vm.program_table_hash().unwrap()
+    };
+    // Same names, same signatures, same globals: only how the closure holds what it captured
+    // differs (by value, or in a cell shared with the enclosing function).
+    let by_value = "fn make(base: int) -> fn(int) -> int {\n    return fn(n: int) => n * base\n}\n";
+    let in_a_cell = "fn make(base: int) -> fn(int) -> int {\n    let mut b = base\n    b += 0\n    return fn(n: int) => n * b\n}\n";
+    assert_eq!(hash(by_value), hash(by_value));
+    assert_ne!(hash(by_value), hash(in_a_cell));
+}
+
 // ---- module state ----
 
 const STATE: &str = r#"
@@ -609,6 +624,8 @@ fn dropping_an_idle_vm_ends_every_thread() {
     drop(vm);
     assert_eq!(stats.started.load(Ordering::SeqCst), 3);
     assert_eq!(stats.alive.load(Ordering::SeqCst), 0);
+    // `drop` joined every thread: the count is of `join` calls that returned.
+    assert_eq!(stats.joined.load(Ordering::SeqCst), 3);
 }
 
 /// Dropped with the `Vm`'s host state: lets the task that is blocked go.
@@ -668,16 +685,158 @@ fn dropping_a_vm_lets_the_running_task_finish_and_drops_the_queued_ones() {
     let stats = vm.worker_stats();
     let first = vm.submit_portable("first", vec![]).unwrap();
     let second = vm.submit_portable("second", vec![]).unwrap();
-    // The first task is running (the only worker is in it), the second waits in the queue.
-    started_rx.recv().unwrap();
+    // The first task is running (the only worker is in it), the second waits in the queue. A
+    // worker that cannot be built ends the first task instead: the test fails, it does not wait.
+    loop {
+        if started_rx.try_recv().is_ok() {
+            break;
+        }
+        if let Some(ended) = first.try_wait() {
+            panic!("the first task ended before it blocked: {ended:?}");
+        }
+        std::thread::yield_now();
+    }
     drop(vm);
     // `drop` closed the queue, freed the host state (which opened the gate) and joined the
     // worker: the running task finished, the queued one never ran, and no thread is left.
     assert_eq!(finished.load(Ordering::SeqCst), 1);
     assert_eq!(queued_ran.load(Ordering::SeqCst), 0);
     assert_eq!(stats.alive.load(Ordering::SeqCst), 0);
+    assert_eq!(stats.joined.load(Ordering::SeqCst), 1);
     assert!(first.wait().is_ok());
     assert_eq!(second.wait().unwrap_err(), TaskFailure::Cancelled);
+}
+
+/// Registers `started` on the worker (and a no-op on the main `Vm`): a task that calls it tells
+/// the test it runs.
+fn with_started(started_tx: mpsc::Sender<()>) -> (colibri::Vm, Arc<Mutex<mpsc::Sender<()>>>) {
+    let started_tx = Arc::new(Mutex::new(started_tx));
+    let vm = colibri::Vm::builder()
+        .worker_threads(1)
+        .worker_setup({
+            let started_tx = Arc::clone(&started_tx);
+            move |vm| {
+                let started_tx = Arc::clone(&started_tx);
+                vm.register_fn("started", move || {
+                    started_tx.lock().unwrap().send(()).unwrap();
+                })
+                .unwrap();
+            }
+        })
+        .build();
+    (vm, started_tx)
+}
+
+/// Waits until a task that was submitted tells it runs, or ends (which is a failure of the test).
+fn wait_started(started_rx: &mpsc::Receiver<()>, task: &colibri::tasks::PendingTask) {
+    loop {
+        if started_rx.try_recv().is_ok() {
+            return;
+        }
+        if let Some(ended) = task.try_wait() {
+            panic!("the task ended before it started: {ended:?}");
+        }
+        std::thread::yield_now();
+    }
+}
+
+const FOREVER: &str = r#"
+fn forever() {
+    started()
+    let mut n = 0
+    while true {
+        n += 1
+    }
+}
+
+fn queued() {
+    started()
+}
+"#;
+
+#[test]
+fn dropping_a_vm_cancels_a_task_that_never_ends() {
+    let (started_tx, started_rx) = mpsc::channel();
+    let (mut vm, _keep) = with_started(started_tx);
+    vm.register_fn("started", || {}).unwrap();
+    vm.load_source("forever.colibri", FOREVER).unwrap();
+    let stats = vm.worker_stats();
+    let looping = vm.submit_portable("forever", vec![]).unwrap();
+    let queued = vm.submit_portable("queued", vec![]).unwrap();
+    wait_started(&started_rx, &looping);
+    // The loop has no instruction budget and no end: `drop` stops it at a safepoint and joins.
+    drop(vm);
+    assert_eq!(stats.alive.load(Ordering::SeqCst), 0);
+    assert_eq!(stats.joined.load(Ordering::SeqCst), 1);
+    assert_eq!(looping.wait().unwrap_err(), TaskFailure::Cancelled);
+    assert_eq!(queued.wait().unwrap_err(), TaskFailure::Cancelled);
+}
+
+// ---- what a task leaves behind ----
+
+const GHOSTS: &str = r#"
+fn ghost() {
+    defer print("ghost cleaned")
+    wait(1000.0)
+}
+
+fn leave_a_ghost() -> int {
+    go ghost()
+    return 1
+}
+
+fn quiet() -> int {
+    return 2
+}
+"#;
+
+#[test]
+fn a_coroutine_a_task_left_is_cancelled_when_it_ends() {
+    let out = colibri::SyncBuffer::new();
+    let mut vm = colibri::Vm::builder()
+        .worker_threads(1)
+        .stdout_shared(Box::new(out.clone()))
+        .build();
+    vm.load_source("ghosts.colibri", GHOSTS).unwrap();
+    assert_eq!(int(run(&mut vm, "leave_a_ghost", vec![])), 1);
+    // By the time the task's result is out, its leftover coroutine ran its `defer`: it was
+    // cancelled with the task, not left to run inside the next one.
+    assert_eq!(out.contents(), "ghost cleaned\n");
+    assert_eq!(int(run(&mut vm, "quiet", vec![])), 2);
+    assert_eq!(out.contents(), "ghost cleaned\n");
+    assert_eq!(vm.worker_stats().builds.load(Ordering::SeqCst), 1);
+}
+
+// ---- builds that fail ----
+
+#[test]
+fn a_panicking_worker_setup_is_reported_and_remembered_for_the_image() {
+    let mut vm = colibri::Vm::builder()
+        .worker_threads(1)
+        .worker_setup(|_| panic!("the setup broke"))
+        .build();
+    vm.load_source("a.colibri", "fn one() -> int {\n    return 1\n}\n")
+        .unwrap();
+    let stats = vm.worker_stats();
+    let why = internal(run(&mut vm, "one", vec![]));
+    assert!(
+        why.contains("worker_setup panicked: the setup broke"),
+        "{why}"
+    );
+    // The thread is alive, and the next tasks of the same image fail the same way without
+    // another build (each would run the checker again).
+    for _ in 0..3 {
+        assert_eq!(internal(run(&mut vm, "one", vec![])), why);
+    }
+    assert_eq!(stats.failed_builds.load(Ordering::SeqCst), 1);
+    assert_eq!(stats.builds.load(Ordering::SeqCst), 0);
+    assert_eq!(stats.alive.load(Ordering::SeqCst), 1);
+    // Another program is another image: the thread tries again.
+    vm.shutdown();
+    vm.load_source("b.colibri", "fn one() -> int {\n    return 1\n}\n")
+        .unwrap();
+    assert!(internal(run(&mut vm, "one", vec![])).contains("the setup broke"));
+    assert_eq!(stats.failed_builds.load(Ordering::SeqCst), 2);
 }
 
 // ---- deep values ----

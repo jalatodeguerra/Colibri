@@ -58,7 +58,7 @@ pub use rc::{RcLine, RcProfile};
 pub use source::{Options, Outcome, compile_source, run_source, run_source_with};
 pub use stacks::{
     RECEIVER_EXTRA_BUDGET, SENDER_WALK_BUDGET, WALK_STACK, WalkRole, on_walk_stack,
-    walk_stacks_pooled,
+    refuse_walk_stacks, walk_stacks_pooled,
 };
 
 #[cfg(test)]

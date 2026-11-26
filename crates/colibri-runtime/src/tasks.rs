@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::JoinHandle;
 
@@ -160,6 +160,22 @@ pub(crate) fn program_hash(program: &colibri_check::hir::Program) -> u64 {
     for f in &program.fns {
         let _ = write!(text, "{}:{:?}:{};", f.name, f.sig, f.type_params);
     }
+    // The captures of a closure (a portable closure names its cells by index), in the order and
+    // with the storage the checker gave them. No table hashed here holds a map, whose `Debug`
+    // order would differ from one thread to the next.
+    text.push('|');
+    for f in &program.fns {
+        for c in &f.body.captures {
+            let local = f.body.locals.get(c.0 as usize);
+            let _ = write!(
+                text,
+                "{}:{:?},",
+                c.0,
+                local.map(|l| (&l.ty, l.storage, l.mutable))
+            );
+        }
+        text.push(';');
+    }
     text.push('|');
     for h in &program.host_fns {
         let _ = write!(text, "{}.{}:{:?};", h.module, h.name, h.requires);
@@ -198,7 +214,8 @@ pub enum TaskFailure {
     /// The entry used up the instruction budget of the `Vm` (a worker's failure is not the main
     /// entry's: it reaches the joiner as an `err`).
     BudgetExhausted,
-    /// The entry passed the memory limit of the `Vm`, which the worker shares.
+    /// The task passed the memory limit of the `Vm` (the limit is the task's own: what the `Vm`
+    /// and its other workers hold counts, but only the isolate that allocates past it fails).
     MemoryLimit { limit: u64 },
     /// An argument could not be rebuilt on the worker, or the result could not be copied out
     /// (the message names the reason).
@@ -208,7 +225,8 @@ pub enum TaskFailure {
     Internal(String),
     /// The pool could not start a task: there are no threads on the web.
     CannotStart(String),
-    /// The `Vm` was dropped before the task started.
+    /// The `Vm` was dropped before the task started, or while it ran (it was stopped at a
+    /// safepoint).
     Cancelled,
 }
 
@@ -223,7 +241,7 @@ impl std::fmt::Display for TaskFailure {
             TaskFailure::Copy(message) => f.write_str(message),
             TaskFailure::Internal(message) => write!(f, "internal error: {message}"),
             TaskFailure::CannotStart(message) => f.write_str(message),
-            TaskFailure::Cancelled => f.write_str("the task never ran: the Vm was dropped"),
+            TaskFailure::Cancelled => f.write_str("the task was cancelled: the Vm was dropped"),
         }
     }
 }
@@ -264,6 +282,11 @@ pub struct PoolStats {
     pub builds: AtomicUsize,
     /// Tasks that ran to a result or a failure.
     pub tasks: AtomicUsize,
+    /// Worker `Vm`s that could not be built (a mismatch, a panicking `worker_setup`). A thread
+    /// remembers the failure for the image it failed on, so one image costs a thread one attempt.
+    pub failed_builds: AtomicUsize,
+    /// Threads that were joined: counted when `join` of the thread returned.
+    pub joined: AtomicUsize,
 }
 
 /// What every worker needs from the `Vm` that owns the pool.
@@ -274,6 +297,9 @@ pub(crate) struct WorkerCfg {
     pub out: WorkerOut,
     pub caps: CapSet,
     pub max_call_depth: usize,
+    /// Whether this platform can start threads (not the web): the pool's one seam to the
+    /// platform, so that a test can see the refusal without a web build.
+    pub threads_supported: bool,
 }
 
 /// One task for a worker.
@@ -306,6 +332,9 @@ struct Queue {
 struct Shared {
     queue: Mutex<Queue>,
     wake: Condvar,
+    /// Set when the pool shuts down: the task that runs stops at its next safepoint, like the
+    /// debugger's pause request (`SafepointKind::Cancel`).
+    cancel: Arc<AtomicBool>,
 }
 
 /// The worker threads of a `Vm`. Dropping the pool shuts it down: see [`TaskPool::shutdown`].
@@ -327,6 +356,7 @@ impl TaskPool {
                     closed: false,
                 }),
                 wake: Condvar::new(),
+                cancel: Arc::new(AtomicBool::new(false)),
             }),
             stats,
             handles: Vec::new(),
@@ -342,7 +372,7 @@ impl TaskPool {
 
     /// Queues a task, starting the threads if this is the first.
     pub(crate) fn submit(&mut self, job: Submission) -> Result<PendingTask, TaskFailure> {
-        if cfg!(target_family = "wasm") {
+        if !self.cfg.threads_supported {
             return Err(TaskFailure::CannotStart(
                 colibri_core::external::NO_THREADS.to_string(),
             ));
@@ -408,7 +438,9 @@ impl TaskPool {
 
     /// Stops taking tasks: the ones still queued never run (their handles report
     /// [`TaskFailure::Cancelled`]), and the threads leave their loop once the task each is
-    /// running ends. Does not wait.
+    /// running ends. Does not wait. (The queue is emptied here and every thread also looks at
+    /// `closed` before it takes a job: either alone would do, and a thread that was between
+    /// the two when the pool closed must not start a job.)
     pub(crate) fn close(&mut self) {
         let dropped = {
             let mut queue = lock(&self.shared.queue);
@@ -420,14 +452,18 @@ impl TaskPool {
         self.shared.wake.notify_all();
     }
 
-    /// Closes the pool and waits for every thread to end. A task that is running **finishes**
-    /// first (the instruction budget bounds it when the `Vm` has one), then its thread drops the
-    /// worker `Vm` and ends; no thread is left behind, and none is detached.
+    /// Closes the pool and waits for every thread to end. A task that is running is **cancelled**:
+    /// it stops at its next safepoint (a few thousand steps), reports [`TaskFailure::Cancelled`],
+    /// and its thread drops the worker `Vm` and ends. No thread is left behind, and none is
+    /// detached. What a cancellation cannot interrupt is a host function that blocks (a read
+    /// from standard input, a sleep): the shutdown waits for it to return.
     pub(crate) fn shutdown(&mut self) {
+        self.shared.cancel.store(true, Ordering::Release);
         self.close();
         for handle in self.handles.drain(..) {
             // A worker that panicked outside a task has nothing more to say.
             let _ = handle.join();
+            self.stats.joined.fetch_add(1, Ordering::SeqCst);
         }
     }
 }
@@ -452,6 +488,9 @@ fn worker_main(shared: &Shared, cfg: &WorkerCfg, stats: &PoolStats) {
     let _alive = Alive(stats);
     // The isolate of this thread, and the image it was built from.
     let mut isolate: Option<(Vm, Arc<ProgramImage>, u64)> = None;
+    // The image this thread failed to build an isolate from, and why: the tasks that wait for the
+    // same image fail alike without another full check.
+    let mut failed: Option<(Arc<ProgramImage>, u64, String)> = None;
     loop {
         let job = {
             let mut queue = lock(&shared.queue);
@@ -482,13 +521,31 @@ fn worker_main(shared: &Shared, cfg: &WorkerCfg, stats: &PoolStats) {
                 Some((_, built, built_hash)) => !Arc::ptr_eq(built, &image) || *built_hash != hash,
                 None => true,
             };
+            if shared.cancel.load(Ordering::Acquire) {
+                return Err(TaskFailure::Cancelled);
+            }
             if stale {
+                if let Some((bad, bad_hash, why)) = &failed
+                    && Arc::ptr_eq(bad, &image)
+                    && *bad_hash == hash
+                {
+                    return Err(TaskFailure::Internal(why.clone()));
+                }
                 // The old isolate goes first: its program and its host state are freed before the
                 // new one is built.
                 isolate = None;
-                let vm = Vm::build_worker(cfg, &image, hash).map_err(TaskFailure::Internal)?;
-                stats.builds.fetch_add(1, Ordering::SeqCst);
-                isolate = Some((vm, Arc::clone(&image), hash));
+                match Vm::build_worker(cfg, &image, hash, &shared.cancel) {
+                    Ok(vm) => {
+                        stats.builds.fetch_add(1, Ordering::SeqCst);
+                        failed = None;
+                        isolate = Some((vm, Arc::clone(&image), hash));
+                    }
+                    Err(why) => {
+                        stats.failed_builds.fetch_add(1, Ordering::SeqCst);
+                        failed = Some((Arc::clone(&image), hash, why.clone()));
+                        return Err(TaskFailure::Internal(why));
+                    }
+                }
             }
             let Some((vm, _, _)) = isolate.as_mut() else {
                 return Err(TaskFailure::Internal("no worker".to_string()));
@@ -532,6 +589,42 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn a_platform_without_threads_refuses_the_task_and_starts_nothing() {
+        // The seam of the web build: `threads_supported` is `false` there.
+        let stats = Arc::new(PoolStats::default());
+        let cfg = WorkerCfg {
+            threads: Some(2),
+            setup: None,
+            out: WorkerOut::Process,
+            caps: CapSet::default(),
+            max_call_depth: 100,
+            threads_supported: false,
+        };
+        let mut pool = TaskPool::new(cfg, Arc::clone(&stats));
+        let image = Arc::new(ProgramImage {
+            files: MemoryFs::default(),
+            entry: OwnedEntry::File(PathBuf::from("a.colibri")),
+            cfg: BuildCfg::default(),
+            iface: Vec::new(),
+        });
+        let refused = pool
+            .submit(Submission {
+                image,
+                hash: 0,
+                function: "f".to_string(),
+                args: Vec::new(),
+                budget: None,
+                account: (0, None),
+            })
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            TaskFailure::CannotStart(colibri_core::external::NO_THREADS.to_string())
+        );
+        assert_eq!(stats.started.load(Ordering::SeqCst), 0);
     }
 
     #[test]

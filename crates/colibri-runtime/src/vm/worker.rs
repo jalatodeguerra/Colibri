@@ -3,8 +3,12 @@
 
 use super::*;
 
-use colibri_core::portable::{NotSendable, Portable, RebuildError};
+use colibri_core::portable::{NotSendable, Portable, RebuildError, Refused};
 use colibri_vm::{WalkRole, on_walk_stack};
+use std::sync::atomic::AtomicBool;
+
+/// How many steps a running task goes between two looks at the pool's cancel flag.
+const CANCEL_SLICE: u32 = 4096;
 
 /// The failure of a task that panicked, as plain data.
 fn failure_of(error: Error) -> TaskFailure {
@@ -116,6 +120,7 @@ impl Vm {
         cfg: &WorkerCfg,
         image: &ProgramImage,
         expected_hash: u64,
+        cancel: &Arc<AtomicBool>,
     ) -> Result<Vm, String> {
         let mut builder = Vm::builder()
             .build_cfg(image.cfg.clone())
@@ -126,6 +131,9 @@ impl Vm {
             builder.shared_out = Some(Arc::clone(shared));
         }
         let mut vm = builder.build();
+        vm.engine
+            .core_mut()
+            .set_cancel_flag(Some(Arc::clone(cancel)));
         if let Some(setup) = &cfg.setup {
             catch_unwind(AssertUnwindSafe(|| setup(&mut vm))).map_err(|payload| {
                 format!(
@@ -265,14 +273,34 @@ impl Vm {
             let core = self.engine.core_mut();
             core.set_instruction_budget(budget);
             core.adopt_memory_account(account.0, account.1);
+            // The pool asks a task to stop (the `Vm` was dropped) at a safepoint.
+            if let Some(every) = std::num::NonZeroU32::new(CANCEL_SLICE) {
+                core.want_safepoints(colibri_core::safepoint::SafepointKind::Cancel, every);
+            }
         }
         // Everything the task allocates, the rebuilt arguments and the result's portable form
         // included, is charged to the parent's account.
         let entry_account = self.engine.core_mut().mem.enter();
         let outcome = self.run_task_in(f, args);
+        // A coroutine the task left must not run inside the next task of this isolate (nor hold
+        // memory of the parent's account): it is cancelled, newest first, its `defer`s run, as
+        // at the end of a program. The budget and the limit it runs under are the task's own,
+        // renewed, so that a task that used them up still cleans up.
+        {
+            let core = self.engine.core_mut();
+            core.set_instruction_budget(budget);
+            core.set_memory_limit(account.1);
+        }
+        self.cancel_coroutines();
         self.engine.core_mut().mem.leave(entry_account);
         self.engine.core_mut().flush();
-        outcome
+        match outcome {
+            // The pool asked: the budget's unwinding was a cancellation.
+            Err(TaskFailure::BudgetExhausted) if self.engine.core().cancelled() => {
+                Err(TaskFailure::Cancelled)
+            }
+            other => other,
+        }
     }
 
     fn run_task_in(
@@ -282,9 +310,11 @@ impl Vm {
     ) -> Result<TaskDone, TaskFailure> {
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
-            let rebuilt = on_walk_stack(WalkRole::Receiver, |guard| {
-                colibri_core::portable::from_portable(arg, self.engine.core_mut(), guard)
-            });
+            let rebuilt = on_walk_stack(
+                WalkRole::Receiver,
+                crate::tasks::WORKER_NATIVE_BUDGET,
+                |guard| colibri_core::portable::from_portable(arg, self.engine.core_mut(), guard),
+            );
             match rebuilt {
                 Ok(v) => values.push(v),
                 Err(e) => {
@@ -305,13 +335,19 @@ impl Vm {
         match result {
             Err(info) => Err(failure_of(panic_error(self.engine.core(), *info))),
             Ok(value) => {
-                let copied: Result<Portable, NotSendable> =
-                    on_walk_stack(WalkRole::Sender, |guard| {
-                        self.engine.to_portable(&value, guard)
-                    });
+                let copied: Result<Portable, NotSendable> = on_walk_stack(
+                    WalkRole::Sender,
+                    crate::tasks::WORKER_NATIVE_BUDGET,
+                    |guard| self.engine.to_portable(&value, guard),
+                );
                 self.engine.release_in_entry(value);
                 match copied {
                     Ok(value) => Ok(TaskDone { value, steps }),
+                    // A result too large to copy back is the memory limit's failure, as the
+                    // arguments' rebuilding is.
+                    Err(e) if e.refused == Refused::MemoryLimit => Err(TaskFailure::MemoryLimit {
+                        limit: self.engine.core().memory_limit().unwrap_or(0),
+                    }),
                     Err(e) => Err(TaskFailure::Copy(e.to_string())),
                 }
             }

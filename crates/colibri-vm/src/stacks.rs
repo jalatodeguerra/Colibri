@@ -418,6 +418,35 @@ impl WalkRole {
             WalkRole::Receiver => SENDER_WALK_BUDGET + RECEIVER_EXTRA_BUDGET,
         }
     }
+
+    /// The native stack a walk in this role may use when it runs on the caller's own stack, of
+    /// which `native` bytes are the caller's to use (an engine's `native_stack_budget`): the
+    /// walk stack's budget, but never more than the caller has. The receiver keeps its extra over
+    /// the sender, so the one relation holds on every stack.
+    pub const fn fallback_budget(self, native: usize) -> usize {
+        let own = match self {
+            WalkRole::Sender => native,
+            WalkRole::Receiver => native.saturating_add(RECEIVER_EXTRA_BUDGET),
+        };
+        if own < self.budget() {
+            own
+        } else {
+            self.budget()
+        }
+    }
+}
+
+thread_local! {
+    /// Makes this thread's walks behave as if no stack could be mapped (tests).
+    static NO_WALK_STACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes the walks of this thread run on the caller's stack as when no walk stack can be mapped
+/// (the pool is emptied too). Tests only.
+#[doc(hidden)]
+pub fn refuse_walk_stacks(refuse: bool) {
+    NO_WALK_STACK.with(|r| r.set(refuse));
+    WALK_POOL.with(|p| p.borrow_mut().clear());
 }
 
 /// How many stacks a thread keeps for walks.
@@ -435,17 +464,28 @@ thread_local! {
 /// the budget of `role`, whatever stack the calling thread has. Both ends of a crossing use the
 /// same size, so the receiver's extra budget decides what each accepts and not the luck of the
 /// thread it runs on. If no stack can be mapped the walk runs on the caller's stack, measured from
-/// here against the same budget.
+/// here against [`WalkRole::fallback_budget`] of `native` (the native stack the caller may use),
+/// so that a value that is too deep for it is refused as "too deep" and does not overflow it.
 pub fn on_walk_stack<R>(
     role: WalkRole,
+    native: usize,
     walk: impl FnOnce(colibri_core::portable::StackGuard) -> R,
 ) -> R {
     let pooled = WALK_POOL.with(|p| p.borrow_mut().pop());
     let mut stack = match pooled {
         Some(stack) => stack,
+        None if NO_WALK_STACK.with(std::cell::Cell::get) => {
+            return walk(colibri_core::portable::StackGuard::here(
+                role.fallback_budget(native),
+            ));
+        }
         None => match DefaultStack::new(WALK_STACK) {
             Ok(stack) => stack,
-            Err(_) => return walk(colibri_core::portable::StackGuard::here(role.budget())),
+            Err(_) => {
+                return walk(colibri_core::portable::StackGuard::here(
+                    role.fallback_budget(native),
+                ));
+            }
         },
     };
     let guard = colibri_core::portable::StackGuard::new(stack.base().get(), role.budget());

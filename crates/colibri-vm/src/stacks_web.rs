@@ -85,17 +85,37 @@ impl WalkRole {
             WalkRole::Receiver => SENDER_WALK_BUDGET + RECEIVER_EXTRA_BUDGET,
         }
     }
+
+    pub const fn fallback_budget(self, native: usize) -> usize {
+        let own = match self {
+            WalkRole::Sender => native,
+            WalkRole::Receiver => native.saturating_add(RECEIVER_EXTRA_BUDGET),
+        };
+        if own < self.budget() {
+            own
+        } else {
+            self.budget()
+        }
+    }
 }
 
-/// Runs `walk` on the caller's stack, measured from here against the budget of `role`.
+/// Runs `walk` on the caller's stack, measured from here against the budget of `role` within
+/// the `native` bytes the caller may use (the web's stack is small).
 pub fn on_walk_stack<R>(
     role: WalkRole,
+    native: usize,
     walk: impl FnOnce(colibri_core::portable::StackGuard) -> R,
 ) -> R {
-    walk(colibri_core::portable::StackGuard::here(role.budget()))
+    walk(colibri_core::portable::StackGuard::here(
+        role.fallback_budget(native),
+    ))
 }
 
 #[doc(hidden)]
 pub fn walk_stacks_pooled() -> usize {
     0
 }
+
+/// There is nothing to refuse: the walks always run on the caller's stack.
+#[doc(hidden)]
+pub fn refuse_walk_stacks(_refuse: bool) {}

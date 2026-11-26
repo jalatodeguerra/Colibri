@@ -301,6 +301,13 @@ fn hermetic_std(temp: &Path) -> colibri_std::StdConfig {
     }
 }
 
+/// [`hermetic_std`] as a worker thread sees it: the same environment, arguments, time zone and
+/// seed (mixed with the worker's number), and a manual clock of its own at the same time.
+fn hermetic_worker_std(temp: &Path) -> colibri_std::WorkerStd {
+    colibri_std::WorkerStd::from_config(&hermetic_std(temp))
+        .with_clock(|| Box::new(colibri_std::ManualClock::new(1_700_000_000.0)))
+}
+
 /// A new empty folder under the system's temporary folder, removed on drop.
 struct TempFolder(std::path::PathBuf);
 
@@ -394,14 +401,18 @@ impl colibri::debug::Debugger for Idle {
     }
 }
 
-fn run_with(
-    load: impl FnOnce(&mut colibri::Vm) -> Result<(), colibri::Error>,
-    dir: Option<&Path>,
-    blank: &str,
+/// The `Vm` of a golden test, before its library is installed: the output (the main thread's and
+/// the workers') is collected in `out` through the shared writer, a worker's library is the one
+/// `main` gets (the same environment, arguments, time zone and seed, a manual clock of its own),
+/// and the clock of the event loop is fake.
+fn golden_vm(
+    out: &colibri::SyncBuffer,
+    temp: &Path,
     caps: &[String],
     features: &[String],
-) -> Outcome {
-    let out = colibri::SharedBuffer::new();
+) -> (colibri::Vm, FakeClock) {
+    // What a thread task's worker sees of the world is what `main` sees.
+    let worker_std = hermetic_worker_std(temp);
     // A runaway program fails its test instead of hanging the run. In a debug build the VM
     // compiles the whole program at load, so a function that cannot be compiled fails its test
     // even if the run never calls it.
@@ -410,7 +421,11 @@ fn run_with(
         .compile_all_at_load(cfg!(debug_assertions))
         .trace_drops(true)
         .track_leaks(true)
-        .stdout(Box::new(out.clone()));
+        .stdout_shared(Box::new(out.clone()))
+        .worker_setup(move |worker| {
+            colibri_std::install_worker(worker, &worker_std)
+                .expect("the standard library registers into a new Vm");
+        });
     for feature in features {
         builder = builder.feature(feature);
     }
@@ -420,10 +435,37 @@ fn run_with(
             None => panic!("`// caps:` names an unknown capability `{cap}`"),
         }
     }
-    let temp = TempFolder::new();
     // A fake clock that never sleeps: the event loop jumps to the next due wake.
     let clock = FakeClock::default();
-    let mut vm = builder.clock(clock.clone()).build();
+    let vm = builder.clock(clock.clone()).build();
+    (vm, clock)
+}
+
+/// A golden test's `Vm` with its library installed, for tests of the harness: the output goes to
+/// `out`. The second value keeps the test's temporary folder until it is dropped.
+#[doc(hidden)]
+pub fn hermetic_vm(out: &colibri::SyncBuffer) -> (colibri::Vm, impl Drop) {
+    let temp = TempFolder::new();
+    let caps: Vec<String> = colibri::Cap::ALL
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    let (mut vm, _clock) = golden_vm(out, &temp.0, &caps, &[]);
+    colibri_std::install_with(&mut vm, hermetic_std(&temp.0))
+        .expect("the standard library registers into a new Vm");
+    (vm, temp)
+}
+
+fn run_with(
+    load: impl FnOnce(&mut colibri::Vm) -> Result<(), colibri::Error>,
+    dir: Option<&Path>,
+    blank: &str,
+    caps: &[String],
+    features: &[String],
+) -> Outcome {
+    let out = colibri::SyncBuffer::new();
+    let temp = TempFolder::new();
+    let (mut vm, clock) = golden_vm(&out, &temp.0, caps, features);
     if count_rc_forced() {
         vm.start_rc_profile();
     }

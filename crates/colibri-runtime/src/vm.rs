@@ -335,6 +335,7 @@ impl VmBuilder {
         let stats = Arc::new(PoolStats::default());
         let workers = WorkerCfg {
             threads: self.worker_threads,
+            threads_supported: !cfg!(target_family = "wasm"),
             setup: self.worker_setup,
             out: worker_out,
             caps: self.caps,

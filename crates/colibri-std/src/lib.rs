@@ -71,7 +71,7 @@ pub use assets::{
     AssetError, AssetSource, NOT_A_FOLDER, NOT_AN_ASSET, PackAssets, check_dir, children, for_pack,
     io_reason,
 };
-pub use config::{Clock, EnvSource, ManualClock, StdConfig, SystemClock};
+pub use config::{Clock, EnvSource, Factory, ManualClock, StdConfig, SystemClock, WorkerStd};
 pub use rand::Rng;
 
 /// The modules of the standard library built so far, in the order they are registered.
@@ -264,6 +264,16 @@ pub fn set_stderr(vm: &mut Vm, writer: Box<dyn std::io::Write>) {
     if let Some(state) = vm.state_mut::<config::State>() {
         state.stderr = Some(writer);
     }
+}
+
+/// What a host's `worker_setup` calls on the `Vm` of each worker thread: [`install_with`] with the
+/// configuration `worker` makes for it, and its `io.eprint` target when the host set one.
+pub fn install_worker(vm: &mut Vm, worker: &WorkerStd) -> Result<(), Error> {
+    install_with(vm, worker.config())?;
+    if let Some(stderr) = worker.stderr() {
+        set_stderr(vm, stderr);
+    }
+    Ok(())
 }
 
 /// Tags a registration with a capability.

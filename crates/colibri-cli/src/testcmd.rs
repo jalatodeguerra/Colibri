@@ -32,6 +32,23 @@ pub struct Options {
     pub profile_rc: bool,
 }
 
+/// The `Vm` of `colibri test`: what the tests print (and what the workers of their thread tasks
+/// print) is collected in `captured`, unless `--nocapture` lets it through to the terminal.
+#[doc(hidden)]
+pub fn build_test_vm(options: &Options, captured: &colibri::SyncBuffer) -> colibri::Vm {
+    let mut builder = crate::vm_builder()
+        .allow_all()
+        .track_leaks(options.leaks.is_some());
+    if !options.nocapture {
+        builder = builder.stdout_shared(Box::new(captured.clone()));
+    }
+    crate::build_vm_with_assets(
+        builder,
+        Vec::new(),
+        Some(crate::assets::factory_for_entry(&options.path)),
+    )
+}
+
 /// Runs the tests and prints the report to stdout; the exit code is 1 if the program does not
 /// compile or any test fails.
 pub fn run(options: &Options) -> ExitCode {
@@ -39,18 +56,8 @@ pub fn run(options: &Options) -> ExitCode {
     if let Err(code) = crate::depscmd::prepare(&options.path, options.deps) {
         return code;
     }
-    let captured = colibri::SharedBuffer::new();
-    let mut builder = crate::vm_builder()
-        .allow_all()
-        .track_leaks(options.leaks.is_some());
-    if !options.nocapture {
-        builder = builder.stdout(Box::new(captured.clone()));
-    }
-    let mut vm = crate::build_vm_with_assets(
-        builder,
-        Vec::new(),
-        Some(crate::assets::for_entry(&options.path)),
-    );
+    let captured = colibri::SyncBuffer::new();
+    let mut vm = build_test_vm(options, &captured);
     if options.profile_rc {
         // Before the load: the counting is part of the code that gets compiled.
         crate::profilecmd::start_rc(&mut vm);

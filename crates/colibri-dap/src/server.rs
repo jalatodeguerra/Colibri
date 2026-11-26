@@ -31,9 +31,9 @@ pub struct LaunchArgs {
     /// Feature flags for `@when` conditions.
     pub features: Vec<String>,
     /// Where `print` must write: the adapter turns it into `output` events.
-    pub stdout: Box<dyn Write>,
+    pub stdout: Box<dyn Write + Send>,
     /// Where `io.eprint` must write.
-    pub stderr: Box<dyn Write>,
+    pub stderr: Box<dyn Write + Send>,
 }
 
 /// Builds the `Vm` of a `launch`.
@@ -702,7 +702,7 @@ fn launch(state: &Rc<RefCell<State>>, request: &Request) -> Result<colibri::Vm, 
             Box::new(EventWriter {
                 out: Arc::clone(&st.out),
                 category,
-            }) as Box<dyn Write>
+            }) as Box<dyn Write + Send>
         };
         let launch_args = LaunchArgs {
             program: st.program.clone(),

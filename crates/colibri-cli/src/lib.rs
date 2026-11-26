@@ -57,6 +57,10 @@ pub fn vm_builder() -> colibri_runtime::VmBuilder {
         .build_cfg(build_cfg())
         .max_call_depth(colibri_runtime::DEFAULT_MAX_CALL_DEPTH)
         .native_stack_budget(NATIVE_STACK_BUDGET)
+        // What the main thread and the workers of thread tasks print goes through one writer,
+        // whole lines at a time, so that their lines never tear each other. A command that
+        // collects the output replaces it with `stdout_shared` of its own.
+        .stdout_shared(Box::new(std::io::stdout()))
 }
 
 /// Builds the `Vm` with the standard library installed (`import math`, `import fs`, ...).
@@ -65,43 +69,47 @@ pub fn build_vm(builder: colibri_runtime::VmBuilder, args: Vec<String>) -> colib
     build_vm_with_assets(builder, args, None)
 }
 
-/// [`build_vm`] for a program whose `import assets` reads from `assets` (see [`assets`]).
+/// [`build_vm`] for a program whose `import assets` reads from what `assets` makes (see
+/// [`assets`]); the workers of thread tasks call it too, each for a source of its own.
 pub fn build_vm_with_assets(
     builder: colibri_runtime::VmBuilder,
     args: Vec<String>,
-    assets: Option<Box<dyn colibri_std::AssetSource>>,
+    assets: Option<colibri_std::Factory<Box<dyn colibri_std::AssetSource>>>,
 ) -> colibri_runtime::Vm {
     let config = colibri_std::StdConfig {
         args,
-        assets,
+        assets: assets.as_ref().map(|make| make()),
         ..colibri_std::StdConfig::default()
     };
-    build_vm_with_std(builder, config)
+    let mut worker = colibri_std::WorkerStd::from_config(&config);
+    if let Some(make) = assets {
+        worker = worker.with_assets(move || make());
+    }
+    build_vm_with_worker_std(builder, config, worker)
 }
 
-/// [`build_vm`] with the whole standard library configuration given.
+/// [`build_vm`] with the whole standard library configuration given. The workers of thread
+/// tasks get the plain settings of `config` and the machine's clock (see
+/// [`build_vm_with_worker_std`] for more).
 pub fn build_vm_with_std(
     builder: colibri_runtime::VmBuilder,
     config: colibri_std::StdConfig,
 ) -> colibri_runtime::Vm {
-    // A thread task's isolate gets the same library (with every capability the `Vm` was given):
-    // what it prints, reads and so on is the process's, like the main thread's.
-    let (args, temp_dir, local_offset, web) = (
-        config.args.clone(),
-        config.temp_dir.clone(),
-        config.local_offset,
-        config.web,
-    );
+    let worker = colibri_std::WorkerStd::from_config(&config);
+    build_vm_with_worker_std(builder, config, worker)
+}
+
+/// [`build_vm_with_std`] with what the workers of thread tasks see given too: a thread task's
+/// isolate gets the library installed with `worker`'s settings and every capability the `Vm` was
+/// given, so what it reads of the world is the main thread's.
+pub fn build_vm_with_worker_std(
+    builder: colibri_runtime::VmBuilder,
+    config: colibri_std::StdConfig,
+    worker: colibri_std::WorkerStd,
+) -> colibri_runtime::Vm {
     let mut vm = builder
-        .worker_setup(move |worker| {
-            let config = colibri_std::StdConfig {
-                args: args.clone(),
-                temp_dir: temp_dir.clone(),
-                local_offset,
-                web,
-                ..colibri_std::StdConfig::default()
-            };
-            colibri_std::install_with(worker, config)
+        .worker_setup(move |isolate| {
+            colibri_std::install_worker(isolate, &worker)
                 .expect("the standard library registers into a new Vm");
         })
         .build();
