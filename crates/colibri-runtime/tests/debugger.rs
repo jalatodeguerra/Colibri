@@ -20,13 +20,14 @@ struct Script {
 
 impl Debugger for Script {
     fn stopped(&mut self, view: &mut DebugView<'_>, stop: &Stop) -> Resume {
-        let frames = view.frames(None);
+        let stopped = view.stopped_coroutine();
+        let frames = view.frames(stopped);
         let named = frames
             .iter()
             .map(|f| (f.name.clone(), f.line.unwrap_or(0)))
             .collect();
         let top = frames.first().map_or(0, |f| f.index);
-        let scopes = view.scopes(None, top);
+        let scopes = view.scopes(stopped, top);
         let locals = view
             .children(scopes[0].handle, 0, 100)
             .into_iter()
@@ -230,4 +231,193 @@ fn main() {
     assert_eq!(seen[1].1[0], ("boom".to_string(), 2));
     assert!(matches!(&seen[2].0, Stop::Panic(m) if m.contains("zero")));
     assert_eq!(seen[2].2, ["n = 0"]);
+}
+
+// ---- hot reload ----
+
+use colibri_runtime::{ReloadOptions, ReloadOutcome};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// A fresh folder holding `files` (`(relative path, text)`), named by test.
+fn tree(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "colibri-debug-reload-{}-{name}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    for (path, text) in files {
+        write(&dir, path, text);
+    }
+    dir
+}
+
+/// Removes a folder when the test ends, whether it passed or not.
+struct Cleanup(PathBuf);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn write(dir: &Path, path: &str, text: &str) {
+    let full = dir.join(path);
+    fs::create_dir_all(full.parent().unwrap()).unwrap();
+    fs::write(full, text).unwrap();
+}
+
+/// The name of a file of the loaded program as the loader gave it: it ends with `tail`.
+fn file_named(vm: &colibri::Vm, tail: &str) -> String {
+    let tail = tail.replace('/', std::path::MAIN_SEPARATOR_STR);
+    let sources = vm.sources();
+    (0..sources.next_file_id().0)
+        .map(|n| sources.name(colibri::debug::FileId(n)).to_string())
+        .find(|n| n.ends_with(&tail))
+        .unwrap_or_else(|| panic!("no file ends with {tail}"))
+}
+
+fn call_f(vm: &mut colibri::Vm, name: &str, n: i64) -> i64 {
+    vm.get_fn::<(i64,), i64>(name)
+        .unwrap()
+        .call(vm, (n,))
+        .unwrap()
+}
+
+#[test]
+fn a_breakpoint_survives_a_hot_reload_patch_and_hits_the_new_body() {
+    let dir = tree(
+        "patch",
+        &[
+            ("app/colibri.toml", "[package]\nname = \"app\"\n"),
+            (
+                "app/main.colibri",
+                "import util\nfn run(n: int) -> int => util.twice(n)\n",
+            ),
+            (
+                "app/util.colibri",
+                "pub fn twice(n: int) -> int {\n    let r = n * 2\n    return r\n}\n",
+            ),
+        ],
+    );
+    let _cleanup = Cleanup(dir.clone());
+    let mut s = session(|_| Resume::Continue);
+    s.vm.load_package(dir.join("app")).unwrap();
+    let util = file_named(&s.vm, "util.colibri");
+    let set = s.vm.debug_set_breakpoints(&util, &[bp(2)]).unwrap();
+    assert!(!set[0].verified, "nothing is compiled yet");
+    assert_eq!(call_f(&mut s.vm, "run", 4), 8);
+    assert_eq!(s.seen.borrow().len(), 1);
+    // The body changes, on the same line.
+    write(
+        &dir,
+        "app/util.colibri",
+        "pub fn twice(n: int) -> int {\n    let r = n * 3\n    return r\n}\n",
+    );
+    let patched = s.vm.reload_changed().unwrap();
+    assert!(
+        matches!(patched, ReloadOutcome::Patched { functions: 1 }),
+        "{patched:?}"
+    );
+    assert_eq!(call_f(&mut s.vm, "run", 4), 12);
+    let seen = s.seen.borrow();
+    assert_eq!(
+        seen.len(),
+        2,
+        "the breakpoint hit in the new body: {seen:#?}"
+    );
+    assert_eq!(seen[1].1[0], ("util.twice".to_string(), 2));
+    assert_eq!(seen[1].2, ["n = 4"]);
+}
+
+#[test]
+fn a_breakpoint_follows_its_file_across_a_restart_that_renumbers_the_files() {
+    // Swapping the imports and changing a signature restarts the program; the two modules then
+    // get each other's file numbers.
+    let dir = tree(
+        "restart",
+        &[
+            ("app/colibri.toml", "[package]\nname = \"app\"\n"),
+            (
+                "app/main.colibri",
+                "import alpha\nimport beta\nfn run(n: int) -> int => alpha.a(n) + beta.b(n)\n",
+            ),
+            (
+                "app/alpha.colibri",
+                "pub fn a(n: int) -> int {\n    let r = n + 1\n    return r\n}\n",
+            ),
+            (
+                "app/beta.colibri",
+                "pub fn b(n: int) -> int {\n    let r = n + 2\n    return r\n}\n",
+            ),
+        ],
+    );
+    let _cleanup = Cleanup(dir.clone());
+    let mut s = session(|_| Resume::Continue);
+    s.vm.load_package(dir.join("app")).unwrap();
+    let beta = file_named(&s.vm, "beta.colibri");
+    let before = s.vm.debug_file(&beta).unwrap();
+    s.vm.debug_set_breakpoints(&beta, &[bp(2)]).unwrap();
+    assert_eq!(call_f(&mut s.vm, "run", 1), 5);
+    assert_eq!(s.seen.borrow().len(), 1);
+    assert_eq!(s.seen.borrow()[0].2, ["n = 1"]);
+    write(
+        &dir,
+        "app/main.colibri",
+        "import beta\nimport alpha\nfn run(n: int) -> int => alpha.a(n) + beta.b(n) + 1\n",
+    );
+    let outcome = s.vm.reload_changed_with(ReloadOptions::default()).unwrap();
+    assert!(
+        matches!(outcome, ReloadOutcome::Restarted { .. }),
+        "{outcome:?}"
+    );
+    let after = s.vm.debug_file(&beta).unwrap();
+    assert_ne!(before, after, "the file was renumbered");
+    assert_eq!(call_f(&mut s.vm, "run", 2), 8);
+    let seen = s.seen.borrow();
+    assert_eq!(seen.len(), 2, "{seen:#?}");
+    assert_eq!(seen[1].1[0], ("beta.b".to_string(), 2));
+    assert_eq!(seen[1].2, ["n = 2"]);
+}
+
+#[test]
+fn a_breakpoint_whose_file_left_the_program_does_not_land_in_the_file_that_took_its_number() {
+    let dir = tree(
+        "gone",
+        &[
+            ("app/colibri.toml", "[package]\nname = \"app\"\n"),
+            (
+                "app/main.colibri",
+                "import beta\nimport alpha\nfn run(n: int) -> int => alpha.a(n) + beta.b(n)\n",
+            ),
+            (
+                "app/alpha.colibri",
+                "pub fn a(n: int) -> int {\n    let r = n + 1\n    return r\n}\n",
+            ),
+            (
+                "app/beta.colibri",
+                "pub fn b(n: int) -> int {\n    let r = n + 2\n    return r\n}\n",
+            ),
+        ],
+    );
+    let _cleanup = Cleanup(dir.clone());
+    let mut s = session(|_| Resume::Continue);
+    s.vm.load_package(dir.join("app")).unwrap();
+    let beta = file_named(&s.vm, "beta.colibri");
+    s.vm.debug_set_breakpoints(&beta, &[bp(2)]).unwrap();
+    assert_eq!(call_f(&mut s.vm, "run", 1), 5);
+    assert_eq!(s.seen.borrow().len(), 1);
+    // `beta` leaves the program; `alpha` takes the number `beta` had.
+    write(
+        &dir,
+        "app/main.colibri",
+        "import alpha\nfn run(n: int) -> int => alpha.a(n)\n",
+    );
+    let outcome = s.vm.reload_changed().unwrap();
+    assert!(
+        matches!(outcome, ReloadOutcome::Restarted { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(call_f(&mut s.vm, "run", 1), 2);
+    assert_eq!(s.seen.borrow().len(), 1, "no new stop");
 }

@@ -21,7 +21,8 @@ pub fn run() -> ExitCode {
 /// Where the protocol is written. On Unix the adapter keeps its own copy of the standard
 /// output and points file descriptor 1 at standard error, so that whatever else writes there
 /// (a program started with `process.status`, a C function called through `extern`) cannot
-/// corrupt the stream. On Windows the process's standard output is used as it is.
+/// corrupt the stream. Windows does the same with its standard output handle. C code called through
+/// `extern` that writes to the C runtime's descriptor 1 still reaches the protocol stream there.
 #[cfg(unix)]
 fn protocol_output() -> Box<dyn io::Write + Send> {
     use std::os::fd::FromRawFd;
@@ -40,7 +41,58 @@ fn protocol_output() -> Box<dyn io::Write + Send> {
     }
 }
 
-#[cfg(not(unix))]
+/// Windows: the adapter keeps a private (not inheritable) duplicate of the standard output
+/// handle for the protocol, and makes the process's standard output handle the standard error
+/// handle. A program started with `process.status` takes the process's standard output at the
+/// moment it starts (std reads it then), so it writes to standard error as on Unix.
+#[cfg(windows)]
+fn protocol_output() -> Box<dyn io::Write + Send> {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+
+    unsafe extern "system" {
+        /// `STD_OUTPUT_HANDLE` is `-11` as a `u32`; a non-zero result is success.
+        fn SetStdHandle(which: u32, handle: *mut std::ffi::c_void) -> i32;
+        /// `HANDLE_FLAG_INHERIT` is 1; a non-zero result is success.
+        fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+    }
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+
+    let stdout = io::stdout();
+    let raw = stdout.as_raw_handle();
+    // No standard output (a null or invalid handle), or one that cannot be copied: the
+    // protocol goes where it always went, and children keep the real standard output.
+    if raw.is_null() || raw as isize == -1 {
+        return Box::new(io::stdout());
+    }
+    let Ok(own) = stdout.as_handle().try_clone_to_owned() else {
+        return Box::new(io::stdout());
+    };
+    let err = io::stderr().as_raw_handle();
+    if err.is_null() || err as isize == -1 {
+        return Box::new(io::stdout());
+    }
+    // SAFETY: `SetStdHandle` only stores a handle value in the process; `err` is the live
+    // standard error handle, which is not closed here.
+    if unsafe { SetStdHandle(STD_OUTPUT_HANDLE, err) } == 0 {
+        return Box::new(io::stdout());
+    }
+    // The handle the client gave is inheritable, and std starts children with every inheritable
+    // handle: one that outlives the adapter would keep the client from ever seeing the end of
+    // the stream. The protocol is written through the private copy, so the original (and the
+    // input handle, tidily) are made non-inheritable.
+    // SAFETY: both are the live standard handles of this process, which stay open.
+    unsafe {
+        SetHandleInformation(raw, HANDLE_FLAG_INHERIT, 0);
+        let input = io::stdin().as_raw_handle();
+        if !input.is_null() && input as isize != -1 {
+            SetHandleInformation(input, HANDLE_FLAG_INHERIT, 0);
+        }
+    }
+    Box::new(std::fs::File::from(own))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn protocol_output() -> Box<dyn io::Write + Send> {
     Box::new(io::stdout())
 }
@@ -58,9 +110,13 @@ fn build_program_vm(args: LaunchArgs) -> Result<colibri_runtime::Vm, String> {
     }
     cfg.debug = true;
     // The build configuration is set once for the process: a second launch with other features
-    // would silently keep the first ones.
+    // would silently keep the first ones. The order of the features does not matter, nor does a
+    // feature named twice.
     static FIRST: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    if *FIRST.get_or_init(|| args.features.clone()) != args.features {
+    let mut features = args.features.clone();
+    features.sort();
+    features.dedup();
+    if *FIRST.get_or_init(|| features.clone()) != features {
         return Err(format!(
             "the features of this session were fixed by the first launch ({}); start a new debug session to use others",
             FIRST.get().map_or(String::new(), |f| f.join(", "))

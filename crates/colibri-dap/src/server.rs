@@ -62,13 +62,35 @@ enum Incoming {
 /// in the event loop does not.
 const GRACE: Duration = Duration::from_secs(2);
 
-/// [`GRACE`], or what `COLIBRI_DEBUG_GRACE_MS` says: a knob for the tests, which make the
-/// watchdog and the VM thread race for the same request.
+/// How long, after the input has ended, the adapter waits for the program to finish ending
+/// before it exits anyway. By then the first watchdog has been answered (the program was taken
+/// up at a safepoint, so it ends its `defer`s without a limit), and a `defer` that blocks for
+/// ever (a read that never returns) would otherwise leave the adapter running with nobody to
+/// talk to. A `defer` that really takes longer than this after the client went away is cut.
+const LONG_GRACE: Duration = Duration::from_secs(30);
+
+/// [`GRACE`], or in a debug build what `COLIBRI_DEBUG_GRACE_MS` says. The variable is
+/// internal: the tests set it to make the watchdog and the VM thread race for the same request.
+/// A release build ignores it.
 fn grace() -> Duration {
-    std::env::var("COLIBRI_DEBUG_GRACE_MS")
+    internal_ms("COLIBRI_DEBUG_GRACE_MS").unwrap_or(GRACE)
+}
+
+/// [`LONG_GRACE`], or in a debug build what `COLIBRI_DEBUG_LONG_GRACE_MS` says (internal, for
+/// the tests).
+fn long_grace() -> Duration {
+    internal_ms("COLIBRI_DEBUG_LONG_GRACE_MS").unwrap_or(LONG_GRACE)
+}
+
+/// A duration an internal environment variable sets, in a debug build only.
+fn internal_ms(name: &str) -> Option<Duration> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var(name)
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .map_or(GRACE, Duration::from_millis)
+        .map(Duration::from_millis)
 }
 
 /// Where an end of the session stands.
@@ -133,6 +155,20 @@ impl Ending {
         });
     }
 
+    /// The input ended: besides [`Ending::begin`]'s watchdog, which only a program the VM thread
+    /// has not taken up fears, a second one ends the process after [`long_grace`] whatever
+    /// happens, so a `defer` that never returns cannot leave the adapter orphaned. When the
+    /// session ends by itself the process exits first and this thread goes with it.
+    fn begin_for_end_of_input(self: &Arc<Self>) {
+        self.begin(None);
+        let me = Arc::clone(self);
+        std::thread::spawn(move || {
+            std::thread::sleep(long_grace());
+            me.out.lock().expect("the output").closed = true;
+            std::process::exit(0);
+        });
+    }
+
     /// The watchdog's action, if the VM thread has not taken up the end: answers the request, says
     /// `terminated` for a `terminate`, closes the output, and calls `exit` while still holding
     /// the output (a frame the VM thread was writing is finished first, and none starts after).
@@ -178,12 +214,12 @@ fn read_loop(mut input: impl BufRead, tx: mpsc::Sender<Incoming>, ending: Arc<En
             },
             Err(ReadError::Malformed(why)) => Incoming::Malformed(why),
             Err(ReadError::Eof) => {
-                ending.begin(None);
+                ending.begin_for_end_of_input();
                 let _ = tx.send(Incoming::Closed);
                 return;
             }
             Err(ReadError::Fatal(why)) => {
-                ending.begin(None);
+                ending.begin_for_end_of_input();
                 let _ = tx.send(Incoming::Broken(why));
                 let _ = tx.send(Incoming::Closed);
                 return;
@@ -337,6 +373,9 @@ struct State {
     /// The files of the program, by the name the loader gave them.
     files: Vec<(String, FileId)>,
     stop_on_entry: bool,
+    /// `launch` had `watch`: while the program's coroutines run, changed sources are reloaded
+    /// between ticks (as `colibri run --watch` does), and breakpoints stay where they were set.
+    watch: bool,
     /// The stop on entry has been asked for and has not arrived.
     entry_pending: bool,
     /// The client asked to end the session (or went away): the program is being ended.
@@ -391,6 +430,7 @@ pub fn serve(
         columns_start_at_1: true,
         files: Vec::new(),
         stop_on_entry: false,
+        watch: false,
         entry_pending: false,
         end_requested: false,
         disconnected: false,
@@ -481,7 +521,8 @@ fn run_session(state: &Rc<RefCell<State>>) {
     // No borrow of the state is held while the program runs: the debugger calls back into it.
     let ending = Arc::clone(&state.borrow().ending);
     ending.running.store(true, Ordering::Release);
-    let outcome = vm.run_main().and_then(|()| vm.run_event_loop());
+    let watch = state.borrow().watch;
+    let outcome = run_program(state, &mut vm, watch);
     ending.running.store(false, Ordering::Release);
     let (code, disconnected) = {
         let mut st = state.borrow_mut();
@@ -499,6 +540,57 @@ fn run_session(state: &Rc<RefCell<State>>) {
         out.event("terminated", json!({}));
     }
     after_program(state);
+}
+
+/// How often a watched program looks at its sources, in seconds (the longest the event loop
+/// sleeps between ticks).
+const WATCH_INTERVAL: f64 = 0.15;
+
+/// `main`, then the event loop; with `watch`, the sources are looked at before every tick.
+/// A patch (only function bodies changed) leaves the program running with the new bodies; a
+/// restart runs `main` again, as `colibri run --watch` does. The breakpoints are the machine's
+/// and follow their files (§34.7), so what the adapter has to refresh is its own list of files.
+fn run_program(
+    state: &Rc<RefCell<State>>,
+    vm: &mut colibri::Vm,
+    watch: bool,
+) -> Result<(), colibri::Error> {
+    vm.run_main()?;
+    if !watch {
+        return vm.run_event_loop();
+    }
+    vm.run_event_loop_watching(0.001, WATCH_INTERVAL, |vm| {
+        let note = |text: &str| {
+            let st = state.borrow();
+            st.out
+                .lock()
+                .expect("the output")
+                .output("console", &format!("{text}\n"));
+        };
+        match vm.reload_changed()? {
+            colibri::ReloadOutcome::Unchanged => {}
+            colibri::ReloadOutcome::Patched { functions } => {
+                state.borrow_mut().refresh_files(vm);
+                let s = if functions == 1 { "" } else { "s" };
+                note(&format!("patched {functions} function{s}"));
+            }
+            colibri::ReloadOutcome::Restarted { reason, .. } => {
+                state.borrow_mut().refresh_files(vm);
+                note(&format!("restarted ({reason})"));
+                vm.run_main()?;
+            }
+            colibri::ReloadOutcome::CheckFailed(report) => {
+                let st = state.borrow();
+                st.out
+                    .lock()
+                    .expect("the output")
+                    .output("stderr", &report.render(false));
+                drop(st);
+                note("the new code does not check; keeping the old program");
+            }
+        }
+        Ok(())
+    })
 }
 
 /// The program is over (or never started): the client may still ask things, then disconnects.
@@ -599,6 +691,7 @@ fn launch(state: &Rc<RefCell<State>>, request: &Request) -> Result<colibri::Vm, 
             .get("noDebug")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        st.watch = args.get("watch").and_then(Value::as_bool).unwrap_or(false);
         st.stop_on_entry = !st.no_debug
             && args
                 .get("stopOnEntry")
@@ -656,10 +749,7 @@ fn launch(state: &Rc<RefCell<State>>, request: &Request) -> Result<colibri::Vm, 
     vm.load_path(&program)
         .map_err(|e| Failed::Program(e.render(false)))?;
     let mut st = state.borrow_mut();
-    let sources = vm.sources();
-    st.files = (0..sources.next_file_id().0)
-        .map(|n| (sources.name(FileId(n)).to_string(), FileId(n)))
-        .collect();
+    st.refresh_files(&vm);
     st.launched = true;
     Ok(vm)
 }
@@ -667,6 +757,15 @@ fn launch(state: &Rc<RefCell<State>>, request: &Request) -> Result<colibri::Vm, 
 /// The thread id of a computation.
 fn thread_id(coroutine: Option<u64>) -> i64 {
     coroutine.map_or(MAIN_THREAD, |c| c as i64 + 2)
+}
+
+/// What a thread is called: `main`, or `go fetch (#12)` for the coroutine `12` that `go fetch(..)`
+/// started (the number is the scheduler's, so it is the same at every stop).
+fn thread_name(coroutine: Option<u64>, function: &str) -> String {
+    match coroutine {
+        None => "main".to_string(),
+        Some(id) => format!("go {function} (#{id})"),
+    }
 }
 
 fn coroutine_of(thread: i64) -> Option<u64> {
@@ -979,11 +1078,7 @@ impl State {
                 fibers
                     .iter()
                     .map(|f| {
-                        let name = match f.coroutine {
-                            None => "main".to_string(),
-                            Some(_) => f.name.clone(),
-                        };
-                        json!({"id": thread_id(f.coroutine), "name": name})
+                        json!({"id": thread_id(f.coroutine), "name": thread_name(f.coroutine, &f.name)})
                     })
                     .collect()
             }
@@ -1205,8 +1300,8 @@ impl State {
         // Without a frame, the innermost frame of the thread that stopped.
         let (coroutine, index) = match frame {
             Some(f) => f,
-            None => match view.frames(None).first() {
-                Some(top) => (None, top.index),
+            None => match view.frames(view.stopped_coroutine()).first() {
+                Some(top) => (view.stopped_coroutine(), top.index),
                 None => return Handled::err("there is no frame to evaluate in"),
             },
         };
@@ -1294,7 +1389,7 @@ impl Debugger for Adapter {
         }
         st.frames.clear();
         st.stop_serial = st.stop_serial.wrapping_add(1);
-        let thread = thread_id(view.fibers().first().and_then(|f| f.coroutine));
+        let thread = thread_id(view.stopped_coroutine());
         let entry = std::mem::take(&mut st.entry_pending);
         let mut body = Map::new();
         match stop {
@@ -1376,6 +1471,24 @@ impl Debugger for Adapter {
         }
     }
 
+    fn breakpoints_verified(&mut self, infos: &[BreakpointInfo]) {
+        let st = self.0.borrow();
+        let mut out = st.out.lock().expect("the output");
+        for info in infos {
+            out.event(
+                "breakpoint",
+                json!({
+                    "reason": "changed",
+                    "breakpoint": {
+                        "id": info.id,
+                        "verified": true,
+                        "line": st.lines_to_client(info.line),
+                    },
+                }),
+            );
+        }
+    }
+
     fn output(&mut self, text: &str) {
         let st = self.0.borrow();
         let mut text = text.to_string();
@@ -1387,6 +1500,14 @@ impl Debugger for Adapter {
 }
 
 impl State {
+    /// The files of the program as the loader named them (after a load or a reload).
+    fn refresh_files(&mut self, vm: &colibri::Vm) {
+        let sources = vm.sources();
+        self.files = (0..sources.next_file_id().0)
+            .map(|n| (sources.name(FileId(n)).to_string(), FileId(n)))
+            .collect();
+    }
+
     /// The client went away: the program is ended, and nothing more is sent.
     fn go_away(&mut self) {
         self.ending.ack_or_wait();

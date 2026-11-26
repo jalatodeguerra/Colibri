@@ -738,6 +738,63 @@ fn main() {
     assert!(stderr.contains("from the child"), "{stderr}");
 }
 
+/// Windows: the same for a program started with `process.status`: it takes the standard output
+/// the adapter's process has when it starts, which is the adapter's standard error.
+#[cfg(windows)]
+#[test]
+fn a_child_process_cannot_write_into_the_stream() {
+    let src = r#"import process
+fn main() {
+    let _ = process.status("cmd", ["/C", "echo from the child"])
+    print("after")
+}
+"#;
+    let mut dap = Dap::start("child");
+    dap.launch(src, json!({}));
+    dap.configuration_done();
+    assert_eq!(dap.finish(), Some(0));
+    assert_eq!(dap.output("stdout"), "after\n");
+    // The strict reader would have failed on a junk line in the stream.
+    let stderr = dap.disconnect_stderr();
+    eprintln!("child output on the adapter's standard error: {stderr:?}");
+    assert!(stderr.contains("from the child"), "{stderr}");
+}
+
+/// Windows: a grandchild that outlives the program must not hold the protocol pipe open (the
+/// client would never see the end of the stream). `cmd /C start /b` leaves `ping` running after
+/// `cmd` and the program have ended (a child that `process.spawn` makes is killed when its
+/// handle drops, so it would prove nothing). `ping` runs longer than the harness guard, so only
+/// a pipe it does not inherit lets the stream end. It is killed when the test ends, so that it
+/// cannot hold a CI log pipe open (nothing else in these tests runs `ping`).
+#[cfg(windows)]
+#[test]
+fn a_child_that_outlives_the_session_does_not_keep_the_stream_open() {
+    struct KillPing;
+    impl Drop for KillPing {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", "ping.exe"])
+                .output();
+        }
+    }
+    let _kill = KillPing;
+    let src = r#"import process
+fn main() {
+    let r = process.status("cmd", ["/C", "start", "/b", "ping", "-n", "150", "127.0.0.1"])
+    print(r.is_ok())
+}
+"#;
+    let mut dap = Dap::start("child-outlives");
+    dap.launch(src, json!({}));
+    dap.configuration_done();
+    assert_eq!(dap.finish(), Some(0));
+    // The spawn worked: the program saw `cmd` succeed.
+    assert_eq!(dap.output("stdout"), "true\n");
+    dap.request("disconnect", json!({}));
+    dap.close_input();
+    dap.drain();
+}
+
 const SLEEPERS: [&str; 2] = [
     "import time\nfn main() {\n    print(\"sleeping\")\n    time.sleep(600.0)\n}\n",
     "fn main() {\n    print(\"sleeping\")\n    wait(600.0)\n}\n",
@@ -1005,4 +1062,379 @@ fn main() {
     dap.response_to(seq);
     dap.close_input();
     assert!(folder.join("late.txt").exists());
+}
+
+const WORKERS: &str = "\
+fn worker(name: str, n: int) {
+    let local = n * 10
+    wait(0.01) // @wait
+    print(\"{name} {local}\") // @done
+}
+fn main() {
+    let a = go worker(\"a\", 1)
+    let b = go worker(\"b\", 2)
+    a.join()
+    b.join()
+}
+";
+
+#[test]
+fn coroutines_are_threads_and_a_paused_coroutines_locals_can_be_read() {
+    let done = line_of(WORKERS, "done");
+    let wait = line_of(WORKERS, "wait");
+    let (mut dap, stop) = stopped_at("workers", WORKERS, &[done]);
+    assert_eq!(stop["reason"], "breakpoint");
+    // The coroutine that stopped is the thread of the event, not thread 1.
+    let first = stop["threadId"].as_i64().expect("a thread");
+    assert_ne!(first, 1);
+    let threads = dap.threads();
+    assert_eq!(threads.len(), 3, "{threads:?}");
+    assert_eq!(threads[0], (first, threads[0].1.clone()), "{threads:?}");
+    assert_eq!(threads[1], (1, "main".to_string()));
+    let other = threads[2].0;
+    assert_ne!(other, first);
+    for (id, name) in [&threads[0], &threads[2]] {
+        let want = format!("go worker (#{})", id - 2);
+        assert_eq!(*name, want);
+    }
+    // The stopped coroutine: its frame, its line and its locals.
+    let frames = dap.stack_of(first);
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert_eq!(frames[0]["name"], "worker");
+    assert_eq!(frames[0]["line"], done);
+    assert_eq!(
+        dap.locals_of(&frames[0]),
+        ["name = \"a\"", "n = 1", "local = 10"]
+    );
+    // The other one is paused in its `wait`, and its frame and locals can be read as well.
+    let frames = dap.stack_of(other);
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert_eq!(frames[0]["name"], "worker");
+    assert_eq!(frames[0]["line"], wait);
+    assert_eq!(
+        dap.locals_of(&frames[0]),
+        ["name = \"b\"", "n = 2", "local = 20"]
+    );
+    // Main is waiting for the coroutine that stopped: thread 1 has no frames to show (it
+    // used to show the coroutine's).
+    assert!(dap.stack_of(1).is_empty());
+    // Evaluate without a frame reads the stopped thread's top frame: the coroutine's.
+    let value = dap.request("evaluate", json!({"expression": "local"}));
+    assert_eq!(value["result"], "10");
+    // The second coroutine stops next, and it is the other thread.
+    dap.request("continue", json!({"threadId": first}));
+    let stop = dap.stopped();
+    assert_eq!(stop["threadId"], other);
+    let frames = dap.stack_of(other);
+    assert_eq!(
+        dap.locals_of(&frames[0]),
+        ["name = \"b\"", "n = 2", "local = 20"]
+    );
+    dap.request("continue", json!({"threadId": other}));
+    assert_eq!(dap.finish(), Some(0));
+    assert_eq!(dap.output("stdout"), "a 10\nb 20\n");
+    dap.disconnect();
+}
+
+#[test]
+fn main_stopping_lists_the_paused_coroutines_by_name_too() {
+    let src = "\
+fn ticker() {
+    wait(60.0)
+}
+fn main() {
+    let t = go ticker()
+    print(\"started\") // @here
+    t.cancel()
+}
+";
+    let (mut dap, stop) = stopped_at("main-and-ticker", src, &[line_of(src, "here")]);
+    assert_eq!(stop["threadId"], 1);
+    let threads = dap.threads();
+    assert_eq!(threads.len(), 2, "{threads:?}");
+    assert_eq!(threads[0], (1, "main".to_string()));
+    assert_eq!(threads[1].1, format!("go ticker (#{})", threads[1].0 - 2));
+    let frames = dap.stack_of(threads[1].0);
+    assert_eq!(frames[0]["name"], "ticker");
+    assert_eq!(dap.stack_of(1)[0]["name"], "main");
+    dap.request("continue", json!({"threadId": 1}));
+    assert_eq!(dap.finish(), Some(0));
+    dap.disconnect();
+}
+
+#[test]
+fn a_breakpoint_in_a_function_not_compiled_yet_is_verified_by_an_event_before_its_stop() {
+    let src = "\
+fn late() -> int {
+    let v = 5 // @inside
+    return v
+}
+fn main() {
+    print(\"a\")
+    print(late())
+}
+";
+    let inside = line_of(src, "inside");
+    let mut dap = Dap::start("lazy-event");
+    dap.launch(src, json!({}));
+    let set = dap.break_at(&[inside]);
+    // Nothing compiled it yet: not verified, and the response says why.
+    assert_eq!(set[0]["verified"], false);
+    assert!(set[0]["message"].is_string(), "{:?}", set[0]);
+    let id = set[0]["id"].clone();
+    dap.configuration_done();
+    dap.stopped();
+    // The event came, once, before the stop.
+    let changes: Vec<usize> = dap
+        .history
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m["event"] == "breakpoint")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(changes.len(), 1, "{:#?}", dap.history);
+    let event = &dap.history[changes[0]]["body"];
+    assert_eq!(event["reason"], "changed");
+    assert_eq!(event["breakpoint"]["id"], id);
+    assert_eq!(event["breakpoint"]["verified"], true);
+    assert_eq!(event["breakpoint"]["line"], inside);
+    let stopped = dap
+        .history
+        .iter()
+        .position(|m| m["event"] == "stopped")
+        .unwrap();
+    assert!(changes[0] < stopped);
+    dap.request("continue", json!({"threadId": 1}));
+    assert_eq!(dap.finish(), Some(0));
+    // A breakpoint that was live from the start is never announced.
+    assert_eq!(
+        dap.history
+            .iter()
+            .filter(|m| m["event"] == "breakpoint")
+            .count(),
+        1
+    );
+    dap.disconnect();
+}
+
+#[test]
+fn a_breakpoint_set_again_once_it_is_live_sends_no_event() {
+    let body = line_of(LOOP, "body");
+    let mut dap = Dap::start("no-event");
+    dap.launch(LOOP, json!({}));
+    dap.break_at(&[body]);
+    dap.configuration_done();
+    dap.stopped();
+    let events = |dap: &Dap| {
+        dap.history
+            .iter()
+            .filter(|m| m["event"] == "breakpoint")
+            .count()
+    };
+    // `main` was compiled for the first run: that one event came before this stop.
+    assert_eq!(events(&dap), 1);
+    // Setting the same breakpoint again is verified at once, and no event follows.
+    let again = dap.break_at(&[body]);
+    assert_eq!(again[0]["verified"], true);
+    dap.request("continue", json!({"threadId": 1}));
+    dap.stopped();
+    assert_eq!(events(&dap), 1);
+    dap.disconnect();
+}
+
+#[test]
+fn the_same_features_in_another_order_are_the_same_features() {
+    let mut dap = Dap::start("features-order");
+    let path = dap
+        .temp
+        .write("main.colibri", "fn main() {\n    print(1)\n}\n");
+    let pkg = dap.temp.0.join("pkg");
+    std::fs::create_dir(&pkg).unwrap();
+    let manifest = pkg.join("colibri.toml");
+    std::fs::write(&manifest, "[package]\nname = \"x\"\n").unwrap();
+    dap.request("initialize", json!({}));
+    // The first launch fixes the features (and fails on its manifest, so a second may come).
+    dap.request_fails(
+        "launch",
+        json!({"program": json_path(&manifest), "features": ["b", "a"]}),
+    );
+    dap.request(
+        "launch",
+        json!({"program": json_path(&path), "features": ["a", "b", "a"]}),
+    );
+    dap.event("initialized");
+    dap.disconnect();
+}
+
+#[test]
+fn a_defer_that_blocks_for_ever_after_the_input_ended_does_not_orphan_the_adapter() {
+    let src = r#"import time
+fn cleanup() {
+    time.sleep(600.0)
+}
+fn main() {
+    defer cleanup()
+    print("ready")
+    let mut n = 0
+    while true {
+        n += 1
+    }
+}
+"#;
+    // The second watchdog (internal knob: 30 s otherwise) ends the adapter by itself.
+    let mut dap = Dap::start_with_env(
+        "blocked-defer",
+        &[("COLIBRI_DEBUG_LONG_GRACE_MS", "300".to_string())],
+    );
+    dap.launch(src, json!({}));
+    dap.configuration_done();
+    while !dap.output("stdout").contains("ready") {
+        dap.event("output");
+    }
+    // The disconnect is taken up (the program is paused and ended, so its `defer` runs, and
+    // blocks), then the input ends.
+    let seq = dap.send("disconnect", json!({}));
+    dap.response_to(seq);
+    dap.close_input();
+}
+
+/// A program that reloads: `calc` is called once per tick by a coroutine.
+const RELOADING: &str = "\
+fn calc(n: int) -> int {
+    let r = n * 2 // @calc
+    return r
+}
+fn pump() {
+    let mut i = 0
+    while i < 3 {
+        print(\"calc {calc(i)}\")
+        wait(0.01)
+        i += 1
+    }
+}
+fn main() {
+    go pump()
+}
+";
+
+#[test]
+fn a_breakpoint_is_kept_when_a_hot_reload_patches_the_function_it_is_in() {
+    let calc = line_of(RELOADING, "calc");
+    let mut dap = Dap::start("reload");
+    dap.launch(RELOADING, json!({"watch": true}));
+    dap.break_at(&[calc]);
+    dap.configuration_done();
+    // The first call, the old body.
+    let first = dap.stopped();
+    let thread = first["threadId"].as_i64().expect("a thread");
+    assert_eq!(dap.stack_of(thread)[0]["line"], calc);
+    // While the program is stopped the file is edited, on the same line.
+    std::fs::write(&dap.program, RELOADING.replace("n * 2", "n * 3")).unwrap();
+    dap.request("continue", json!({"threadId": thread}));
+    // The event loop sees the edit between two ticks, patches the body, and the next call
+    // runs the new one: the breakpoint is still there, with the same id and line.
+    let second = dap.stopped();
+    assert_eq!(second["reason"], "breakpoint");
+    assert_eq!(second["hitBreakpointIds"], first["hitBreakpointIds"]);
+    let thread = second["threadId"].as_i64().expect("a thread");
+    let frames = dap.stack_of(thread);
+    assert_eq!(frames[0]["name"], "calc");
+    assert_eq!(frames[0]["line"], calc);
+    assert_eq!(dap.locals_of(&frames[0]), ["n = 1"]);
+    // The new body runs: `n * 3`.
+    dap.request("next", json!({"threadId": thread}));
+    let step = dap.stopped();
+    assert_eq!(step["reason"], "step");
+    let frames = dap.stack_of(thread);
+    assert_eq!(dap.locals_of(&frames[0]), ["n = 1", "r = 3"]);
+    dap.request("continue", json!({"threadId": thread}));
+    // And it goes on hitting it.
+    assert_eq!(dap.stopped()["reason"], "breakpoint");
+    dap.request("continue", json!({"threadId": 1}));
+    assert_eq!(dap.finish(), Some(0));
+    assert_eq!(dap.output("stdout"), "calc 0\ncalc 3\ncalc 6\n");
+    assert!(dap.output("console").contains("patched 1 function"));
+    dap.disconnect();
+}
+
+#[test]
+fn without_watch_an_edited_file_is_not_reloaded() {
+    let calc = line_of(RELOADING, "calc");
+    let mut dap = Dap::start("no-reload");
+    dap.launch(RELOADING, json!({}));
+    dap.break_at(&[calc]);
+    dap.configuration_done();
+    let first = dap.stopped();
+    let thread = first["threadId"].as_i64().expect("a thread");
+    std::fs::write(&dap.program, RELOADING.replace("n * 2", "n * 3")).unwrap();
+    for _ in 0..2 {
+        dap.request("continue", json!({"threadId": thread}));
+        dap.stopped();
+    }
+    dap.request("continue", json!({"threadId": thread}));
+    assert_eq!(dap.finish(), Some(0));
+    assert_eq!(dap.output("stdout"), "calc 0\ncalc 2\ncalc 4\n");
+    dap.disconnect();
+}
+
+/// A coroutine that loops for a while and calls `calc` each time round: after a patch it is
+/// still running the body it had.
+const LOOPING: &str = "\
+fn calc(n: int) -> int {
+    let r = n * 2 // @calc
+    return r
+}
+fn ticker() {
+    let mut i = 0
+    while i < 300 {
+        let v = calc(i) // @call
+        print(v) // @print
+        wait(0.01)
+        i += 1
+    }
+}
+fn main() {
+    go ticker()
+}
+";
+
+#[test]
+fn breakpoints_set_after_a_patch_reach_a_loop_that_still_runs_its_old_body() {
+    let (calc, call, print) = (
+        line_of(LOOPING, "calc"),
+        line_of(LOOPING, "call"),
+        line_of(LOOPING, "print"),
+    );
+    let mut dap = Dap::start("reload-old-frame");
+    dap.launch(LOOPING, json!({"watch": true}));
+    let first_set = dap.break_at(&[calc]);
+    dap.configuration_done();
+    let first = dap.stopped();
+    let thread = first["threadId"].as_i64().expect("a thread");
+    // The editor sends the file's breakpoints again: an unchanged one keeps its id.
+    let again = dap.break_at(&[calc]);
+    assert_eq!(again[0]["id"], first_set[0]["id"]);
+    std::fs::write(&dap.program, LOOPING.replace("n * 2", "n * 3")).unwrap();
+    dap.request("continue", json!({"threadId": thread}));
+    // Patched: `calc` runs its new body; `ticker` has not returned, so its frame is old code.
+    let second = dap.stopped();
+    assert_eq!(second["hitBreakpointIds"], first["hitBreakpointIds"]);
+    // A breakpoint added now (the editor sends all of them, with the old one dropped) must
+    // reach the frame that runs the old body of `ticker`.
+    let set = dap.break_at(&[call, print]);
+    assert_ne!(set[0]["id"], first_set[0]["id"]);
+    dap.request("continue", json!({"threadId": thread}));
+    let stop = dap.stopped();
+    assert_eq!(stop["reason"], "breakpoint");
+    let frames = dap.stack_of(stop["threadId"].as_i64().expect("a thread"));
+    assert_eq!(frames[0]["name"], "ticker");
+    assert!(
+        [call, print].contains(&frames[0]["line"].as_i64().unwrap()),
+        "{frames:?}"
+    );
+    // Take them all out and let it run to its end.
+    dap.break_at(&[]);
+    dap.request("continue", json!({"threadId": thread}));
+    assert_eq!(dap.finish(), Some(0));
+    dap.disconnect();
 }

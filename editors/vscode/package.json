@@ -1,7 +1,7 @@
 {
   "name": "colibri",
   "displayName": "Colibri",
-  "description": "Syntax highlighting and language server support for the Colibri programming language",
+  "description": "Syntax highlighting, language server support and a debugger for the Colibri programming language",
   "version": "0.1.0",
   "publisher": "colibri-lang",
   "license": "MIT",
@@ -13,7 +13,8 @@
     "vscode": "^1.80.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Debuggers"
   ],
   "contributes": {
     "languages": [
@@ -42,7 +43,7 @@
         "colibri.server.path": {
           "type": "string",
           "default": "colibri",
-          "description": "The `colibri` executable that runs `colibri lsp`."
+          "description": "The `colibri` executable that runs `colibri lsp` and `colibri debug`."
         },
         "colibri.interfaces": {
           "type": "array",
@@ -53,11 +54,150 @@
           "description": "Interface files (`.cbi`) describing what the host program provides, relative to the workspace folder. `.cbi` files next to a `colibri.toml` are found without being listed. Restart the server after changing."
         }
       }
-    }
+    },
+    "breakpoints": [
+      {
+        "language": "colibri"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "colibri",
+        "label": "Colibri",
+        "languages": [
+          "colibri"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "The script (a `.colibri` file) or the package folder to run.",
+                "default": "${file}"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The arguments the program sees as `os.args()`.",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "The folder the program runs in.",
+                "default": "${workspaceFolder}"
+              },
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Feature flags for `@when` conditions. They are fixed by the first launch of a debug session.",
+                "default": []
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the first statement of the program.",
+                "default": false
+              },
+              "noDebug": {
+                "type": "boolean",
+                "description": "Run the program without the debugger (set by Run Without Debugging).",
+                "default": false
+              },
+              "watch": {
+                "type": "boolean",
+                "description": "Reload the program when its source files change while its coroutines run (as `colibri run --watch` does). Breakpoints stay where they were set.",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "colibri",
+            "request": "launch",
+            "name": "Colibri: launch the current file",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Colibri: Launch a file",
+            "description": "Debug a `.colibri` script or program",
+            "body": {
+              "type": "colibri",
+              "request": "launch",
+              "name": "Colibri: ${1:launch a file}",
+              "program": "^\"\\${file}\"",
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          },
+          {
+            "label": "Colibri: Launch a package",
+            "description": "Debug the package in a folder",
+            "body": {
+              "type": "colibri",
+              "request": "launch",
+              "name": "Colibri: ${1:launch a package}",
+              "program": "^\"\\${workspaceFolder}\"",
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          },
+          {
+            "label": "Colibri: Launch with arguments and features",
+            "description": "Debug with program arguments and feature flags",
+            "body": {
+              "type": "colibri",
+              "request": "launch",
+              "name": "Colibri: ${1:launch with arguments}",
+              "program": "^\"\\${file}\"",
+              "args": [
+                "${2:arg}"
+              ],
+              "features": [
+                "${3:feature}"
+              ],
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          },
+          {
+            "label": "Colibri: Launch and stop on entry",
+            "description": "Debug and stop at the first statement",
+            "body": {
+              "type": "colibri",
+              "request": "launch",
+              "name": "Colibri: ${1:launch and stop on entry}",
+              "program": "^\"\\${file}\"",
+              "stopOnEntry": true,
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          },
+          {
+            "label": "Colibri: Launch and reload on change",
+            "description": "Debug and reload the program when its files change",
+            "body": {
+              "type": "colibri",
+              "request": "launch",
+              "name": "Colibri: ${1:launch and reload}",
+              "program": "^\"\\${file}\"",
+              "watch": true,
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          }
+        ]
+      }
+    ]
   },
   "main": "./extension.js",
   "activationEvents": [
-    "onLanguage:colibri"
+    "onLanguage:colibri",
+    "onDebug"
   ],
   "dependencies": {
     "vscode-languageclient": "^9.0.1"

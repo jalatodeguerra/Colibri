@@ -112,9 +112,17 @@ impl Dap {
 
     /// [`Dap::start`] with the adapter's watchdog grace set (milliseconds).
     pub fn start_with_grace(name: &str, grace_ms: Option<u64>) -> Dap {
+        match grace_ms {
+            Some(ms) => Dap::start_with_env(name, &[("COLIBRI_DEBUG_GRACE_MS", ms.to_string())]),
+            None => Dap::start_with_env(name, &[]),
+        }
+    }
+
+    /// [`Dap::start`] with environment variables set for the adapter (the internal knobs).
+    pub fn start_with_env(name: &str, env: &[(&str, String)]) -> Dap {
         let mut command = Command::new(env!("CARGO_BIN_EXE_colibri"));
-        if let Some(ms) = grace_ms {
-            command.env("COLIBRI_DEBUG_GRACE_MS", ms.to_string());
+        for (key, value) in env {
+            command.env(key, value);
         }
         let mut child = command
             .arg("debug")
@@ -299,6 +307,44 @@ impl Dap {
     /// The body of the next `stopped` event.
     pub fn stopped(&mut self) -> Value {
         self.event("stopped")
+    }
+
+    /// The threads the adapter lists: `(id, name)`.
+    pub fn threads(&mut self) -> Vec<(i64, String)> {
+        let body = self.request("threads", json!({}));
+        body["threads"]
+            .as_array()
+            .expect("threads")
+            .iter()
+            .map(|t| {
+                (
+                    t["id"].as_i64().expect("an id"),
+                    t["name"].as_str().expect("a name").to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// The `stackTrace` entries of a thread (empty for one whose frames cannot be read).
+    pub fn stack_of(&mut self, thread: i64) -> Vec<Value> {
+        let body = self.request("stackTrace", json!({"threadId": thread}));
+        body["stackFrames"].as_array().expect("frames").clone()
+    }
+
+    /// The locals of a frame as `["name = value", ..]`.
+    pub fn locals_of(&mut self, frame: &Value) -> Vec<String> {
+        let id = frame["id"].as_i64().expect("a frame id");
+        let locals = self.scopes(id)[0].1;
+        self.variables(locals)
+            .iter()
+            .map(|v| {
+                format!(
+                    "{} = {}",
+                    v["name"].as_str().unwrap(),
+                    v["value"].as_str().unwrap()
+                )
+            })
+            .collect()
     }
 
     /// The innermost frame of the stopped thread: its `stackTrace` entry.

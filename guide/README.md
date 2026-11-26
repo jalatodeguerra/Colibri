@@ -6,6 +6,8 @@
   languages.
 - [Built-in types and functions](builtins.md): `str`, `List`, `Map`, `Set`, numbers, `Result`, and
   the functions that need no `import`.
+- [Debugging](debugging.md): breakpoints, stepping, coroutines as threads and hot reload with
+  `colibri debug`.
 - [Standard library reference](std/README.md): one generated page for each module.
 
 Colibri is early and pre-release. The pages describe what works today, and mark what is planned.

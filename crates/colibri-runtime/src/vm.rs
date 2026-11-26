@@ -2524,6 +2524,16 @@ impl colibri_vm::debug::Locator for SourceLines {
         }
         Some(self.0.name(span.file).to_string())
     }
+
+    fn file_name(&self, id: crate::debug::FileId) -> Option<String> {
+        self.0.contains(id).then(|| self.0.name(id).to_string())
+    }
+
+    fn file_id(&self, name: &str) -> Option<crate::debug::FileId> {
+        (0..self.0.next_file_id().0)
+            .map(crate::debug::FileId)
+            .find(|f| self.0.name(*f) == name)
+    }
 }
 
 /// Wraps a host function for the interpreter: arguments are handed over as a slice, panics
