@@ -296,7 +296,7 @@ returns and never waits cannot be reloaded at all.
 ## Ending a session
 
 Stopping the session (the red square, or closing the editor) ends the program: the `defer`s run, and
-no breakpoint stops during that, so cleanup code always finishes.
+no breakpoint stops during that, so cleanup code finishes (see the limits below).
 
 ```colibri
 fn main() {
@@ -312,7 +312,7 @@ cleanup runs even when the debugger ends the program
 
 A program that is blocked in a call (`time.sleep`, a read that never returns) or idle in the
 event loop cannot be paused or stopped at a safepoint. The adapter ends it after a moment; if
-the editor has gone away and a `defer` blocks for ever, the adapter exits after half a minute.
+the editor has gone away, the adapter exits after half a minute even if a `defer` is still running.
 
 ## What it does not do
 
@@ -325,4 +325,5 @@ the editor has gone away and a `defer` blocks for ever, the adapter exits after 
 - Debug mode compiles one step for each statement, so a debugged program is slower than a
   normal run. Its output, and the steps it is charged, are the same.
 - Output of a program that `process.status` starts goes to the adapter's standard error, not to
-  the debug console.
+  the debug console. C code called through `extern` that writes to standard output on Windows
+  still reaches the protocol stream.

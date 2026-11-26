@@ -19,17 +19,19 @@ class DebugAdapterFactory {
 // Pressing F5 with no `launch.json` (or an empty configuration) debugs the file in the editor.
 class DebugConfigurationProvider {
   resolveDebugConfiguration(folder, config) {
+    // `null` makes VS Code open launch.json; `undefined` would abort without a word.
     if (!config.type && !config.request && !config.name) {
       const editor = vscode.window.activeTextEditor;
       if (!editor || editor.document.languageId !== "colibri") {
-        return undefined;
+        return null;
       }
       return {
         type: "colibri",
         request: "launch",
         name: "Colibri: launch the current file",
         program: "${file}",
-        cwd: "${workspaceFolder}",
+        // With no folder open `${workspaceFolder}` cannot be resolved.
+        cwd: folder ? "${workspaceFolder}" : "${fileDirname}",
       };
     }
     if (!config.program) {

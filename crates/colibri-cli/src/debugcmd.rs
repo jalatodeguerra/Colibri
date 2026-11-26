@@ -21,7 +21,8 @@ pub fn run() -> ExitCode {
 /// Where the protocol is written. On Unix the adapter keeps its own copy of the standard
 /// output and points file descriptor 1 at standard error, so that whatever else writes there
 /// (a program started with `process.status`, a C function called through `extern`) cannot
-/// corrupt the stream. Windows does the same with its standard output handle.
+/// corrupt the stream. Windows does the same with its standard output handle. C code called through
+/// `extern` that writes to the C runtime's descriptor 1 still reaches the protocol stream there.
 #[cfg(unix)]
 fn protocol_output() -> Box<dyn io::Write + Send> {
     use std::os::fd::FromRawFd;
@@ -51,7 +52,10 @@ fn protocol_output() -> Box<dyn io::Write + Send> {
     unsafe extern "system" {
         /// `STD_OUTPUT_HANDLE` is `-11` as a `u32`; a non-zero result is success.
         fn SetStdHandle(which: u32, handle: *mut std::ffi::c_void) -> i32;
+        /// `HANDLE_FLAG_INHERIT` is 1; a non-zero result is success.
+        fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
     }
+    const HANDLE_FLAG_INHERIT: u32 = 1;
     const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
 
     let stdout = io::stdout();
@@ -72,6 +76,18 @@ fn protocol_output() -> Box<dyn io::Write + Send> {
     // standard error handle, which is not closed here.
     if unsafe { SetStdHandle(STD_OUTPUT_HANDLE, err) } == 0 {
         return Box::new(io::stdout());
+    }
+    // The handle the client gave is inheritable, and std starts children with every inheritable
+    // handle: one that outlives the adapter would keep the client from ever seeing the end of
+    // the stream. The protocol is written through the private copy, so the original (and the
+    // input handle, tidily) are made non-inheritable.
+    // SAFETY: both are the live standard handles of this process, which stay open.
+    unsafe {
+        SetHandleInformation(raw, HANDLE_FLAG_INHERIT, 0);
+        let input = io::stdin().as_raw_handle();
+        if !input.is_null() && input as isize != -1 {
+            SetHandleInformation(input, HANDLE_FLAG_INHERIT, 0);
+        }
     }
     Box::new(std::fs::File::from(own))
 }

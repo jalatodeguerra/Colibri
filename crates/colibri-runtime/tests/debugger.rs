@@ -252,6 +252,15 @@ fn tree(name: &str, files: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
+/// Removes a folder when the test ends, whether it passed or not.
+struct Cleanup(PathBuf);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 fn write(dir: &Path, path: &str, text: &str) {
     let full = dir.join(path);
     fs::create_dir_all(full.parent().unwrap()).unwrap();
@@ -291,6 +300,7 @@ fn a_breakpoint_survives_a_hot_reload_patch_and_hits_the_new_body() {
             ),
         ],
     );
+    let _cleanup = Cleanup(dir.clone());
     let mut s = session(|_| Resume::Continue);
     s.vm.load_package(dir.join("app")).unwrap();
     let util = file_named(&s.vm, "util.colibri");
@@ -342,6 +352,7 @@ fn a_breakpoint_follows_its_file_across_a_restart_that_renumbers_the_files() {
             ),
         ],
     );
+    let _cleanup = Cleanup(dir.clone());
     let mut s = session(|_| Resume::Continue);
     s.vm.load_package(dir.join("app")).unwrap();
     let beta = file_named(&s.vm, "beta.colibri");
@@ -367,4 +378,46 @@ fn a_breakpoint_follows_its_file_across_a_restart_that_renumbers_the_files() {
     assert_eq!(seen.len(), 2, "{seen:#?}");
     assert_eq!(seen[1].1[0], ("beta.b".to_string(), 2));
     assert_eq!(seen[1].2, ["n = 2"]);
+}
+
+#[test]
+fn a_breakpoint_whose_file_left_the_program_does_not_land_in_the_file_that_took_its_number() {
+    let dir = tree(
+        "gone",
+        &[
+            ("app/colibri.toml", "[package]\nname = \"app\"\n"),
+            (
+                "app/main.colibri",
+                "import beta\nimport alpha\nfn run(n: int) -> int => alpha.a(n) + beta.b(n)\n",
+            ),
+            (
+                "app/alpha.colibri",
+                "pub fn a(n: int) -> int {\n    let r = n + 1\n    return r\n}\n",
+            ),
+            (
+                "app/beta.colibri",
+                "pub fn b(n: int) -> int {\n    let r = n + 2\n    return r\n}\n",
+            ),
+        ],
+    );
+    let _cleanup = Cleanup(dir.clone());
+    let mut s = session(|_| Resume::Continue);
+    s.vm.load_package(dir.join("app")).unwrap();
+    let beta = file_named(&s.vm, "beta.colibri");
+    s.vm.debug_set_breakpoints(&beta, &[bp(2)]).unwrap();
+    assert_eq!(call_f(&mut s.vm, "run", 1), 5);
+    assert_eq!(s.seen.borrow().len(), 1);
+    // `beta` leaves the program; `alpha` takes the number `beta` had.
+    write(
+        &dir,
+        "app/main.colibri",
+        "import alpha\nfn run(n: int) -> int => alpha.a(n)\n",
+    );
+    let outcome = s.vm.reload_changed().unwrap();
+    assert!(
+        matches!(outcome, ReloadOutcome::Restarted { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(call_f(&mut s.vm, "run", 1), 2);
+    assert_eq!(s.seen.borrow().len(), 1, "no new stop");
 }

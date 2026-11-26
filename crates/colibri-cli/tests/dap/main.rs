@@ -760,6 +760,27 @@ fn main() {
     assert!(stderr.contains("from the child"), "{stderr}");
 }
 
+/// Windows: a child that outlives the program must not hold the protocol pipe open (the client
+/// would never see the end of the stream). The child lives longer than the test's hang guard,
+/// so only a pipe the child does not inherit lets the stream end.
+#[cfg(windows)]
+#[test]
+fn a_child_that_outlives_the_session_does_not_keep_the_stream_open() {
+    let src = r#"import process
+fn main() {
+    let child = process.spawn("ping", ["-n", "150", "127.0.0.1"])
+    print(child.is_ok())
+}
+"#;
+    let mut dap = Dap::start("child-outlives");
+    dap.launch(src, json!({}));
+    dap.configuration_done();
+    assert_eq!(dap.finish(), Some(0));
+    dap.request("disconnect", json!({}));
+    dap.close_input();
+    dap.drain();
+}
+
 const SLEEPERS: [&str; 2] = [
     "import time\nfn main() {\n    print(\"sleeping\")\n    time.sleep(600.0)\n}\n",
     "fn main() {\n    print(\"sleeping\")\n    wait(600.0)\n}\n",
