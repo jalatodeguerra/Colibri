@@ -1,0 +1,41 @@
+// allow: unused
+// The checker follows the calls a task makes, but not the `Drop` that runs implicitly when an
+// object dies, so a `Drop` that touches module state is caught when it runs. Module state
+// belongs to the main thread: on a worker the read is a panic that names the variable, and it is
+// reported as the task's failure, not as a crash.
+let mut live = 0
+
+class Tracked {
+    name: str
+}
+
+impl Drop for Tracked {
+    fn drop(self) {
+        live -= 1
+    }
+}
+
+fn make() -> int {
+    let t = Tracked { name: "t" }
+    live += 1
+    return 1
+}
+
+fn make_on_a_worker() -> int {
+    let t = Tracked { name: "worker" }
+    return 2
+}
+
+fn main() -> Result[()] {
+    print("main: {make()} live={live}")
+    match task.run(make_on_a_worker).join() {
+        ok(v) => print("task gave {v}")
+        err(e) => print("task failed: {e.message()}")
+    }
+    print("main again: live={live}")
+    return ok(())
+}
+
+// expect: main: 1 live=0
+// expect: task failed: the task `make_on_a_worker` panicked: `live` belongs to the main thread (a thread task cannot change it)
+// expect: main again: live=0

@@ -395,6 +395,8 @@ impl<'t> Writer<'t> {
             self.out.push_str(&show_bytes(&bytes));
         } else if ty == colibri_check::types::SIGNAL_TYPE {
             self.out.push_str("<Signal>");
+        } else if ty == colibri_check::types::TASK_TYPE {
+            self.out.push_str("<Task>");
         } else {
             return false;
         }

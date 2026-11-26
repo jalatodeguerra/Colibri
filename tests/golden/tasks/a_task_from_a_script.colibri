@@ -1,0 +1,9 @@
+// A task may be started by the top-level statements of a script, and joined there.
+fn triple(n: int) -> int => n * 3
+
+let t = task.run(fn() => triple(14))
+print("started in the script")
+let r = t.join()
+print("result: {r}")
+// expect: started in the script
+// expect: result: ok(42)

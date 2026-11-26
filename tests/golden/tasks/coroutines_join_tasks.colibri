@@ -1,0 +1,46 @@
+// workers: 2
+// A coroutine that joins a task parks until the worker is done and lets the others run. Two
+// coroutines may wait for the same task. The main fiber's own `wait` runs the event loop.
+fn work(n: int) -> int {
+    let mut sum = 0
+    for i in 0..n {
+        sum += i
+    }
+    return sum
+}
+
+fn waiter(name: str, t: Task[int]) {
+    print("{name} waits")
+    match t.join() {
+        ok(v) => print("{name} got {v}")
+        err(e) => print("{name} failed: {e}")
+    }
+}
+
+fn ticker() {
+    for i in 1..=3 {
+        print("tick {i}")
+        wait(0.01)
+    }
+}
+
+fn main() -> Result[()] {
+    let t = task.run(fn() => work(1000))
+    go ticker()
+    // A task handle cannot be sent, so the waiters get the result through the program's own
+    // objects: here two coroutines wait on the same handle, which they share.
+    go waiter("first", t)
+    go waiter("second", t)
+    wait(0.1)
+    print("main done")
+    return ok(())
+}
+
+// expect: tick 1
+// expect: first waits
+// expect: second waits
+// expect: first got 499500
+// expect: second failed: the task `<closure in main>` was joined already: its result can be taken once
+// expect: tick 2
+// expect: tick 3
+// expect: main done

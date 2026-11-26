@@ -1,0 +1,37 @@
+// workers: 3
+// A task draws random numbers from a generator of its own that depends only on the program's seed
+// and on the task, not on the worker that runs it: the numbers of a run repeat.
+import rand
+
+fn draw(n: int) -> List[int] {
+    let mut out = []
+    for _ in 0..n {
+        out.push(rand.int(0, 1000))
+    }
+    return out
+}
+
+fn main() -> Result[()] {
+    let mut tasks = []
+    for _ in 0..6 {
+        tasks.push(task.run(fn() => draw(3)))
+    }
+    let mut seen = []
+    for t in tasks {
+        seen.push(t.join()?)
+    }
+    for d in seen {
+        print("{d}")
+    }
+    // Two tasks do not repeat each other.
+    print("distinct: {seen[0] != seen[1]}")
+    return ok(())
+}
+
+// expect: [189, 8, 345]
+// expect: [896, 765, 792]
+// expect: [743, 244, 362]
+// expect: [927, 719, 618]
+// expect: [15, 380, 705]
+// expect: [839, 911, 489]
+// expect: distinct: true

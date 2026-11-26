@@ -29,9 +29,10 @@ use crate::host::{HostFn, Registration, payload_message};
 use crate::iface::{self, ConstEntry, ConstValue, HostFnEntry, Rendered};
 use crate::reload::{Fingerprint, OwnedEntry, ReloadOptions, ReloadOutcome, ReloadState, reads_of};
 use crate::tasks::{
-    LineWriter, PendingTask, PoolStats, ProgramImage, SharedOut, Submission, TaskDone, TaskFailure,
-    TaskPool, WorkerCfg, WorkerOut, WorkerSetup, program_hash,
+    Launch, LineWriter, PendingTask, PoolStats, ProgramImage, SharedOut, Submission,
+    TaskDone, TaskFailure, TaskPool, WorkerCfg, WorkerLaunch, WorkerOut, WorkerSetup,
 };
+use colibri_core::taskrun::TaskSpawner;
 use crate::types::{TypeDesc, TypeRegistry};
 use colibri_core::leaks::Leak;
 
@@ -341,6 +342,10 @@ impl VmBuilder {
             caps: self.caps,
             max_call_depth: self.max_call_depth,
         };
+        let launch = Rc::new(Launch::new(TaskPool::new(workers, Arc::clone(&stats))));
+        engine
+            .core_mut()
+            .set_task_spawner(Some(Rc::clone(&launch) as Rc<dyn TaskSpawner>));
         Vm {
             sources: Rc::new(SourceMap::new()),
             engine,
@@ -366,10 +371,9 @@ impl VmBuilder {
             entry: None,
             entry_pending: false,
             cfg: self.cfg,
-            image: None,
-            image_hash: None,
             stats: Arc::clone(&stats),
-            pool: TaskPool::new(workers, stats),
+            worker_launch: None,
+            launch,
         }
     }
 }
@@ -425,15 +429,15 @@ pub struct Vm {
     entry: Option<EntryRun>,
     /// A program was loaded by [`Vm::load_from_deferred`] and its entry is not started yet.
     entry_pending: bool,
-    /// What the workers build their isolates from, once a program is loaded.
-    image: Option<Arc<ProgramImage>>,
-    /// The hash of the loaded program's tables: made when the first task is submitted.
-    image_hash: Option<u64>,
     /// What the pool counts. Kept here as well so that it can be read after the pool is gone.
     stats: Arc<PoolStats>,
-    /// The worker threads, which start with the first task. Last, so that it drops last: the
-    /// threads are joined after everything else of the `Vm` is gone (see `Drop for Vm`).
-    pool: TaskPool,
+    /// On a worker's `Vm`: where the tasks it starts are queued.
+    worker_launch: Option<Rc<WorkerLaunch>>,
+    /// The worker threads, which start with the first task, and what the workers build their
+    /// isolates from. The engine holds the other end of it, to submit through. Last, so that
+    /// it drops last: the threads are joined after everything else of the `Vm` is gone (see
+    /// `Drop for Vm`).
+    launch: Rc<Launch>,
 }
 
 /// Where the entry of a program started by [`Vm::start_entry`] is.
@@ -498,7 +502,7 @@ impl Drop for Vm {
         self.release_entry();
         // Tasks that have not started never will. The pool, the last field, joins the threads
         // once the rest of the `Vm` is gone.
-        self.pool.close();
+        self.launch.pool().close();
     }
 }
 
@@ -1273,6 +1277,32 @@ impl Vm {
         }
     }
 
+    /// Sets what runs around every thread task of this isolate, so that the task sees the same
+    /// world whichever thread runs it and whatever that thread ran before. `enter` is given the
+    /// host state of type `T`, and the task's serial number (the same on every run of the
+    /// program: the main program's tasks are numbered in the order they start, and the tasks a
+    /// task starts from where they start), and returns what puts the state back when the task
+    /// ends. The standard library seeds its random generator from it. Call it from
+    /// [`VmBuilder::worker_setup`], on the worker's `Vm`.
+    pub fn task_scope<T: 'static>(
+        &mut self,
+        enter: impl std::ops::Fn(&mut T, u64) -> Box<dyn FnOnce(&mut T)> + 'static,
+    ) {
+        self.engine
+            .core_mut()
+            .set_task_scope(Some(Rc::new(move |core, serial| {
+                let Some(state) = core.state_mut::<T>() else {
+                    return Box::new(|_| {});
+                };
+                let restore = enter(state, serial);
+                Box::new(move |core| {
+                    if let Some(state) = core.state_mut::<T>() {
+                        restore(state);
+                    }
+                })
+            })));
+    }
+
     /// Stores host state of type `T`, which host functions reach through `cx.state_mut::<T>()`
     /// and the host between calls through [`Vm::state_mut`]. Returns the state it replaces.
     pub fn insert_state<T: 'static>(&mut self, value: T) -> Option<T> {
@@ -1804,15 +1834,19 @@ impl Vm {
             image,
             ..
         } = checked;
-        self.image = image.map(Arc::new);
-        self.image_hash = None;
+        self.launch.set_image(image.map(Arc::new));
         self.sources = Rc::new(sources);
         self.sync_debug_locator();
         self.warnings = warnings;
         self.epoch += 1;
         self.engine.load(&program);
+        // The initialisers and the script may start thread tasks, so the program is the pool's
+        // from here on.
+        let program = Rc::new(program);
+        self.launch.set_program(Some(Rc::clone(&program)));
         self.install_host_classes();
         if let Err(error) = self.install_host_fns(&program) {
+            self.launch.set_program(None);
             self.epoch += 1;
             self.engine.shutdown();
             self.engine.core_mut().set_owner(
@@ -1833,10 +1867,11 @@ impl Vm {
         self.engine.core_mut().flush();
         match outcome {
             Ok(()) => {
-                self.program = Some(Rc::new(program));
+                self.program = Some(program);
                 Ok(())
             }
             Err(info) => {
+                self.launch.set_program(None);
                 let error = panic_error(self.engine.core(), *info);
                 self.epoch += 1;
                 self.engine.shutdown();
@@ -1945,9 +1980,10 @@ impl Vm {
         self.engine
             .core_mut()
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
-        self.program = Some(Rc::new(checked.program));
-        self.image = checked.image.map(Arc::new);
-        self.image_hash = None;
+        let program = Rc::new(checked.program);
+        self.program = Some(Rc::clone(&program));
+        self.launch.set_program(Some(program));
+        self.launch.set_image(checked.image.map(Arc::new));
         if let Some(r) = self.reload.as_mut() {
             r.fingerprint = Some(fingerprint);
         }
@@ -2528,8 +2564,7 @@ impl Vm {
     /// is gone afterwards, and function handles with it.
     pub fn shutdown(&mut self) {
         self.reload = None;
-        self.image = None;
-        self.image_hash = None;
+        self.launch.set_image(None);
         self.teardown();
     }
 
@@ -2550,6 +2585,7 @@ impl Vm {
         if self.program.take().is_some() {
             self.epoch += 1;
         }
+        self.launch.set_program(None);
         self.engine
             .core_mut()
             .set_owner((self.id, self.epoch), false, Rc::clone(&self.sources));

@@ -42,6 +42,7 @@ pub mod sched;
 pub(crate) mod show;
 pub(crate) mod state;
 pub(crate) mod strfn;
+pub mod taskrun;
 pub mod value;
 
 #[doc(hidden)]

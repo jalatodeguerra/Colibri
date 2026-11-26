@@ -1,0 +1,24 @@
+// A task runs on a copy of what its closure captured, so a write to a captured `let mut` inside
+// the closure is lost: the variable of the program that started the task never changes.
+fn main() -> Result[()] {
+    let mut n = 0
+    let t = task.run(fn() -> int {
+        n += 1
+        return n
+    })
+    print("the task saw {t.join()?}")
+    print("n is still {n}")
+
+    // A list is copied the same way.
+    let items = [1, 2, 3]
+    let u = task.run(fn() -> int {
+        items.push(4)
+        return items.len()
+    })
+    print("the task's list had {u.join()?}, the program's has {items.len()}")
+    return ok(())
+}
+
+// expect: the task saw 1
+// expect: n is still 0
+// expect: the task's list had 4, the program's has 3

@@ -3,47 +3,20 @@
 
 use super::*;
 
+use crate::tasks::{JobEntry, Shared, program_hash};
 use colibri_core::portable::{NotSendable, Portable, RebuildError, Refused};
+use colibri_core::taskrun::failure_of_panic;
 use colibri_vm::{WalkRole, on_walk_stack};
 use std::sync::atomic::AtomicBool;
 
 /// How many steps a running task goes between two looks at the pool's cancel flag.
 const CANCEL_SLICE: u32 = 4096;
 
-/// The failure of a task that panicked, as plain data.
-fn failure_of(error: Error) -> TaskFailure {
-    match error {
-        Error::Panic {
-            message,
-            stack,
-            location,
-            ..
-        } => {
-            let mut trace = String::new();
-            for frame in &stack {
-                trace.push_str(&format!(
-                    "{} ({}:{}:{})\n",
-                    frame.function, frame.location.file, frame.location.line, frame.location.column
-                ));
-            }
-            if trace.is_empty()
-                && let Some(at) = location
-            {
-                trace = format!("({}:{}:{})\n", at.file, at.line, at.column);
-            }
-            TaskFailure::Panic { message, trace }
-        }
-        Error::BudgetExhausted { .. } => TaskFailure::BudgetExhausted,
-        Error::MemoryLimit { limit, .. } => TaskFailure::MemoryLimit { limit },
-        other => TaskFailure::Internal(other.to_string()),
-    }
-}
-
 impl Vm {
     /// How many threads the pool of this `Vm` runs once it has started ([`VmBuilder::worker_threads`]).
     #[doc(hidden)]
     pub fn worker_pool_size(&self) -> usize {
-        self.pool.size()
+        self.launch.pool().size()
     }
 
     /// What the pool counts: threads started and alive, worker `Vm`s built, tasks run. The
@@ -57,28 +30,20 @@ impl Vm {
     /// The image a worker builds its isolate from, once a program is loaded.
     #[doc(hidden)]
     pub fn program_image(&self) -> Option<Arc<ProgramImage>> {
-        self.image.clone()
+        self.launch.image()
     }
 
     /// Makes the next task of this `Vm` carry a hash that its workers will not reproduce, so that
     /// the image check refuses it (tests of the check).
     #[doc(hidden)]
     pub fn corrupt_image_hash(&mut self) {
-        let hash = self.image_hash_now();
-        self.image_hash = hash.map(|h| h ^ 1);
+        self.launch.corrupt_hash();
     }
 
     /// The hash of the loaded program's tables that every worker must reproduce.
     #[doc(hidden)]
     pub fn program_table_hash(&mut self) -> Option<u64> {
-        self.image_hash_now()
-    }
-
-    fn image_hash_now(&mut self) -> Option<u64> {
-        if self.image_hash.is_none() {
-            self.image_hash = self.program.as_deref().map(program_hash);
-        }
-        self.image_hash
+        self.launch.hash()
     }
 
     /// Calls the function `function` of the loaded program on a worker thread with `args` and
@@ -94,7 +59,7 @@ impl Vm {
         function: &str,
         args: Vec<Portable>,
     ) -> Result<PendingTask, TaskFailure> {
-        let (Some(image), Some(hash)) = (self.image.clone(), self.image_hash_now()) else {
+        let Some((image, hash)) = self.launch.spec() else {
             return Err(TaskFailure::Internal(
                 "no program is loaded that a thread task could run".to_string(),
             ));
@@ -102,13 +67,16 @@ impl Vm {
         let core = self.engine.core();
         let budget = core.budget.allotment;
         let account = (core.mem.tag(), core.memory_limit());
-        self.pool.submit(Submission {
+        self.launch.pool().submit(Submission {
             image,
             hash,
-            function: function.to_string(),
-            args,
+            entry: JobEntry::Call {
+                function: function.to_string(),
+                args,
+            },
             budget,
             account,
+            serial: 0,
         })
     }
 
@@ -120,8 +88,9 @@ impl Vm {
         cfg: &WorkerCfg,
         image: &ProgramImage,
         expected_hash: u64,
-        cancel: &Arc<AtomicBool>,
+        shared: &Arc<Shared>,
     ) -> Result<Vm, String> {
+        let cancel: &Arc<AtomicBool> = &shared.cancel;
         let mut builder = Vm::builder()
             .build_cfg(image.cfg.clone())
             .max_call_depth(cfg.max_call_depth)
@@ -134,6 +103,12 @@ impl Vm {
         vm.engine
             .core_mut()
             .set_cancel_flag(Some(Arc::clone(cancel)));
+        // A task of this isolate queues the tasks it starts on the pool it runs in.
+        let launch = Rc::new(WorkerLaunch::new(Arc::clone(shared)));
+        vm.engine
+            .core_mut()
+            .set_task_spawner(Some(Rc::clone(&launch) as Rc<dyn TaskSpawner>));
+        vm.worker_launch = Some(launch);
         if let Some(setup) = &cfg.setup {
             catch_unwind(AssertUnwindSafe(|| setup(&mut vm))).map_err(|payload| {
                 format!(
@@ -252,23 +227,35 @@ impl Vm {
     }
 
     /// Runs one task on this isolate: rebuilds the arguments, calls the function under the
-    /// parent's budget and memory account, and copies the result out.
+    /// parent's budget and memory account, and copies the result out. `image` and `hash` say which
+    /// program the tasks it starts are for, and `serial` names the task (see
+    /// `colibri_core::taskrun::TaskScope`).
     pub(crate) fn run_task(
         &mut self,
-        function: &str,
-        args: Vec<Portable>,
+        entry: JobEntry,
         budget: Option<u64>,
         account: (u64, Option<u64>),
+        serial: u64,
+        program: (&Arc<ProgramImage>, u64),
     ) -> Result<TaskDone, TaskFailure> {
-        let program = self
+        let program_fns = self
             .program
             .clone()
             .ok_or_else(|| TaskFailure::Internal("the worker has no program".to_string()))?;
-        let Some(f) = program.fn_by_name(function) else {
-            return Err(TaskFailure::Internal(format!(
-                "the program has no function `{function}`"
-            )));
+        let entry = match entry {
+            JobEntry::Call { function, args } => {
+                let Some(f) = program_fns.fn_by_name(&function) else {
+                    return Err(TaskFailure::Internal(format!(
+                        "the program has no function `{function}`"
+                    )));
+                };
+                Run::Call(f, args)
+            }
+            JobEntry::Closure(closure) => Run::Closure(closure),
         };
+        if let Some(launch) = &self.worker_launch {
+            launch.enter(program.0, program.1, serial);
+        }
         {
             let core = self.engine.core_mut();
             core.set_instruction_budget(budget);
@@ -281,7 +268,9 @@ impl Vm {
         // Everything the task allocates, the rebuilt arguments and the result's portable form
         // included, is charged to the parent's account.
         let entry_account = self.engine.core_mut().mem.enter();
-        let outcome = self.run_task_in(f, args);
+        let restore = self.engine.core_mut().enter_task_scope(serial);
+        let outcome = self.run_task_in(entry);
+        restore(self.engine.core_mut());
         // A coroutine the task left must not run inside the next task of this isolate (nor hold
         // memory of the parent's account): it is cancelled, newest first, its `defer`s run, as
         // at the end of a program. The budget and the limit it runs under are the task's own,
@@ -303,37 +292,33 @@ impl Vm {
         }
     }
 
-    fn run_task_in(
-        &mut self,
-        f: colibri_check::hir::FnId,
-        args: Vec<Portable>,
-    ) -> Result<TaskDone, TaskFailure> {
-        let mut values = Vec::with_capacity(args.len());
-        for arg in args {
-            let rebuilt = on_walk_stack(
-                WalkRole::Receiver,
-                crate::tasks::WORKER_NATIVE_BUDGET,
-                |guard| colibri_core::portable::from_portable(arg, self.engine.core_mut(), guard),
-            );
-            match rebuilt {
-                Ok(v) => values.push(v),
-                Err(e) => {
-                    for v in values {
-                        self.engine.release_in_entry(v);
+    fn run_task_in(&mut self, run: Run) -> Result<TaskDone, TaskFailure> {
+        let result = match run {
+            Run::Call(f, args) => {
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    match self.rebuild(arg) {
+                        Ok(v) => values.push(v),
+                        Err(failure) => {
+                            for v in values {
+                                self.engine.release_in_entry(v);
+                            }
+                            return Err(failure);
+                        }
                     }
-                    return Err(match e {
-                        RebuildError::MemoryLimit => TaskFailure::MemoryLimit {
-                            limit: self.engine.core().memory_limit().unwrap_or(0),
-                        },
-                        other => TaskFailure::Copy(other.to_string()),
-                    });
                 }
+                self.engine.call(f, values)
             }
-        }
-        let result = self.engine.call(f, values);
+            Run::Closure(closure) => {
+                let f = self.rebuild(closure)?;
+                let result = self.engine.call_function(&f, Vec::new());
+                self.engine.release_in_entry(f);
+                result
+            }
+        };
         let steps = self.engine.core().steps_used();
         match result {
-            Err(info) => Err(failure_of(panic_error(self.engine.core(), *info))),
+            Err(info) => Err(failure_of_panic(self.engine.core(), *info)),
             Ok(value) => {
                 let copied: Result<Portable, NotSendable> = on_walk_stack(
                     WalkRole::Sender,
@@ -353,4 +338,26 @@ impl Vm {
             }
         }
     }
+
+    /// Rebuilds a value that was sent to this isolate. Rebuilding it past the memory limit is the
+    /// memory limit's failure, not a failure to send.
+    fn rebuild(&mut self, portable: Portable) -> Result<colibri_core::value::Value, TaskFailure> {
+        on_walk_stack(
+            WalkRole::Receiver,
+            crate::tasks::WORKER_NATIVE_BUDGET,
+            |guard| colibri_core::portable::from_portable(portable, self.engine.core_mut(), guard),
+        )
+        .map_err(|e| match e {
+            RebuildError::MemoryLimit => TaskFailure::MemoryLimit {
+                limit: self.engine.core().memory_limit().unwrap_or(0),
+            },
+            other => TaskFailure::Copy(other.to_string()),
+        })
+    }
+}
+
+/// What a worker runs, with the function resolved.
+enum Run {
+    Call(colibri_check::hir::FnId, Vec<Portable>),
+    Closure(Portable),
 }

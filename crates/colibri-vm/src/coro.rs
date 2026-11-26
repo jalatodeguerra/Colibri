@@ -624,7 +624,7 @@ impl Machine {
     /// Pauses the running coroutine until `wake`. `Err(Cancel)` when it is cancelled (no pause
     /// happens). `redo`: the instruction runs again when the coroutine is resumed. The caller
     /// then ends the dispatch loop with `Exit::Suspend`.
-    fn suspend(
+    pub(crate) fn suspend(
         &mut self,
         fiber: &mut VmFiber,
         id: u64,
@@ -742,7 +742,9 @@ impl Machine {
     ) -> Result<bool, Ctl> {
         let span = chunk.spans[pc - 1];
         let recv = fiber.regs[base + usize::from(a)].clone();
-        let result = if kind == JoinKind::JoinAll {
+        let result = if kind == JoinKind::Task {
+            self.join_task(fiber, &recv, span)
+        } else if kind == JoinKind::JoinAll {
             self.join_all(fiber, &recv, span)
         } else {
             self.join_coroutine(fiber, &recv, span, kind == JoinKind::JoinResult)

@@ -29,6 +29,7 @@ mod fiber;
 mod heap;
 mod host;
 mod host_async;
+mod tasks;
 mod leaf;
 mod load;
 mod machine;

@@ -273,6 +273,16 @@ pub fn install_worker(vm: &mut Vm, worker: &WorkerStd) -> Result<(), Error> {
     if let Some(stderr) = worker.stderr() {
         set_stderr(vm, stderr);
     }
+    // A task draws from a generator of its own, seeded from its serial number: its numbers do
+    // not depend on which worker runs it or on what that worker ran before. The generator that
+    // was there comes back when the task ends.
+    if let Some(main) = worker.seed() {
+        vm.task_scope::<config::State>(move |state, serial| {
+            let task = rand::Rng::from_seed(config::task_seed(main, serial));
+            let saved = std::mem::replace(&mut state.rng, task);
+            Box::new(move |state| state.rng = saved)
+        });
+    }
     Ok(())
 }
 
