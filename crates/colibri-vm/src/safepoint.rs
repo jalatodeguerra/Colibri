@@ -51,6 +51,16 @@ impl Machine {
                     }
                     SafepointKind::Memory => Ok(()),
                     SafepointKind::Debugger => self.debug_safepoint(fiber),
+                    // The same unwinding as an exhausted budget (with its grace for the
+                    // `defer`s); the worker knows from its flag that it was a cancellation.
+                    SafepointKind::Cancel if self.core.cancelled() => {
+                        let span = fiber.frames.last().map_or_else(
+                            || colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
+                            |f| f.span(),
+                        );
+                        Err(self.budget_exhausted(fiber, span))
+                    }
+                    SafepointKind::Cancel => Ok(()),
                     SafepointKind::Profiler => {
                         if let Some(profiler) = self.profiler.as_mut() {
                             profiler.sample(due, fiber, self.core.sched.idle_nanos());

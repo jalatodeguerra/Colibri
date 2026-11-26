@@ -62,3 +62,60 @@ pub(crate) fn resume(_: &mut Machine, _: &mut VmFiber, parked: Parked, _: bool) 
 pub(crate) fn park(_: &mut Machine, _: &mut VmFiber) -> bool {
     unreachable!("a host function cannot park on the web")
 }
+
+// ---- the stack of the portable walks ----
+
+/// The size of the stack a portable walk runs on (there is no separate stack here: the walk runs
+/// on the caller's).
+pub const WALK_STACK: usize = 64 * 1024 * 1024;
+pub const SENDER_WALK_BUDGET: usize = 48 * 1024 * 1024;
+pub const RECEIVER_EXTRA_BUDGET: usize = 64 * 1024;
+
+/// Which end of a thread crossing a walk is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WalkRole {
+    Sender,
+    Receiver,
+}
+
+impl WalkRole {
+    pub const fn budget(self) -> usize {
+        match self {
+            WalkRole::Sender => SENDER_WALK_BUDGET,
+            WalkRole::Receiver => SENDER_WALK_BUDGET + RECEIVER_EXTRA_BUDGET,
+        }
+    }
+
+    pub const fn fallback_budget(self, native: usize) -> usize {
+        let own = match self {
+            WalkRole::Sender => native,
+            WalkRole::Receiver => native.saturating_add(RECEIVER_EXTRA_BUDGET),
+        };
+        if own < self.budget() {
+            own
+        } else {
+            self.budget()
+        }
+    }
+}
+
+/// Runs `walk` on the caller's stack, measured from here against the budget of `role` within
+/// the `native` bytes the caller may use (the web's stack is small).
+pub fn on_walk_stack<R>(
+    role: WalkRole,
+    native: usize,
+    walk: impl FnOnce(colibri_core::portable::StackGuard) -> R,
+) -> R {
+    walk(colibri_core::portable::StackGuard::here(
+        role.fallback_budget(native),
+    ))
+}
+
+#[doc(hidden)]
+pub fn walk_stacks_pooled() -> usize {
+    0
+}
+
+/// There is nothing to refuse: the walks always run on the caller's stack.
+#[doc(hidden)]
+pub fn refuse_walk_stacks(_refuse: bool) {}

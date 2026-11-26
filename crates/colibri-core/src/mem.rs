@@ -22,7 +22,7 @@ use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 /// A global allocator that counts the bytes each account holds. Wrap the allocator the program
 /// uses (`System`, or another one) and install the wrapper:
@@ -288,22 +288,60 @@ struct Slot {
     /// Bytes allocated under this account and not freed yet (signed, so a bug shows as a
     /// negative number instead of wrapping).
     used: AtomicI64,
+    /// Bytes charged to this slot directly (not through a child): what this isolate itself holds.
+    /// For a slot with no children it is `used`.
+    own: AtomicI64,
     /// `i64::MAX` for none.
     limit: AtomicI64,
     /// An allocation took `used` past `limit` (until `clear_over`).
     over: AtomicBool,
     /// 0 for a slot that was never handed out.
     generation: AtomicU32,
+    /// The tag of the account whose count this one also moves (a worker's account under the
+    /// account of the `Vm` it works for); 0 for none. The limit and `over` stay this slot's own.
+    parent: AtomicU64,
 }
 
 impl Slot {
     const fn new() -> Slot {
         Slot {
             used: AtomicI64::new(0),
+            own: AtomicI64::new(0),
             limit: AtomicI64::new(i64::MAX),
             over: AtomicBool::new(false),
             generation: AtomicU32::new(0),
+            parent: AtomicU64::new(0),
         }
+    }
+
+    /// The slot of the account this one counts into, if it has one that is still open.
+    #[inline]
+    fn parent_slot(&self) -> Option<&'static Slot> {
+        match self.parent.load(Ordering::Relaxed) {
+            0 => None,
+            tag => lookup(tag),
+        }
+    }
+
+    /// What the limit of this account is measured against. A worker's account (it has a parent)
+    /// is measured on everything the `Vm` and its workers hold; the `Vm`'s own account on what it
+    /// holds itself, so that a worker's memory never fails the main thread.
+    #[inline]
+    fn measured(&self) -> i64 {
+        match self.parent_slot() {
+            Some(p) => p.used.load(Ordering::Relaxed),
+            None => self.own.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Everything counted under this account: its own bytes and those of its workers' accounts
+    /// (for a worker's account, what the `Vm` and all its workers hold).
+    #[inline]
+    fn total(&self) -> i64 {
+        self.parent_slot().map_or_else(
+            || self.used.load(Ordering::Relaxed),
+            |p| p.used.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -343,10 +381,19 @@ fn lookup(tag: u64) -> Option<&'static Slot> {
 fn charge(tag: u64, bytes: usize) {
     if let Some(slot) = lookup(tag) {
         let bytes = bytes as i64;
-        let now = slot
-            .used
+        let own = slot
+            .own
             .fetch_add(bytes, Ordering::Relaxed)
             .wrapping_add(bytes);
+        slot.used.fetch_add(bytes, Ordering::Relaxed);
+        let now = match slot.parent_slot() {
+            Some(parent) => parent
+                .used
+                .fetch_add(bytes, Ordering::Relaxed)
+                .wrapping_add(bytes),
+            // The main `Vm`'s limit is measured on what it holds itself, not on its workers.
+            None => own,
+        };
         if now > slot.limit.load(Ordering::Relaxed) {
             slot.over.store(true, Ordering::Relaxed);
         }
@@ -358,6 +405,10 @@ fn charge(tag: u64, bytes: usize) {
 fn credit(tag: u64, bytes: usize) {
     if let Some(slot) = lookup(tag) {
         slot.used.fetch_sub(bytes as i64, Ordering::Relaxed);
+        slot.own.fetch_sub(bytes as i64, Ordering::Relaxed);
+        if let Some(parent) = slot.parent_slot() {
+            parent.used.fetch_sub(bytes as i64, Ordering::Relaxed);
+        }
     }
 }
 
@@ -409,6 +460,8 @@ fn open_slot() -> u64 {
     let slot = slot_at(index);
     slot.limit.store(i64::MAX, Ordering::Relaxed);
     slot.over.store(false, Ordering::Relaxed);
+    slot.parent.store(0, Ordering::Relaxed);
+    slot.own.store(0, Ordering::Relaxed);
     // The next generation (never 0). Storing it last makes the slot visible to the allocator
     // only once it is clean; the old tag stops resolving at the same moment.
     let generation = match slot.generation.load(Ordering::Relaxed).wrapping_add(1) {
@@ -438,6 +491,9 @@ fn close_slot(tag: u64) {
 pub struct MemAccount {
     /// 0 for an inert account.
     tag: u64,
+    /// Whether this value owns the table slot (and closes it when dropped). A thread task's worker
+    /// holds a view of its parent's account instead ([`MemAccount::share`]).
+    owned: bool,
 }
 
 /// What an outermost entry must undo: the account that was current before it. Dropping it
@@ -477,13 +533,43 @@ impl MemAccount {
         if installed() {
             MemAccount::open()
         } else {
-            MemAccount { tag: 0 }
+            MemAccount {
+                tag: 0,
+                owned: true,
+            }
         }
     }
 
     /// A live account whether or not the allocator is installed (tests of the accounting).
     pub fn open() -> MemAccount {
-        MemAccount { tag: open_slot() }
+        MemAccount {
+            tag: open_slot(),
+            owned: true,
+        }
+    }
+
+    /// A new account that counts into the account `parent` names as well: what it allocates adds
+    /// to the parent's count (so the parent's `used` is everything its `Vm` and its workers
+    /// hold), wherever it is freed, while the limit, the `over` flag and the grace state stay its
+    /// own. A worker's task runs under one of these, so passing the limit fails that task and
+    /// nothing else. A parent that is gone (or 0) leaves a plain account.
+    pub fn child_of(parent: u64) -> MemAccount {
+        if parent == 0 {
+            return MemAccount::share(0);
+        }
+        let tag = open_slot();
+        if let Some(slot) = lookup(tag) {
+            slot.parent.store(parent, Ordering::Relaxed);
+        }
+        MemAccount { tag, owned: true }
+    }
+
+    /// A view of the account that `tag` names (see [`MemAccount::tag`]), for a worker thread that
+    /// runs on behalf of another `Vm`: what it allocates is charged to that `Vm`, wherever it is
+    /// freed. Dropping the view closes nothing, and a tag whose owner is gone resolves to nothing,
+    /// so the view is inert then.
+    pub fn share(tag: u64) -> MemAccount {
+        MemAccount { tag, owned: false }
     }
 
     /// Whether this account counts anything.
@@ -524,7 +610,19 @@ impl MemAccount {
     /// Bytes charged and not yet credited; `None` for an inert account or one whose slot is gone.
     pub fn used(&self) -> Option<u64> {
         let slot = lookup(self.tag)?;
-        Some(slot.used.load(Ordering::Relaxed).max(0) as u64)
+        Some(slot.total().max(0) as u64)
+    }
+
+    /// Bytes held that this account's limit is measured on: what the main `Vm` holds itself
+    /// (not its workers), or for a worker's account everything the `Vm` and its workers hold.
+    /// `None` for an inert account or one whose slot is gone.
+    pub fn measured_used(&self) -> Option<u64> {
+        Some(lookup(self.tag)?.measured().max(0) as u64)
+    }
+
+    /// Bytes this account holds itself, whatever its workers hold. `None` when inert.
+    pub fn own_used(&self) -> Option<u64> {
+        Some(lookup(self.tag)?.own.load(Ordering::Relaxed).max(0) as u64)
     }
 
     /// Sets the limit in bytes (`None` for none) and re-evaluates `over` against it. Allocation
@@ -533,7 +631,7 @@ impl MemAccount {
         if let Some(slot) = lookup(self.tag) {
             let limit = limit.map_or(i64::MAX, |l| i64::try_from(l).unwrap_or(i64::MAX));
             slot.limit.store(limit, Ordering::Relaxed);
-            let over = slot.used.load(Ordering::Relaxed) > limit;
+            let over = slot.measured() > limit;
             slot.over.store(over, Ordering::Relaxed);
         }
     }
@@ -550,7 +648,7 @@ impl MemAccount {
         let Some(slot) = lookup(self.tag) else {
             return false;
         };
-        let used = slot.used.load(Ordering::Relaxed).max(0) as u64;
+        let used = slot.measured().max(0) as u64;
         let limit = slot.limit.load(Ordering::Relaxed);
         limit != i64::MAX && used.saturating_add(extra) > limit.max(0) as u64
     }
@@ -577,7 +675,7 @@ impl Default for MemAccount {
 
 impl Drop for MemAccount {
     fn drop(&mut self) {
-        if self.tag != 0 {
+        if self.tag != 0 && self.owned {
             close_slot(self.tag);
         }
     }
@@ -982,8 +1080,92 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_view_charges_the_owner_and_closes_nothing() {
+        let _g = shared();
+        let owner = MemAccount::open();
+        let mut view = MemAccount::share(owner.tag());
+        let l = layout(100, 8);
+        let p = within(&mut view, || unsafe { A.alloc(l) });
+        let held = (100 + prefix_for(8)) as u64;
+        assert_eq!(unsafe { tag_slot(p).read() }, owner.tag());
+        assert_eq!(owner.used(), Some(held));
+        assert_eq!(view.used(), Some(held));
+        // Dropping the view does not retire the owner's slot: freeing what is left brings the
+        // count to zero, which is when a retired slot could be handed out again, and it is not.
+        drop(view);
+        unsafe { A.dealloc(p, l) };
+        assert_eq!(owner.used(), Some(0));
+        let other = MemAccount::open();
+        assert_ne!(other.tag() as u32, owner.tag() as u32);
+    }
+
+    #[test]
+    fn a_child_counts_into_its_parent_with_a_limit_of_its_own() {
+        let _g = shared();
+        let mut parent = MemAccount::open();
+        let mut child = MemAccount::child_of(parent.tag());
+        parent.set_limit(Some(10_000));
+        let l = layout(100, 8);
+        let held = (100 + prefix_for(8)) as u64;
+        // The parent itself holds one block; the child's limit is measured on what everything
+        // under the parent holds, not on the child's own count.
+        let p = within(&mut parent, || unsafe { A.alloc(l) });
+        child.set_limit(Some(held + held / 2));
+        assert!(!child.over());
+        let q = within(&mut child, || unsafe { A.alloc(l) });
+        assert_eq!(parent.used(), Some(2 * held));
+        assert_eq!(child.used(), Some(2 * held));
+        assert!(child.over(), "the total passed the child's limit");
+        // Only the child's flag was raised, and its limit is not the parent's.
+        assert!(!parent.over());
+        child.set_limit(None);
+        assert_eq!(parent.limit(), Some(10_000));
+        assert_eq!(child.limit(), None);
+        assert!(!child.over());
+        unsafe {
+            A.dealloc(p, l);
+            A.dealloc(q, l);
+        }
+        assert_eq!(parent.used(), Some(0));
+        // A parent that is gone leaves a child that counts alone.
+        let orphan = MemAccount::child_of(parent.tag());
+        drop(parent);
+        assert_eq!(orphan.used(), Some(0));
+    }
+
+    #[test]
+    fn the_parents_limit_is_measured_on_what_it_holds_itself() {
+        let _g = shared();
+        let mut parent = MemAccount::open();
+        let mut child = MemAccount::child_of(parent.tag());
+        let l = layout(100, 8);
+        let held = (100 + prefix_for(8)) as u64;
+        parent.set_limit(Some(held + held / 2));
+        // A worker holds more than the parent's limit: the parent is not over, and it is not
+        // told that a block of its own size would be too much.
+        let q = within(&mut child, || unsafe { A.alloc(l) });
+        let r = within(&mut child, || unsafe { A.alloc(l) });
+        assert_eq!(parent.used(), Some(2 * held));
+        assert!(!parent.over());
+        assert!(!parent.would_exceed(held / 4));
+        parent.set_limit(Some(held + held / 2));
+        assert!(!parent.over());
+        // What the parent allocates itself counts against its limit.
+        let p = within(&mut parent, || unsafe { A.alloc(l) });
+        assert!(!parent.over(), "one block of its own is under its limit");
+        let p2 = within(&mut parent, || unsafe { A.alloc(l) });
+        assert!(parent.over());
+        unsafe {
+            for (ptr, _) in [(p, 0), (p2, 0), (q, 0), (r, 0)] {
+                A.dealloc(ptr, l);
+            }
+        }
+        assert_eq!(parent.used(), Some(0));
+    }
+
+    #[test]
     fn an_inert_account_counts_nothing_and_leaves_the_thread_alone() {
-        let mut inert = MemAccount { tag: 0 };
+        let mut inert = MemAccount::share(0);
         let before = current();
         let guard = inert.enter();
         assert_eq!(current(), before);

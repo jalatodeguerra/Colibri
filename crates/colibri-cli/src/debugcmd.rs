@@ -97,10 +97,24 @@ fn protocol_output() -> Box<dyn io::Write + Send> {
     Box::new(io::stdout())
 }
 
+/// A writer that threads share: each `write` takes the lock.
+struct SharedWrite(std::sync::Arc<std::sync::Mutex<Box<dyn io::Write + Send>>>);
+
+impl io::Write for SharedWrite {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).flush()
+    }
+}
+
 /// The `Vm` for the program a `launch` names: every capability, the program's standard output
 /// and error as the adapter gives them, and no standard input (the client's input is the
 /// protocol).
-fn build_program_vm(args: LaunchArgs) -> Result<colibri_runtime::Vm, String> {
+#[doc(hidden)]
+pub fn build_program_vm(args: LaunchArgs) -> Result<colibri_runtime::Vm, String> {
     let mut cfg = colibri_runtime::BuildCfg::default();
     for name in &args.features {
         if let Some((message, hint)) = colibri_runtime::feature_name_problem(name) {
@@ -129,14 +143,28 @@ fn build_program_vm(args: LaunchArgs) -> Result<colibri_runtime::Vm, String> {
     for note in notes {
         let _ = writeln!(args.stderr, "  {note}");
     }
+    let program = args.program.clone();
     let config = colibri_std::StdConfig {
         args: args.args,
-        assets: Some(crate::assets::for_entry(&args.program)),
+        assets: Some(crate::assets::for_entry(&program)),
         stdin: Some(Box::new(io::empty())),
         ..colibri_std::StdConfig::default()
     };
-    let mut vm =
-        crate::build_vm_with_std(crate::vm_builder().allow_all().stdout(args.stdout), config);
-    colibri_std::set_stderr(&mut vm, args.stderr);
+    // The workers of thread tasks print through the same writer as the program (the adapter turns
+    // it into `output` events) and write to the same error stream; their standard input is empty.
+    // Nothing they do reaches the protocol's own channels.
+    let stderr = std::sync::Arc::new(std::sync::Mutex::new(args.stderr));
+    let worker = colibri_std::WorkerStd::from_config(&config)
+        .with_assets(move || crate::assets::for_entry(&program))
+        .with_stderr({
+            let stderr = std::sync::Arc::clone(&stderr);
+            move || Box::new(SharedWrite(std::sync::Arc::clone(&stderr)))
+        });
+    let mut vm = crate::build_vm_with_worker_std(
+        crate::vm_builder().allow_all().stdout_shared(args.stdout),
+        config,
+        worker,
+    );
+    colibri_std::set_stderr(&mut vm, Box::new(SharedWrite(stderr)));
     Ok(vm)
 }

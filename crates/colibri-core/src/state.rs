@@ -36,6 +36,8 @@ pub struct Core {
     pub safepoints: crate::safepoint::Safepoints,
     /// A slice of the budget ended and its safepoint has not run yet.
     pub safepoint_due: bool,
+    /// Set by the pool of a worker's `Vm` to stop the entry that runs (`SafepointKind::Cancel`).
+    pub(crate) cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// How many times a map or set key was looked up by scanning the stored keys.
     pub key_scans: u64,
     /// The user-defined types, which `Show` and drop tracing need for names.
@@ -89,6 +91,7 @@ impl Core {
             budget: Budget::new(),
             safepoints: crate::safepoint::Safepoints::default(),
             safepoint_due: false,
+            cancel: None,
             key_scans: 0,
             types: Rc::from(Vec::new()),
             dispatch: Tables::default(),
@@ -102,6 +105,15 @@ impl Core {
             memlimit: crate::budget::MemLimit::new(),
             lost_entries: Rc::new(std::cell::Cell::new(0)),
         }
+    }
+
+    /// Makes this engine charge what it allocates to a new account under the account `tag`
+    /// names (another `Vm`'s, see [`crate::mem::MemAccount::child_of`]) with its own `limit`
+    /// and grace state. A thread task's worker calls it before each task, between entries. What
+    /// the previous task left allocated keeps counting to the parent it was charged to.
+    pub fn adopt_memory_account(&mut self, tag: u64, limit: Option<u64>) {
+        self.mem = crate::mem::MemAccount::child_of(tag);
+        self.set_memory_limit(limit);
     }
 
     /// `none`, without an allocation.

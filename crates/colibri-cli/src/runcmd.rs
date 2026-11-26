@@ -27,19 +27,65 @@ pub fn run(
     if let Err(code) = depscmd::prepare(file, deps) {
         return code;
     }
-    let mut vm = crate::build_vm_with_assets(
-        crate::vm_builder().allow_all().track_leaks(leaks.is_some()),
-        args,
-        Some(crate::assets::for_entry(file)),
-    );
+    let mut vm = build_run_vm(file, args, leaks.is_some(), Box::new(io::stdout()));
     run_with(&mut vm, file, leaks, profile, rc)
+}
+
+/// The assets of a worker that could not open the executable again: none.
+struct NoAssets;
+
+impl colibri_std::AssetSource for NoAssets {
+    fn read(&mut self, _path: &str) -> Result<Vec<u8>, colibri_std::AssetError> {
+        Err(colibri_std::AssetError::NotFound(
+            colibri_std::NOT_AN_ASSET.to_string(),
+        ))
+    }
+    fn list(&mut self, _dir: &str) -> Result<Vec<String>, colibri_std::AssetError> {
+        Err(colibri_std::AssetError::NotFound(
+            colibri_std::NOT_AN_ASSET.to_string(),
+        ))
+    }
+}
+
+/// The `Vm` of `colibri run file`: every capability, the standard library, the program's assets,
+/// and `out` for what `print` writes, shared with the workers of thread tasks (whole lines, in the
+/// order they are finished). Their library is the main one's: the same arguments, assets and
+/// environment.
+#[doc(hidden)]
+pub fn build_run_vm(
+    file: &Path,
+    args: Vec<String>,
+    track_leaks: bool,
+    out: Box<dyn io::Write + Send>,
+) -> colibri::Vm {
+    crate::build_vm_with_assets(
+        crate::vm_builder()
+            .allow_all()
+            .track_leaks(track_leaks)
+            .stdout_shared(out),
+        args,
+        Some(crate::assets::factory_for_entry(file)),
+    )
 }
 
 /// Runs the program of a built executable (`colibri build`): the same as `colibri run` on the
 /// files it was built from, with every capability granted, but read from the pack.
 pub fn run_pack(pack: crate::pack::Pack, file: std::fs::File, args: Vec<String>) -> ExitCode {
     let (fs, start) = pack.file_system();
-    let assets = crate::assets::for_pack(&pack, file);
+    // The first source reads from the file that was opened; a worker opens the executable again
+    // (the pack's own file), so that no two threads share a file position.
+    let pack = std::sync::Arc::new(pack);
+    let first = std::sync::Mutex::new(Some(file));
+    let assets: colibri_std::Factory<Box<dyn colibri_std::AssetSource>> = {
+        let pack = std::sync::Arc::clone(&pack);
+        std::sync::Arc::new(move || match first.lock().ok().and_then(|mut f| f.take()) {
+            Some(file) => crate::assets::for_pack(&pack, file),
+            None => match std::env::current_exe().and_then(std::fs::File::open) {
+                Ok(file) => crate::assets::for_pack(&pack, file),
+                Err(_) => Box::new(NoAssets),
+            },
+        })
+    };
     let mut vm = crate::build_vm_with_assets(crate::vm_builder().allow_all(), args, Some(assets));
     let color = io::stderr().is_terminal();
     vm.on_warnings(move |report| eprint!("{}", report.render(color)));

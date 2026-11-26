@@ -56,6 +56,10 @@ pub use machine::{DEFAULT_NATIVE_STACK_BUDGET, Machine};
 pub use profile::{PROFILE_SLICE, Profile, ProfileSample, ProfileWeight};
 pub use rc::{RcLine, RcProfile};
 pub use source::{Options, Outcome, compile_source, run_source, run_source_with};
+pub use stacks::{
+    RECEIVER_EXTRA_BUDGET, SENDER_WALK_BUDGET, WALK_STACK, WalkRole, on_walk_stack,
+    refuse_walk_stacks, walk_stacks_pooled,
+};
 
 #[cfg(test)]
 mod debug_tests;

@@ -82,10 +82,12 @@ mod host;
 mod iface;
 mod reload;
 mod render;
+#[doc(hidden)]
+pub mod tasks;
 mod types;
 mod vm;
 
-pub use buffer::SharedBuffer;
+pub use buffer::{SharedBuffer, SyncBuffer};
 pub use callback::Callback;
 pub use cap::{Cap, CapSet};
 pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};

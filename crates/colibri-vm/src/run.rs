@@ -1103,14 +1103,14 @@ impl Machine {
         match op {
             Op::GetGlobalChecked { d, g } => {
                 if let Some(Some(_)) = self.uninit.get(g as usize) {
-                    let msg = self.uninit_message(g);
+                    let msg = self.uninit_message(g, false);
                     return Err(self.panic(fiber, span, msg));
                 }
                 Self::put_reg(fiber, r(d), self.globals[g as usize].clone());
             }
             Op::CheckGlobal { g } => {
                 if let Some(Some(_)) = self.uninit.get(g as usize) {
-                    let msg = self.uninit_message(g);
+                    let msg = self.uninit_message(g, true);
                     return Err(self.panic(fiber, span, msg));
                 }
             }
@@ -1504,12 +1504,22 @@ impl Machine {
         }
         Ok(())
     }
-    fn uninit_message(&self, g: u32) -> String {
+    /// What a failed check of module value `g` says. `write`: the access changes the value
+    /// (`CheckGlobal` guards assignments), which a thread task may not do to the main thread's
+    /// state (DESIGN §4.2).
+    fn uninit_message(&self, g: u32, write: bool) -> String {
         let name = self
             .uninit
             .get(g as usize)
             .and_then(|n| n.clone())
             .unwrap_or_else(|| Rc::from("?"));
+        if self.worker {
+            return if write {
+                format!("`{name}` belongs to the main thread (a thread task cannot change it)")
+            } else {
+                format!("`{name}` belongs to the main thread")
+            };
+        }
         if self.released {
             format!(
                 "`{name}` is used before it is initialised (module values do not exist while no test runs, for instance in an `on_test_start` hook)"

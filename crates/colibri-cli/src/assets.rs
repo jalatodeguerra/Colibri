@@ -71,6 +71,12 @@ pub fn for_entry(entry: &Path) -> Box<dyn AssetSource> {
     Box::new(DiskAssets::new(root, patterns))
 }
 
+/// [`for_entry`] as a factory, for a `Vm` whose thread tasks each read the assets on their own.
+pub fn factory_for_entry(entry: &Path) -> colibri_std::Factory<Box<dyn AssetSource>> {
+    let entry = entry.to_path_buf();
+    std::sync::Arc::new(move || for_entry(&entry))
+}
+
 /// The text of an [`AssetError`], without its kind.
 pub fn error_text(e: &AssetError) -> &str {
     match e {

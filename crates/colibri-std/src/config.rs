@@ -269,6 +269,107 @@ impl Default for StdConfig {
     }
 }
 
+/// A factory that a worker thread calls to make its own copy of something that is not `Send`.
+pub type Factory<T> = std::sync::Arc<dyn Fn() -> T + Send + Sync>;
+
+/// What a thread task's worker sees of the world: the settings of the main `Vm`'s [`StdConfig`]
+/// that can be handed to another thread, so that a task reads the same environment, arguments,
+/// time zone, clock and assets and starts from the same seed as `main`. A host that builds its
+/// `Vm` with a custom [`StdConfig`] builds the worker's from the same facts and gives it to
+/// `worker_setup` (see `colibri-lang`'s `build_vm_with_worker_std`).
+///
+/// What a worker does not share with the main thread: standard input (a worker reads an empty
+/// one, so it never competes with `main` or a debug adapter for the host's input), and the
+/// state a program changes while it runs (`os.set_env`, the generator's position, a manual
+/// clock's time): each worker has its own. Its seed is the main one's with the worker's number
+/// mixed in, so two workers do not repeat each other.
+#[derive(Clone)]
+pub struct WorkerStd {
+    args: Vec<String>,
+    env: EnvSource,
+    temp_dir: Option<PathBuf>,
+    seed: Option<u64>,
+    local_offset: Option<i32>,
+    web: bool,
+    clock: Factory<Box<dyn Clock>>,
+    assets: Option<Factory<Box<dyn crate::AssetSource>>>,
+    stderr: Option<Factory<Box<dyn std::io::Write>>>,
+    built: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl WorkerStd {
+    /// The plain settings of `config`, the machine's clock, no assets and the process's standard
+    /// error: what a worker gets when the host says nothing more.
+    pub fn from_config(config: &StdConfig) -> WorkerStd {
+        WorkerStd {
+            args: config.args.clone(),
+            env: config.env.clone(),
+            temp_dir: config.temp_dir.clone(),
+            seed: config.seed,
+            local_offset: config.local_offset,
+            web: config.web,
+            clock: std::sync::Arc::new(|| Box::new(SystemClock::new())),
+            assets: None,
+            stderr: None,
+            built: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    /// Each worker's clock is made by `make` (a manual clock for a hermetic run).
+    pub fn with_clock(mut self, make: impl Fn() -> Box<dyn Clock> + Send + Sync + 'static) -> Self {
+        self.clock = std::sync::Arc::new(make);
+        self
+    }
+
+    /// Each worker's assets are made by `make` (a source that reads the same program's assets).
+    pub fn with_assets(
+        mut self,
+        make: impl Fn() -> Box<dyn crate::AssetSource> + Send + Sync + 'static,
+    ) -> Self {
+        self.assets = Some(std::sync::Arc::new(make));
+        self
+    }
+
+    /// Where a worker's `io.eprint` writes, made by `make` for each worker.
+    pub fn with_stderr(
+        mut self,
+        make: impl Fn() -> Box<dyn std::io::Write> + Send + Sync + 'static,
+    ) -> Self {
+        self.stderr = Some(std::sync::Arc::new(make));
+        self
+    }
+
+    /// The seed of the next worker: the main seed with the worker's number mixed in; `None` (a
+    /// seed from the clock) stays `None`.
+    fn next_seed(&self) -> Option<u64> {
+        let n = self
+            .built
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        self.seed.map(|s| s ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+    }
+
+    /// The configuration of one worker `Vm`.
+    pub fn config(&self) -> StdConfig {
+        StdConfig {
+            clock: (self.clock)(),
+            args: self.args.clone(),
+            env: self.env.clone(),
+            temp_dir: self.temp_dir.clone(),
+            seed: self.next_seed(),
+            stdin: Some(Box::new(std::io::empty())),
+            local_offset: self.local_offset,
+            assets: self.assets.as_ref().map(|make| make()),
+            web: self.web,
+        }
+    }
+
+    /// Where the worker's `io.eprint` goes, if the host chose.
+    pub(crate) fn stderr(&self) -> Option<Box<dyn std::io::Write>> {
+        self.stderr.as_ref().map(|make| make())
+    }
+}
+
 /// The configuration plus what the modules change while a program runs. It is the host state
 /// (`Vm::insert_state`) the functions reach through `Ctx::state_mut`.
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -315,6 +416,41 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_workers_world_is_the_main_ones_but_for_its_input_and_its_seed() {
+        use std::io::BufRead;
+        let main = StdConfig {
+            args: vec!["a".to_string()],
+            env: EnvSource::Fixed(BTreeMap::from([("K".to_string(), "v".to_string())])),
+            temp_dir: Some(PathBuf::from("/tmp/t")),
+            seed: Some(7),
+            stdin: Some(Box::new(std::io::Cursor::new("main input\n"))),
+            local_offset: Some(3600),
+            web: false,
+            ..StdConfig::default()
+        };
+        let worker = WorkerStd::from_config(&main).with_clock(|| Box::new(ManualClock::new(5.0)));
+        let (first, second) = (worker.config(), worker.config());
+        for config in [&first, &second] {
+            assert_eq!(config.args, ["a"]);
+            assert!(matches!(&config.env, EnvSource::Fixed(m) if m["K"] == "v"));
+            assert_eq!(config.temp_dir, Some(PathBuf::from("/tmp/t")));
+            assert_eq!(config.local_offset, Some(3600));
+        }
+        // The worker's clock is the one the host chose.
+        let mut clock = first.clock;
+        assert_eq!(clock.unix_seconds(), 5.0);
+        // A worker never reads the main thread's input: it has an empty one of its own.
+        let mut line = String::new();
+        assert_eq!(first.stdin.unwrap().read_line(&mut line).unwrap(), 0);
+        // Each worker has a seed of its own, derived from the main one; an unseeded one stays so.
+        assert!(first.seed.is_some() && second.seed.is_some());
+        assert_ne!(first.seed, second.seed);
+        assert_ne!(first.seed, Some(7));
+        let unseeded = WorkerStd::from_config(&StdConfig::default());
+        assert_eq!(unseeded.config().seed, None);
+    }
 
     #[test]
     fn an_unseeded_generator_takes_its_seed_from_the_hosts_random_bytes() {
