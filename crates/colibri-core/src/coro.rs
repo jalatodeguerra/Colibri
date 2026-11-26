@@ -78,12 +78,12 @@ pub trait Sched: Engine {
     /// Resumes every due coroutine once, in start order. A coroutine started during the tick
     /// is not resumed in it. Each resumption gets its own instruction budget.
     fn tick(&mut self, dt: f64) -> Result<(), Box<PanicInfo>> {
-        let outermost = self.core_mut().begin_entry();
-        if outermost {
+        let entry = self.core_mut().begin_entry();
+        if entry.is_outermost() {
             self.drain_root_drops();
         }
         let result = self.tick_core(dt);
-        self.core_mut().end_entry(outermost, false);
+        self.core_mut().end_entry(entry, false);
         match result {
             Ok(()) => Ok(()),
             Err(TickError::Failure(info)) => Err(info),
@@ -182,7 +182,7 @@ pub trait Sched: Engine {
         if s.entries.is_empty() || s.coroutine_running() {
             return;
         }
-        let outermost = self.core_mut().begin_entry();
+        let entry = self.core_mut().begin_entry();
         self.core_mut().sched.shutting_down = true;
         loop {
             let next = self
@@ -206,7 +206,7 @@ pub trait Sched: Engine {
         s.signaled.clear();
         s.groups.clear();
         s.ext.clear_completed();
-        self.core_mut().end_entry(outermost, false);
+        self.core_mut().end_entry(entry, false);
     }
 
     /// Cancels the suspended coroutines with an id of `first` or more, newest first: the ones
@@ -216,7 +216,7 @@ pub trait Sched: Engine {
         if self.core().sched.coroutine_running() {
             return;
         }
-        let outermost = self.core_mut().begin_entry();
+        let entry = self.core_mut().begin_entry();
         // A `defer` or a `Drop` hook that runs during a cancel may start coroutines, which are
         // cancelled in turn; a few rounds are enough for any program that is not building them
         // forever.
@@ -237,7 +237,7 @@ pub trait Sched: Engine {
                 self.cancel_id(id);
             }
         }
-        self.core_mut().end_entry(outermost, false);
+        self.core_mut().end_entry(entry, false);
     }
 
     // ---- driving the scheduler from the main fiber ----

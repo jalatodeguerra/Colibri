@@ -10,6 +10,7 @@
 
 use std::num::NonZeroU32;
 
+use crate::mem::EntryGuard;
 use crate::state::Core;
 
 /// How many more steps cleanups get after the budget is exhausted.
@@ -219,6 +220,22 @@ impl Budget {
     }
 }
 
+/// An entry that has begun and not ended (see [`Core::begin_entry`]).
+#[must_use = "an entry must be ended with `end_entry`"]
+pub struct Entry {
+    outermost: bool,
+    /// Restores the thread's memory account if the entry is dropped by an unwind.
+    mem: EntryGuard,
+}
+
+impl Entry {
+    /// Whether this is the outermost entry of its engine (the one with a fresh budget).
+    #[inline]
+    pub fn is_outermost(&self) -> bool {
+        self.outermost
+    }
+}
+
 impl Core {
     /// Whether the grace of an exhausted budget is used up: cleanups are skipped.
     #[inline]
@@ -247,28 +264,51 @@ impl Core {
         }
     }
 
-    /// Begins an entry from the host: the outermost one gets a fresh allotment.
+    /// Begins an entry from the host: the outermost one gets a fresh allotment. The result goes
+    /// to [`Core::end_entry`]; if a panic unwinds past it instead, dropping it gives the thread
+    /// back its previous memory account.
     #[inline]
-    pub fn begin_entry(&mut self) -> bool {
+    pub fn begin_entry(&mut self) -> Entry {
         let outermost = self.budget.depth == 0;
-        if outermost {
+        let mem = if outermost {
             self.budget.arm(self.safepoints.progress);
-        }
+            self.mem.enter()
+        } else {
+            EntryGuard::inert()
+        };
         self.budget.depth += 1;
-        outermost
+        Entry { outermost, mem }
     }
 
     /// Ends the entry `begin_entry` began. `record` keeps its step count for `steps_used`.
     #[inline]
-    pub fn end_entry(&mut self, outermost: bool, record: bool) {
+    pub fn end_entry(&mut self, entry: Entry, record: bool) {
         self.budget.depth -= 1;
-        if outermost {
+        if entry.outermost {
             if record {
                 self.budget.last_used = self.budget.used();
             }
             self.close_budget();
             self.budget.idle();
+            self.mem.leave(entry.mem);
         }
+    }
+
+    /// Bytes this engine's entries hold (allocated under its account and not freed), or `None`
+    /// when the counting allocator is not installed.
+    pub fn memory_used(&self) -> Option<u64> {
+        self.mem.used()
+    }
+
+    /// Sets the memory limit in bytes (`None` for none). The allocator only raises a flag past
+    /// it; the safepoint that acts on the flag is the enforcement of `memory_limit`.
+    pub fn set_memory_limit(&mut self, limit: Option<u64>) {
+        self.mem.set_limit(limit);
+    }
+
+    /// Whether the account went past its limit since the flag was last cleared.
+    pub fn memory_over(&self) -> bool {
+        self.mem.over()
     }
 }
 
