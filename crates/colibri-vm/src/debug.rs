@@ -291,7 +291,10 @@ struct Bp {
 pub(crate) struct DebugShared {
     bps: RefCell<Vec<Bp>>,
     next_id: Cell<u32>,
-    chunks: RefCell<Vec<Weak<Chunk>>>,
+    /// Every chunk built, with the locator of the program it belongs to: a frame that keeps
+    /// running a body from before a hot reload still gets breakpoints, found by file name and
+    /// the lines of its own epoch.
+    chunks: RefCell<Vec<(Weak<Chunk>, Option<Rc<dyn Locator>>)>>,
     locator: RefCell<Option<Rc<dyn Locator>>>,
     /// Breakpoints a compilation verified since the debugger was told last.
     newly: RefCell<Vec<BreakpointInfo>>,
@@ -311,12 +314,13 @@ impl DebugShared {
         {
             let mut chunks = self.chunks.borrow_mut();
             if chunks.len() >= 1024 && chunks.len().is_power_of_two() {
-                chunks.retain(|w| w.strong_count() > 0);
+                chunks.retain(|(w, _)| w.strong_count() > 0);
             }
-            chunks.push(Rc::downgrade(chunk));
+            chunks.push((Rc::downgrade(chunk), self.locator()));
         }
+        let Some(loc) = self.locator() else { return };
         for bp in self.bps.borrow_mut().iter_mut() {
-            if self.put(chunk, bp) && !bp.verified {
+            if self.put(chunk, &*loc, bp) && !bp.verified {
                 bp.verified = true;
                 self.newly.borrow_mut().push(BreakpointInfo {
                     id: bp.id,
@@ -327,19 +331,13 @@ impl DebugShared {
         }
     }
 
-    /// A hot reload swapped the program's bodies: the chunks of the old one are not looked at
-    /// again (a frame still running one keeps what it has; a breakpoint taken out later is
-    /// ignored when such a chunk reports it), and the breakpoints look for their files by name
-    /// in the new program.
-    pub(crate) fn next_epoch(&self) {
-        self.chunks.borrow_mut().clear();
-    }
-
     /// The program has other file numbers: each breakpoint follows its file by name.
     fn rebind(&self, locator: &dyn Locator) {
         for bp in self.bps.borrow_mut().iter_mut() {
-            if let Some(id) = bp.file_name.as_deref().and_then(|n| locator.file_id(n)) {
-                bp.file = id;
+            if let Some(name) = bp.file_name.as_deref() {
+                // A file the new program does not have: a number that no file has, so the
+                // breakpoint cannot land in another file that took the old number.
+                bp.file = locator.file_id(name).unwrap_or(FileId(u32::MAX));
             }
         }
     }
@@ -350,18 +348,22 @@ impl DebugShared {
 
     /// Puts `bp` into `chunk`: at the statements that start the line, the outermost ones (the
     /// earliest in the source) when several start on it. Returns whether any was found.
-    fn put(&self, chunk: &Chunk, bp: &Bp) -> bool {
-        let Some(loc) = self.locator() else {
-            return false;
-        };
+    /// `loc` is the locator of the chunk's own program; the breakpoint's file is the one its
+    /// name has there.
+    fn put(&self, chunk: &Chunk, loc: &dyn Locator, bp: &Bp) -> bool {
         if chunk.hidden {
             return false;
         }
+        let file = bp
+            .file_name
+            .as_deref()
+            .and_then(|n| loc.file_id(n))
+            .unwrap_or(bp.file);
         let on_line: Vec<(u32, Span)> = chunk
             .stmts()
             .iter()
             .copied()
-            .filter(|(_, s)| s.file == bp.file && loc.line(*s) == Some(bp.line))
+            .filter(|(_, s)| s.file == file && loc.line(*s) == Some(bp.line))
             .collect();
         let Some(first) = on_line.iter().map(|(_, s)| s.start).min() else {
             return false;
@@ -374,11 +376,11 @@ impl DebugShared {
         true
     }
 
-    fn live_chunks(&self) -> Vec<Rc<Chunk>> {
+    fn live_chunks(&self) -> Vec<(Rc<Chunk>, Option<Rc<dyn Locator>>)> {
         self.chunks
             .borrow()
             .iter()
-            .filter_map(Weak::upgrade)
+            .filter_map(|(w, l)| w.upgrade().map(|c| (c, l.clone())))
             .collect()
     }
 }
@@ -621,20 +623,54 @@ impl Machine {
             return Vec::new();
         };
         let shared = Rc::clone(&d.shared);
-        let old: Vec<u32> = shared
+        // A breakpoint the file had already, with the same line, hit condition and log, stays as
+        // it is, with its id (editors send a whole file's breakpoints whenever one changes). Its
+        // hit count starts again.
+        let mut keep: Vec<Option<u32>> = Vec::new();
+        {
+            let mut bps = shared.bps.borrow_mut();
+            let mut taken: Vec<u32> = Vec::new();
+            for spec in specs {
+                let same = bps.iter().find(|b| {
+                    b.file == file
+                        && !taken.contains(&b.id)
+                        && b.line == spec.line
+                        && b.hit == spec.hit
+                        && b.log == spec.log
+                });
+                keep.push(same.map(|b| b.id));
+                taken.extend(same.map(|b| b.id));
+            }
+            for b in bps.iter_mut().filter(|b| taken.contains(&b.id)) {
+                b.hits = 0;
+            }
+        }
+        let gone: Vec<u32> = shared
             .bps
             .borrow()
             .iter()
-            .filter(|b| b.file == file)
+            .filter(|b| b.file == file && !keep.contains(&Some(b.id)))
             .map(|b| b.id)
             .collect();
         let chunks = shared.live_chunks();
-        for chunk in &chunks {
-            chunk.remove_breakpoints(|b| old.contains(&b));
+        for (chunk, _) in &chunks {
+            chunk.remove_breakpoints(|b| gone.contains(&b));
         }
-        shared.bps.borrow_mut().retain(|b| b.file != file);
+        shared
+            .bps
+            .borrow_mut()
+            .retain(|b| b.file != file || keep.contains(&Some(b.id)));
         let mut out = Vec::new();
-        for spec in specs {
+        for (spec, kept) in specs.iter().zip(keep) {
+            if let Some(id) = kept {
+                let verified = shared.bps.borrow().iter().any(|b| b.id == id && b.verified);
+                out.push(BreakpointInfo {
+                    id,
+                    line: spec.line,
+                    verified,
+                });
+                continue;
+            }
             let id = shared.next_id.get();
             shared.next_id.set(id + 1);
             let mut bp = Bp {
@@ -648,8 +684,10 @@ impl Machine {
                 hits: 0,
             };
             let mut verified = false;
-            for chunk in &chunks {
-                verified |= shared.put(chunk, &bp);
+            for (chunk, loc) in &chunks {
+                if let Some(loc) = loc {
+                    verified |= shared.put(chunk, &**loc, &bp);
+                }
             }
             bp.verified = verified;
             shared.bps.borrow_mut().push(bp);
@@ -668,7 +706,7 @@ impl Machine {
             return;
         };
         let shared = Rc::clone(&d.shared);
-        for chunk in shared.live_chunks() {
+        for (chunk, _) in shared.live_chunks() {
             chunk.remove_breakpoints(|_| true);
         }
         shared.bps.borrow_mut().clear();

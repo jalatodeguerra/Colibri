@@ -1341,3 +1341,65 @@ fn without_watch_an_edited_file_is_not_reloaded() {
     assert_eq!(dap.output("stdout"), "calc 0\ncalc 2\ncalc 4\n");
     dap.disconnect();
 }
+
+/// A coroutine that loops for a while and calls `calc` each time round: after a patch it is
+/// still running the body it had.
+const LOOPING: &str = "\
+fn calc(n: int) -> int {
+    let r = n * 2 // @calc
+    return r
+}
+fn ticker() {
+    let mut i = 0
+    while i < 300 {
+        let v = calc(i) // @call
+        print(v) // @print
+        wait(0.01)
+        i += 1
+    }
+}
+fn main() {
+    go ticker()
+}
+";
+
+#[test]
+fn breakpoints_set_after_a_patch_reach_a_loop_that_still_runs_its_old_body() {
+    let (calc, call, print) = (
+        line_of(LOOPING, "calc"),
+        line_of(LOOPING, "call"),
+        line_of(LOOPING, "print"),
+    );
+    let mut dap = Dap::start("reload-old-frame");
+    dap.launch(LOOPING, json!({"watch": true}));
+    let first_set = dap.break_at(&[calc]);
+    dap.configuration_done();
+    let first = dap.stopped();
+    let thread = first["threadId"].as_i64().expect("a thread");
+    // The editor sends the file's breakpoints again: an unchanged one keeps its id.
+    let again = dap.break_at(&[calc]);
+    assert_eq!(again[0]["id"], first_set[0]["id"]);
+    std::fs::write(&dap.program, LOOPING.replace("n * 2", "n * 3")).unwrap();
+    dap.request("continue", json!({"threadId": thread}));
+    // Patched: `calc` runs its new body; `ticker` has not returned, so its frame is old code.
+    let second = dap.stopped();
+    assert_eq!(second["hitBreakpointIds"], first["hitBreakpointIds"]);
+    // A breakpoint added now (the editor sends all of them, with the old one dropped) must
+    // reach the frame that runs the old body of `ticker`.
+    let set = dap.break_at(&[call, print]);
+    assert_ne!(set[0]["id"], first_set[0]["id"]);
+    dap.request("continue", json!({"threadId": thread}));
+    let stop = dap.stopped();
+    assert_eq!(stop["reason"], "breakpoint");
+    let frames = dap.stack_of(stop["threadId"].as_i64().expect("a thread"));
+    assert_eq!(frames[0]["name"], "ticker");
+    assert!(
+        [call, print].contains(&frames[0]["line"].as_i64().unwrap()),
+        "{frames:?}"
+    );
+    // Take them all out and let it run to its end.
+    dap.break_at(&[]);
+    dap.request("continue", json!({"threadId": thread}));
+    assert_eq!(dap.finish(), Some(0));
+    dap.disconnect();
+}
