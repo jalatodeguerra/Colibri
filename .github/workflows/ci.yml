@@ -46,6 +46,18 @@ jobs:
           -p colibri-std -p colibri-pack -p colibri-web
           -- -D warnings
 
+  # The counting allocator's pointer arithmetic (the prefix, `realloc` moving it, the leaked
+  # account table) under Miri. Its unit tests call `CountingAlloc(System)` directly.
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo miri test -p colibri-core --lib mem::
+
   # The web runner (`colibri.wasm`, `colibri.js`): built for the web and run in node, on a fake
   # `requestAnimationFrame` and `setTimeout` with a virtual clock, with golden programs from
   # packs. `crates/colibri-web/js/test/run.mjs` says what it checks.

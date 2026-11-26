@@ -220,3 +220,29 @@ fn realloc_keeps_the_account_that_made_the_allocation() {
     HELD.with(|h| *h.borrow_mut() = Vec::new());
     assert!(used(&vm) < held, "the last bytes were credited too");
 }
+
+#[test]
+fn a_host_list_argument_grown_inside_the_entry_is_charged() {
+    let mut vm = colibri::Vm::builder().build();
+    vm.register_fn("sink", |v: colibri::Value| {
+        SUNK.with(|s| *s.borrow_mut() = Some(v));
+    })
+    .unwrap();
+    vm.load_source(
+        "arg.colibri",
+        "fn grow(xs: List[int], n: int) {\n    let mut ys = xs\n    for i in 0..n {\n        ys.push(i)\n    }\n    sink(ys)\n}\n",
+    )
+    .unwrap();
+    let base = used(&vm);
+    let grow = vm.get_fn::<(Vec<i64>, i64), ()>("grow").unwrap();
+    // The argument is converted before the entry opens, so its storage starts with no account.
+    grow.call(&mut vm, (vec![1, 2, 3, 4], N)).unwrap();
+    let grown = used(&vm);
+    eprintln!("base {base}, grown {grown}");
+    assert!(grown >= base + GROWN, "base {base}, grown {grown}");
+    SUNK.with(|s| s.borrow_mut().take());
+    assert!(
+        used(&vm) <= base + SLACK,
+        "the list was credited when it died"
+    );
+}

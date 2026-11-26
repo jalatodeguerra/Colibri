@@ -209,8 +209,8 @@ impl Machine {
         new_from: usize,
         reinit: &[GlobalId],
     ) -> Result<(), Box<PanicInfo>> {
-        let outermost = self.core.begin_entry();
-        if outermost {
+        let entry = self.core.begin_entry();
+        if entry.is_outermost() {
             self.refused = false;
             self.discard_pending_refusal();
             self.drain_root_drops();
@@ -255,24 +255,24 @@ impl Machine {
                 Err(e) => result = Err(e),
             }
         }
-        self.core.end_entry(outermost, true);
+        self.core.end_entry(entry, true);
         result
     }
 
     /// The entry succeeded: the values it replaced are released.
     pub fn session_commit(&mut self, undo: SessionUndo) {
-        let outermost = self.core.begin_entry();
+        let entry = self.core.begin_entry();
         for (_, value) in undo.replaced {
             self.release(value);
         }
-        self.core.end_entry(outermost, false);
+        self.core.end_entry(entry, false);
     }
 
     /// The entry failed: the code of `old` (the program before it) is back, the values it
     /// created are released and the ones it replaced return. What the entry did to values
     /// that already existed (`x += 1` before a panic) stays.
     pub fn session_rollback(&mut self, undo: SessionUndo, old: &Program) {
-        let outermost = self.core.begin_entry();
+        let entry = self.core.begin_entry();
         let SessionUndo {
             fns,
             types,
@@ -319,7 +319,7 @@ impl Machine {
             let failed = std::mem::replace(&mut self.globals[slot], value);
             self.release(failed);
         }
-        self.core.end_entry(outermost, false);
+        self.core.end_entry(entry, false);
     }
 
     /// The `Show` text of module-level value `g`, honouring a user-written `impl Show`.
@@ -348,8 +348,8 @@ impl Machine {
     /// Runs every module-level initialiser and nothing else: those in dependency order, then
     /// the script's `let`/`let mut` in source order. The state a test starts from.
     pub fn run_initialisers(&mut self, fiber: &mut VmFiber) -> Result<(), Box<PanicInfo>> {
-        let outermost = self.core.begin_entry();
-        if outermost {
+        let entry = self.core.begin_entry();
+        if entry.is_outermost() {
             self.drain_root_drops();
         }
         let inits = self.inits.clone();
@@ -370,7 +370,7 @@ impl Machine {
             }
         }
         self.released = false;
-        self.core.end_entry(outermost, true);
+        self.core.end_entry(entry, true);
         result
     }
 
@@ -380,7 +380,7 @@ impl Machine {
     pub fn release_globals(&mut self) {
         self.cancel_all_coroutines();
         self.core.sched.forget_failures();
-        let outermost = self.core.begin_entry();
+        let entry = self.core.begin_entry();
         let order: Vec<usize> = self.inits.iter().map(|g| g.0 as usize).collect();
         for g in order.iter().rev() {
             if let Some(slot) = self.globals.get_mut(*g) {
@@ -401,7 +401,7 @@ impl Machine {
                 v
             });
         self.released = true;
-        self.core.end_entry(outermost, false);
+        self.core.end_entry(entry, false);
     }
 
     /// Resumes every due coroutine once.

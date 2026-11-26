@@ -68,3 +68,42 @@ fn a_dead_cores_slot_waits_for_what_it_allocated() {
     drop(kept);
     assert_eq!(b.memory_used(), Some(0));
 }
+
+#[test]
+fn a_panic_out_of_an_entry_gives_the_thread_back() {
+    let mut a = core();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _entry = a.begin_entry();
+        let _inside: Vec<u8> = Vec::with_capacity(1000);
+        panic!("a panic that nothing inside the entry catches");
+    }));
+    // The panic machinery allocated under the entry's account too (the payload, the report);
+    // when the payload dies that is credited, like what the entry held.
+    drop(result.expect_err("the closure panicked"));
+    // The rest of what the panic left under the account (std keeps a symbol cache after a
+    // backtrace) is compared with this reading instead of with zero.
+    let settled = a.memory_used().expect("installed");
+    // The host goes on with the thread: its allocations are not the closed entry's.
+    let host: Vec<u8> = Vec::with_capacity(5000);
+    assert_eq!(
+        a.memory_used(),
+        Some(settled),
+        "the host was charged to the entry's account"
+    );
+    drop(host);
+    assert_eq!(a.memory_used(), Some(settled));
+}
+
+#[test]
+fn a_block_made_outside_an_entry_is_charged_when_it_grows_inside_one() {
+    let mut core = core();
+    let mut host: Vec<u8> = Vec::with_capacity(16);
+    host.push(1);
+    let outermost = core.begin_entry();
+    host.resize(100_000, 2);
+    core.end_entry(outermost, false);
+    let held = core.memory_used().expect("installed");
+    assert!(held >= 100_000, "{held}");
+    drop(host);
+    assert_eq!(core.memory_used(), Some(0));
+}

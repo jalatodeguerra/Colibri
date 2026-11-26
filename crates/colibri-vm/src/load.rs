@@ -24,8 +24,8 @@ impl Machine {
     /// which initialise the script's own `let`/`let mut` on their lines (DESIGN §4.2).
     pub fn run_module(&mut self, fiber: &mut VmFiber) -> Result<(), Box<PanicInfo>> {
         // The initialisers and the top-level statements share one allotment.
-        let outermost = self.core.begin_entry();
-        if outermost {
+        let entry = self.core.begin_entry();
+        if entry.is_outermost() {
             // A refusal ends with the run it stopped, not with the Vm.
             self.refused = false;
             self.discard_pending_refusal();
@@ -36,7 +36,7 @@ impl Machine {
             }
         }
         let result = self.run_module_parts(fiber);
-        self.core.end_entry(outermost, true);
+        self.core.end_entry(entry, true);
         result
     }
 
@@ -45,8 +45,8 @@ impl Machine {
     /// statements do not run (a host that cannot block starts them with
     /// [`Machine::start_entry`]).
     pub fn run_module_inits(&mut self, fiber: &mut VmFiber) -> Result<(), Box<PanicInfo>> {
-        let outermost = self.core.begin_entry();
-        if outermost {
+        let entry = self.core.begin_entry();
+        if entry.is_outermost() {
             self.refused = false;
             self.discard_pending_refusal();
             self.drain_root_drops();
@@ -56,7 +56,7 @@ impl Machine {
             }
         }
         let result = self.run_inits_only(fiber);
-        self.core.end_entry(outermost, true);
+        self.core.end_entry(entry, true);
         result
     }
 
@@ -182,8 +182,8 @@ impl Machine {
             fiber.stack_base = stack_position();
             self.note_stack_root();
         }
-        let outermost = self.core.begin_entry();
-        if outermost {
+        let entry = self.core.begin_entry();
+        if entry.is_outermost() {
             self.refused = false;
             self.discard_pending_refusal();
             self.drain_root_drops();
@@ -201,8 +201,9 @@ impl Machine {
         self.release_temps(fiber, temps);
         // A script that swallowed the exhaustion (through a host function that returned
         // normally) still ran out of budget.
+        let outermost = entry.is_outermost();
         let swallowed = outermost && self.core.budget_was_exhausted();
-        self.core.end_entry(outermost, record);
+        self.core.end_entry(entry, record);
         let result = match result {
             Ok(v) if swallowed => {
                 self.release(v);
@@ -235,7 +236,7 @@ impl Machine {
     pub fn shutdown(&mut self) {
         // Coroutines unwind first: their locals may use module-level values.
         self.cancel_all_coroutines();
-        let outermost = self.core.begin_entry();
+        let entry = self.core.begin_entry();
         // Roots die first, then the module's values (EMBEDDING §3).
         self.clear_roots();
         let order: Vec<usize> = self.inits.iter().map(|g| g.0 as usize).collect();
@@ -252,7 +253,7 @@ impl Machine {
         }
         // A `Drop` hook that panics while the program is shutting down has nobody to tell.
         self.core.hook_panics.clear();
-        self.core.end_entry(outermost, false);
+        self.core.end_entry(entry, false);
     }
 }
 

@@ -155,7 +155,8 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAlloc<A> {
         // SAFETY: `user` came from `alloc` with `layout`. The prefix lies in the first bytes of
         // the block, which `realloc` keeps (it copies `min(old, new)` bytes and the prefix is
         // inside both), so the tag is still in front of the moved data. The account is the one
-        // recorded: a value that grows after its entry ended still charges the entry that made it.
+        // recorded: a value that grows after its entry ended still charges the entry that made it. A block with
+        // no account is adopted by the current one (below).
         unsafe {
             let tag = tag_slot(user).read();
             let base = self.0.realloc(user.sub(prefix), block, new_block_size);
@@ -168,6 +169,16 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAlloc<A> {
                     charge(tag, new_size - layout.size());
                 } else {
                     credit(tag, layout.size() - new_size);
+                }
+            } else {
+                // A block made outside any account (a host `Vec` argument converted before the
+                // entry opened, a global the host built) that is resized inside an entry joins
+                // the account that is current: otherwise a script could grow it for free.
+                // Nothing is credited, because tag 0 was never charged.
+                let now = current();
+                if now != 0 && lookup(now).is_some() {
+                    charge(now, new_size + prefix);
+                    tag_slot(base.add(prefix)).write(now);
                 }
             }
             base.add(prefix)
@@ -182,7 +193,10 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAlloc<A> {
 thread_local! {
     /// The tag of the account that allocations on this thread are charged to; 0 for none. A const
     /// `Cell<u64>` has no lazy initialisation and no destructor, so reading it from inside the
-    /// allocator cannot allocate, register a destructor or hit a destroyed value.
+    /// allocator cannot allocate, register a destructor or hit a destroyed value. (On a target
+    /// without native thread-locals, std falls back to OS keys and `thread_local!` may allocate on
+    /// first use, which would recurse into the allocator. No target Colibri builds for is like
+    /// that: Linux, macOS, Windows and wasm all have a native or plain-static path.)
     static CURRENT: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -392,8 +406,34 @@ fn close_slot(tag: u64) {
 pub struct MemAccount {
     /// 0 for an inert account.
     tag: u64,
-    /// The account that was current when the outermost entry began (restored when it ends).
+}
+
+/// What an outermost entry must undo: the account that was current before it. Dropping it
+/// without [`MemAccount::leave`] (a panic unwound past the entry) restores that account too, so
+/// the thread never keeps the tag of a `Vm` that is no longer running.
+pub struct EntryGuard {
     prev: u64,
+    armed: bool,
+}
+
+impl EntryGuard {
+    /// A guard that restores nothing (an entry that is not the outermost, or an inert account).
+    #[inline]
+    pub const fn inert() -> EntryGuard {
+        EntryGuard {
+            prev: 0,
+            armed: false,
+        }
+    }
+}
+
+impl Drop for EntryGuard {
+    #[inline]
+    fn drop(&mut self) {
+        if self.armed {
+            swap_current(self.prev);
+        }
+    }
 }
 
 impl MemAccount {
@@ -402,16 +442,13 @@ impl MemAccount {
         if installed() {
             MemAccount::open()
         } else {
-            MemAccount { tag: 0, prev: 0 }
+            MemAccount { tag: 0 }
         }
     }
 
     /// A live account whether or not the allocator is installed (tests of the accounting).
     pub fn open() -> MemAccount {
-        MemAccount {
-            tag: open_slot(),
-            prev: 0,
-        }
+        MemAccount { tag: open_slot() }
     }
 
     /// Whether this account counts anything.
@@ -426,18 +463,23 @@ impl MemAccount {
 
     /// Makes this account the current one of the thread (an outermost entry began).
     #[inline]
-    pub fn enter(&mut self) {
-        if self.tag != 0 {
-            self.prev = swap_current(self.tag);
+    pub fn enter(&mut self) -> EntryGuard {
+        if self.tag == 0 {
+            return EntryGuard::inert();
+        }
+        EntryGuard {
+            prev: swap_current(self.tag),
+            armed: true,
         }
     }
 
     /// Restores the account that was current before `enter` (the outermost entry ended). A `Vm`
     /// inside a host function of another one gives the thread back to the outer one this way.
     #[inline]
-    pub fn leave(&mut self) {
-        if self.tag != 0 {
-            swap_current(self.prev);
+    pub fn leave(&mut self, mut guard: EntryGuard) {
+        if guard.armed {
+            guard.armed = false;
+            swap_current(guard.prev);
         }
     }
 
@@ -512,9 +554,9 @@ mod tests {
 
     /// Runs `f` with `account` current, as an entry does.
     fn within<R>(account: &mut MemAccount, f: impl FnOnce() -> R) -> R {
-        account.enter();
+        let guard = account.enter();
         let r = f();
-        account.leave();
+        account.leave(guard);
         r
     }
 
@@ -616,6 +658,52 @@ mod tests {
     }
 
     #[test]
+    fn a_block_without_an_account_joins_the_current_one_when_resized() {
+        let _g = shared();
+        let mut account = MemAccount::open();
+        for align in [1usize, 16, 64] {
+            let prefix = prefix_for(align) as u64;
+            let small = layout(8, align);
+            // Made outside any account: tag 0, charged to nobody.
+            let p = unsafe { A.alloc(small) };
+            assert_eq!(unsafe { tag_slot(p).read() }, 0);
+            unsafe { *p = 9 };
+            let grown = within(&mut account, || unsafe { A.realloc(p, small, 1000) });
+            assert_eq!(unsafe { *grown }, 9);
+            assert_eq!(unsafe { tag_slot(grown).read() }, account.tag());
+            assert_eq!(account.used(), Some(1000 + prefix));
+            // From here on it behaves like any block of the account.
+            let big = layout(1000, align);
+            let more = within(&mut account, || unsafe { A.realloc(grown, big, 3000) });
+            assert_eq!(account.used(), Some(3000 + prefix));
+            unsafe { A.dealloc(more, layout(3000, align)) };
+            assert_eq!(account.used(), Some(0));
+        }
+        // With no account current it stays uncharged.
+        let small = layout(8, 8);
+        let p = unsafe { A.alloc(small) };
+        let grown = unsafe { A.realloc(p, small, 100) };
+        assert_eq!(unsafe { tag_slot(grown).read() }, 0);
+        unsafe { A.dealloc(grown, layout(100, 8)) };
+    }
+
+    #[test]
+    fn a_dropped_entry_guard_gives_the_thread_back() {
+        let _g = shared();
+        let mut outer = MemAccount::open();
+        let mut inner = MemAccount::open();
+        let go = outer.enter();
+        let before = current();
+        let gi = inner.enter();
+        assert_eq!(current(), inner.tag());
+        // A panic unwound past the entry: the guard is dropped, `leave` never ran.
+        drop(gi);
+        assert_eq!(current(), before);
+        outer.leave(go);
+        assert_eq!(current(), 0);
+    }
+
+    #[test]
     fn a_failed_realloc_changes_nothing() {
         let _g = shared();
         let mut account = MemAccount::open();
@@ -670,14 +758,14 @@ mod tests {
         let _g = shared();
         let mut outer = MemAccount::open();
         let mut inner = MemAccount::open();
-        outer.enter();
+        let go = outer.enter();
         let a = layout(10, 1);
         let p1 = unsafe { A.alloc(a) };
-        inner.enter();
+        let gi = inner.enter();
         let p2 = unsafe { A.alloc(a) };
-        inner.leave();
+        inner.leave(gi);
         let p3 = unsafe { A.alloc(a) };
-        outer.leave();
+        outer.leave(go);
         assert_eq!(current(), 0);
         assert_eq!(outer.used(), Some(2 * 26));
         assert_eq!(inner.used(), Some(26));
@@ -755,11 +843,11 @@ mod tests {
 
     #[test]
     fn an_inert_account_counts_nothing_and_leaves_the_thread_alone() {
-        let mut inert = MemAccount { tag: 0, prev: 0 };
+        let mut inert = MemAccount { tag: 0 };
         let before = current();
-        inert.enter();
+        let guard = inert.enter();
         assert_eq!(current(), before);
-        inert.leave();
+        inert.leave(guard);
         assert_eq!(inert.used(), None);
         assert!(!inert.over());
         inert.set_limit(Some(1));
