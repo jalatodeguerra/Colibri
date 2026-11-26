@@ -200,8 +200,19 @@ thread_local! {
     static CURRENT: Cell<u64> = const { Cell::new(0) };
 }
 
+/// The account allocations on this thread are charged to; 0 while the thread is panicking.
+///
+/// Allocations made while a Rust panic unwinds are deliberately not counted: std's default panic
+/// hook builds a process-wide symbol cache (tens of megabytes with `RUST_BACKTRACE` set) that
+/// would otherwise be charged to whichever `Vm` panicked first and stay there. Frees still credit
+/// the tag they carry. Grace logic of a memory limit that runs inside a Rust unwind must not
+/// expect its allocations to be counted. `panicking()` is a relaxed load of a global count, and a
+/// destructor-free thread-local only when that is non-zero, so it neither allocates nor panics.
 #[inline]
 fn current() -> u64 {
+    if std::thread::panicking() {
+        return 0;
+    }
     // `try_with` cannot fail for a type without a destructor, but the allocator must never panic.
     CURRENT.try_with(Cell::get).unwrap_or(0)
 }
@@ -688,6 +699,40 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_charged_while_the_thread_panics() {
+        let _g = shared();
+        let mut account = MemAccount::open();
+        let l = layout(100, 8);
+        let guard = account.enter();
+        // A value whose drop allocates during the unwind: not charged (a hook would do the same).
+        struct AllocOnDrop(Layout, std::sync::mpsc::Sender<usize>);
+        impl Drop for AllocOnDrop {
+            fn drop(&mut self) {
+                let p = unsafe { A.alloc(self.0) };
+                self.1.send(unsafe { tag_slot(p).read() } as usize).unwrap();
+                unsafe { A.dealloc(p, self.0) };
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _bomb = AllocOnDrop(l, tx);
+            panic!("unwinding with an account current");
+        }));
+        assert!(r.is_err());
+        assert_eq!(
+            rx.recv().unwrap(),
+            0,
+            "allocated while panicking, so uncounted"
+        );
+        // Outside the unwind the account is current again.
+        let p = unsafe { A.alloc(l) };
+        assert_eq!(unsafe { tag_slot(p).read() }, account.tag());
+        unsafe { A.dealloc(p, l) };
+        account.leave(guard);
+        assert_eq!(account.used(), Some(0));
+    }
+
+    #[test]
     fn a_dropped_entry_guard_gives_the_thread_back() {
         let _g = shared();
         let mut outer = MemAccount::open();
@@ -833,11 +878,18 @@ mod tests {
         let _g = shared();
         let mut account = MemAccount::open();
         let l = layout(1000, 8);
-        let addr = within(&mut account, || unsafe { A.alloc(l) }) as usize;
+        /// A pointer that may cross to another thread (the test owns the block).
+        struct Block(*mut u8);
+        // SAFETY: the block is only touched by the thread that frees it, after this one is done.
+        unsafe impl Send for Block {}
+        let block = Block(within(&mut account, || unsafe { A.alloc(l) }));
         assert_eq!(account.used(), Some(1016));
-        std::thread::spawn(move || unsafe { A.dealloc(addr as *mut u8, l) })
-            .join()
-            .expect("the thread ends");
+        std::thread::spawn(move || {
+            let block = block;
+            unsafe { A.dealloc(block.0, l) }
+        })
+        .join()
+        .expect("the thread ends");
         assert_eq!(account.used(), Some(0));
     }
 

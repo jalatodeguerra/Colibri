@@ -52,11 +52,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      # A dated nightly, so that a new one cannot turn the job red by itself; move it forward
+      # now and then (it must have the miri component).
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-11-02
           components: miri
       - uses: Swatinem/rust-cache@v2
-      - run: cargo miri test -p colibri-core --lib mem::
+      - run: "cargo miri test -p colibri-core --lib mem::"
 
   # The web runner (`colibri.wasm`, `colibri.js`): built for the web and run in node, on a fake
   # `requestAnimationFrame` and `setTimeout` with a virtual clock, with golden programs from

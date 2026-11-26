@@ -72,17 +72,17 @@ fn a_dead_cores_slot_waits_for_what_it_allocated() {
 #[test]
 fn a_panic_out_of_an_entry_gives_the_thread_back() {
     let mut a = core();
+    let before = a.memory_used().expect("installed");
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _entry = a.begin_entry();
         let _inside: Vec<u8> = Vec::with_capacity(1000);
         panic!("a panic that nothing inside the entry catches");
     }));
-    // The panic machinery allocated under the entry's account too (the payload, the report);
-    // when the payload dies that is credited, like what the entry held.
     drop(result.expect_err("the closure panicked"));
-    // The rest of what the panic left under the account (std keeps a symbol cache after a
-    // backtrace) is compared with this reading instead of with zero.
+    // Nothing allocated while the thread panicked (the payload, std's report) was charged, so the
+    // account is where it was before the entry.
     let settled = a.memory_used().expect("installed");
+    assert_eq!(settled, before);
     // The host goes on with the thread: its allocations are not the closed entry's.
     let host: Vec<u8> = Vec::with_capacity(5000);
     assert_eq!(
