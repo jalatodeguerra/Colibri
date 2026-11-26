@@ -389,7 +389,9 @@ impl Machine {
         // panic, so it is not among them.
         if let Finish::Panicked(info) = &finish
             && let refusal = info.message.starts_with(crate::unwind::REFUSAL)
-            && (refusal || info.message.starts_with(crate::debug::TERMINATION))
+            && (refusal
+                || (self.debug.as_ref().is_some_and(|d| d.terminating)
+                    && info.message.starts_with(crate::debug::TERMINATION)))
             && let Some(id) = fiber.state.coro
         {
             let info = (**info).clone();

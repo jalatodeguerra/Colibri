@@ -588,6 +588,23 @@ fn main() {
 }
 
 #[test]
+fn a_user_panic_with_the_termination_text_is_caught_without_a_debugger() {
+    use crate::source::{Options, run_source_with};
+    let src = "fn bad() -> int {
+    panic(\"the program was ended by the debugger\")
+}
+fn main() {
+    let c: Coroutine[int] = go bad()
+    let r = c.join_result()
+    print(\"caught {r.is_ok()}\")
+}
+";
+    let out = run_source_with(src, &Options::default());
+    assert_eq!(out.panic, None);
+    assert_eq!(out.stdout, "caught false\n");
+}
+
+#[test]
 fn a_breakpoint_on_a_while_line_hits_where_the_condition_is_checked() {
     let src = "fn main() {
     let mut i = 0
