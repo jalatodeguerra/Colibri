@@ -70,7 +70,7 @@ fn protocol_output() -> Box<dyn io::Write + Send> {
     }
     // SAFETY: `SetStdHandle` only stores a handle value in the process; `err` is the live
     // standard error handle, which is not closed here.
-    if unsafe { SetStdHandle(STD_OUTPUT_HANDLE, err.cast()) } == 0 {
+    if unsafe { SetStdHandle(STD_OUTPUT_HANDLE, err) } == 0 {
         return Box::new(io::stdout());
     }
     Box::new(std::fs::File::from(own))

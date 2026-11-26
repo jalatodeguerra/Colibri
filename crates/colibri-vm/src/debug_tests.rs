@@ -866,7 +866,8 @@ fn main() {
     // What each stop saw: the stopped coroutine, then for every computation its name, whether
     // it can be read, the function of its top frame and its locals.
     type Row = (Option<u64>, String, bool, Option<String>, Vec<String>);
-    let stops: Rc<RefCell<Vec<(Option<u64>, Vec<Row>)>>> = Rc::default();
+    type Stop = (Option<u64>, Vec<Row>);
+    let stops: Rc<RefCell<Vec<Stop>>> = Rc::default();
     let sink = Rc::clone(&stops);
     let run = run_debug(src, Setup::lines(&[2]), move |view, _, _| {
         let mut rows = Vec::new();
@@ -933,7 +934,8 @@ fn main() {
     a.join()
 }
 ";
-    let seen: Rc<RefCell<Vec<(Option<u64>, usize, usize)>>> = Rc::default();
+    type Look = (Option<u64>, usize, usize);
+    let seen: Rc<RefCell<Vec<Look>>> = Rc::default();
     let sink = Rc::clone(&seen);
     run_debug(src, Setup::lines(&[6]), move |view, _, _| {
         for f in view.fibers() {
