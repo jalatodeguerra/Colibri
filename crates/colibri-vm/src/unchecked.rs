@@ -10,9 +10,16 @@
 //! 1. the register file holds the whole window of the running frame (`base + nregs` registers);
 //! 2. every register an instruction accesses through these functions is below `nregs`.
 //!
+//! The code of a chunk is `Cell<Op>`s, so that the debugger can patch it while frames run it
+//! (`crate::debug`). That does not touch the proof: `Chunk::verify_registers` is run once, when
+//! the chunk is compiled, and the debugger only ever exchanges a `Step` or a `Mark` for a
+//! `Breakpoint` and back (`Patch::original` is asserted to be one of the two when a patch is
+//! made), all three of which `Op::unchecked_regs_end` classifies as using no register.
+//!
 //! Debug builds (the test suites) check the index, so a violation fails there with a panic
 //! instead of reading out of bounds.
 
+use std::cell::Cell;
 use std::ops::Deref;
 use std::rc::Rc;
 
@@ -29,13 +36,13 @@ pub(crate) struct Running {
     chunk: Rc<Chunk>,
     /// The code of `chunk`, with the lifetime erased. Never exposed with a longer lifetime than
     /// a borrow of `self`.
-    ops: *const [Op],
+    ops: *const [Cell<Op>],
 }
 
 impl Running {
     #[inline(always)]
     pub(crate) fn new(chunk: Rc<Chunk>) -> Running {
-        let ops = std::ptr::from_ref::<[Op]>(&chunk.code[..]);
+        let ops = std::ptr::from_ref::<[Cell<Op>]>(&chunk.code[..]);
         Running { chunk, ops }
     }
 
@@ -45,12 +52,18 @@ impl Running {
         *self = Running::new(chunk);
     }
 
-    /// The code of the chunk.
+    /// The code of the chunk, one cell per instruction: a read is `Cell::get`, a plain load of
+    /// the eight bytes, and sees what the debugger put there at once.
     #[inline(always)]
-    pub(crate) fn ops(&self) -> &[Op] {
-        // SAFETY: `ops` points into the vector of `self.chunk`, which `self` keeps alive, and
-        // nothing mutates the code of a chunk inside an `Rc`. The vector is not moved: `Rc`
-        // keeps it in place whatever happens to `self`.
+    pub(crate) fn ops(&self) -> &[Cell<Op>] {
+        // SAFETY: `ops` points into the boxed slice of `self.chunk`, which `self` keeps alive.
+        // The slice is not moved: the `Rc` keeps it in place whatever happens to `self`. Its
+        // elements are `Cell`s, the only way the code of a chunk inside an `Rc` is ever written
+        // (`Cell::set`, whole instructions, by the debugger's patching in `crate::debug`), and a
+        // `Cell` may be written while shared references to it exist. The reference handed out
+        // is a shared one to the slice, never a reference to an `Op`, so no `&Op` can see a
+        // half-written instruction: `Cell<Op>` is not `Sync` and the chunk is not `Send`
+        // (it is in an `Rc`), so no other thread can write while this one reads.
         #[allow(unsafe_code)]
         unsafe {
             &*self.ops

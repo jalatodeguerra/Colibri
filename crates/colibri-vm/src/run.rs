@@ -259,7 +259,7 @@ impl Machine {
             ($off:expr) => {{
                 let mut next = (pc as isize + $off as isize) as usize;
                 let mut n = 1;
-                if let Op::Step { n: run } = chunk.ops()[next] {
+                if let Op::Step { n: run } = chunk.ops()[next].get() {
                     n += run;
                     next += 1;
                 }
@@ -316,7 +316,7 @@ impl Machine {
         }
 
         loop {
-            let op = chunk.ops()[pc];
+            let op = chunk.ops()[pc].get();
             pc += 1;
             match op {
                 Op::LoadUnit { d } => put!(d, Value::Unit),
@@ -532,6 +532,27 @@ impl Machine {
                 },
                 Op::Loop { off } => back_edge!(off),
                 Op::Step { n } => charge!(n),
+                // Debug mode only (see `crate::debug`).
+                Op::Mark => {
+                    if self.stepping() {
+                        sync!();
+                        tri!(self.step_check(fiber));
+                    }
+                }
+                Op::Breakpoint { id } => {
+                    sync!();
+                    tri!(self.breakpoint_hit(fiber, &chunk, id));
+                    // The instruction the breakpoint stands for runs now, once.
+                    match chunk.patch(id) {
+                        Some((Op::Step { n }, _)) => charge!(n),
+                        Some((Op::Mark, _)) => {
+                            if self.stepping() {
+                                tri!(self.step_check(fiber));
+                            }
+                        }
+                        _ => internal!("a breakpoint without its instruction"),
+                    }
+                }
                 Op::JmpNotLtI { a, b, off } => jmp_not!(a, b, off, <),
                 Op::JmpNotLeI { a, b, off } => jmp_not!(a, b, off, <=),
                 Op::JmpNotEqI { a, b, off } => jmp_not!(a, b, off, ==),
@@ -1201,7 +1222,7 @@ impl Machine {
             unreachable!("op_binary is called for its own instruction")
         };
         let span = chunk.spans[pc - 1];
-        let Op::Site { site } = chunk.code[pc - 1] else {
+        let Op::Site { site } = chunk.code[pc - 1].get() else {
             return Err(self.internal(fiber, span, "a binary operation without its operator"));
         };
         let Site::Binary(bop) = &chunk.sites[usize::from(site)] else {
@@ -1458,7 +1479,7 @@ impl Machine {
         pc: usize,
     ) -> Result<(), Ctl> {
         let (mut steps, mut start) = (1, 0);
-        if let Op::Step { n } = callee.code[0] {
+        if let Op::Step { n } = callee.code[0].get() {
             steps += n;
             start = 1;
         }

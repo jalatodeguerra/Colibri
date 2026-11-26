@@ -78,7 +78,7 @@ impl Machine {
         chunk: &'c Chunk,
         pc: usize,
     ) -> Result<&'c PlaceSite, Ctl> {
-        if let Op::Site { site } = chunk.code[pc - 1]
+        if let Op::Site { site } = chunk.code[pc - 1].get()
             && let Some(Site::Place(p)) = chunk.sites.get(usize::from(site))
         {
             return Ok(p);

@@ -382,11 +382,12 @@ impl Leaf {
         {
             return None;
         }
-        let (steps, start) = match chunk.code.first() {
+        let code: Vec<Op> = chunk.code.iter().map(std::cell::Cell::get).collect();
+        let (steps, start) = match code.first() {
             Some(Op::Step { n }) => (1 + *n, 1),
             _ => (1, 0),
         };
-        let body = &chunk.code[start..];
+        let body = &code[start..];
         if body.len() > 4096 {
             return None;
         }

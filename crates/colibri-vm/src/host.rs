@@ -127,6 +127,9 @@ impl Machine {
             nregs: 0,
             nparams: 0,
             hidden: false,
+            stmts: Box::new([]),
+            scopes: Box::new([]),
+            patches: Default::default(),
             leaf: None,
         });
         self.host_impls.shims[slot] = Some(Rc::clone(&chunk));

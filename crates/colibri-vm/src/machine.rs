@@ -37,6 +37,9 @@ impl Slot {
             return Ok(Rc::clone(c));
         }
         let chunk = Rc::new(compile_body(&self.body, id, env)?);
+        if let Some(debug) = &env.debug {
+            debug.adopt(&chunk);
+        }
         let _ = self.chunk.set(Rc::clone(&chunk));
         Ok(chunk)
     }
@@ -111,6 +114,8 @@ pub struct Machine {
     pub(crate) profiler: Option<Box<crate::profile::Profiler>>,
     /// The reference-count counters while a run counts (`Machine::start_rc_profile`).
     pub(crate) rc: Option<Box<crate::rc::RcCounter>>,
+    /// The debugger's state while debug mode is on (`Machine::set_debug`).
+    pub(crate) debug: Option<Box<crate::debug::DebugState>>,
     /// Tests only: runs at every `print`, so a test can call back into Colibri from inside the
     /// dispatch loop (a native re-entry, like a user `Show` or a `Drop` hook would).
     #[cfg(test)]
@@ -151,6 +156,7 @@ impl Machine {
             safepoint_failure: None,
             profiler: None,
             rc: None,
+            debug: None,
             scratch: String::new(),
             #[cfg(test)]
             print_hook: None,
@@ -244,6 +250,7 @@ impl Machine {
         self.uninit = Vec::new();
         self.env = CompileEnv::for_program(program);
         self.env.count_rc = self.rc.is_some();
+        self.env.debug = self.debug.as_ref().map(|d| Rc::clone(&d.shared));
         if program.script_from < program.init_order.len() {
             self.uninit = vec![None; program.globals.len()];
             for g in &program.init_order[program.script_from..] {

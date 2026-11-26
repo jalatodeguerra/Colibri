@@ -306,6 +306,17 @@ pub enum Op {
     Step {
         n: u32,
     },
+    /// Debug mode only (`Machine::set_debug`): the start of a block's tail expression, which has
+    /// no `Step` of its own. It charges nothing and does nothing but give a breakpoint and a
+    /// step something to stop at; it is in the statement table like a `Step`.
+    Mark,
+    /// Debug mode only: stands in the code for the `Step` (or `Mark`) of a statement that has a
+    /// breakpoint, which the chunk's patch number `id` keeps (`Chunk::patches`). The debugger
+    /// is called, then the original instruction runs. Never in a chunk's code until the debugger
+    /// puts it there (`crate::debug`).
+    Breakpoint {
+        id: u32,
+    },
     /// Fused compare and branch: jumps unless the comparison holds.
     JmpNotLtI {
         a: Reg,
@@ -1076,7 +1087,10 @@ pub struct Chunk {
     pub fn_id: Option<FnId>,
     /// The body: its name is in stack traces, and it says whether `self` is handed back.
     pub body: Rc<Body>,
-    pub code: Box<[Op]>,
+    /// The instructions. A cell each, so that the debugger can put a `Breakpoint` in place of a
+    /// `Step` while a frame runs the chunk (see `crate::debug`); nothing else writes them after
+    /// the compiler is done.
+    pub code: Box<[Cell<Op>]>,
     /// Parallel to `code`: the span a panic at that instruction reports (for a call, the span
     /// of the call expression).
     pub spans: Box<[Span]>,
@@ -1091,9 +1105,39 @@ pub struct Chunk {
     /// The body is the prelude's own code (a closure built-in written in Colibri): a stack trace
     /// leaves its frame out, and a panic in it is reported at the call of the built-in.
     pub hidden: bool,
+    /// Debug mode: the first instruction of each statement (a `Step`, or a `Mark` for a block's
+    /// tail), in code order, with the span of the statement. Empty otherwise.
+    pub stmts: Box<[(u32, Span)]>,
+    /// Debug mode: the braced scopes, for the locals a debugger shows. Empty otherwise.
+    pub scopes: Box<[ScopeInfo]>,
+    /// The breakpoints put into `code` (see `crate::debug`). Empty unless a debugger is on.
+    pub(crate) patches: std::cell::RefCell<Vec<Patch>>,
     /// The typed form of the body when it is a leaf (see `crate::leaf`), built once with the
     /// chunk.
     pub(crate) leaf: Option<crate::leaf::Leaf>,
+}
+
+/// A braced scope of a body (debug mode): its locals are in scope for the instructions in
+/// `start..end`.
+#[derive(Debug, Clone)]
+pub struct ScopeInfo {
+    pub start: u32,
+    pub end: u32,
+    /// Each local with the pc from which it holds a value (after its `let`, or the start of the
+    /// scope for a binding that is made on entry).
+    pub locals: Vec<(colibri_check::hir::LocalId, u32)>,
+}
+
+/// An instruction the debugger replaced by `Op::Breakpoint { id }`, `id` being its index in
+/// `Chunk::patches`.
+#[derive(Debug, Clone)]
+pub(crate) struct Patch {
+    pub pc: u32,
+    /// What was there: a `Step` or a `Mark`.
+    pub original: Op,
+    /// The breakpoints (by id, see `crate::debug`) that want this instruction. When none is
+    /// left the original is put back, and the entry stays for the next breakpoint here.
+    pub bps: Vec<u32>,
 }
 
 impl Op {
@@ -1201,6 +1245,8 @@ impl Op {
             | Op::Jmp { .. }
             | Op::Loop { .. }
             | Op::Step { .. }
+            | Op::Mark
+            | Op::Breakpoint { .. }
             | Op::Call { .. }
             | Op::CallHidden { .. }
             | Op::CallValueIn { .. }
@@ -1271,7 +1317,7 @@ impl Chunk {
     /// Whether every register that `exec` accesses without a bounds check is inside the
     /// frame's window (see [`Op::unchecked_regs_end`]). The compiler runs it on every chunk.
     pub(crate) fn verify_registers(&self) -> Result<(), String> {
-        for (pc, op) in self.code.iter().enumerate() {
+        for (pc, op) in self.code.iter().map(Cell::get).enumerate() {
             if op.unchecked_regs_end() > usize::from(self.nregs) {
                 return Err(format!(
                     "`{}` uses a register beyond its {} at instruction {pc}",
@@ -1292,8 +1338,8 @@ impl Chunk {
     /// The instructions, one per line (`pc  op`), for tests and debugging.
     pub fn disassemble(&self) -> String {
         let mut out = String::new();
-        for (pc, op) in self.code.iter().enumerate() {
-            let _ = writeln!(out, "{pc:04}  {}", self.describe(pc, op));
+        for (pc, op) in self.code.iter().map(Cell::get).enumerate() {
+            let _ = writeln!(out, "{pc:04}  {}", self.describe(pc, &op));
         }
         for e in self.unwind.iter() {
             let _ = writeln!(out, "unwind [{:04}, {:04}) -> {:04}", e.start, e.end, e.pad);
@@ -1359,6 +1405,8 @@ impl Chunk {
             Op::JmpIfNot { r, off } => format!("JmpIfNot r{r} -> {:04}", target(off.into())),
             Op::Loop { off } => format!("Loop -> {:04}", target(off.into())),
             Op::Step { n } => format!("Step {n}"),
+            Op::Mark => "Mark".to_string(),
+            Op::Breakpoint { id } => format!("Breakpoint #{id}"),
             Op::JmpNotLtI { a, b, off } => {
                 format!("JmpNotLtI r{a} r{b} -> {:04}", target(off.into()))
             }

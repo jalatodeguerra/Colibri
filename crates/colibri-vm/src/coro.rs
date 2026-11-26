@@ -120,6 +120,11 @@ impl FiberSlab {
         self.free(slot);
     }
 
+    /// The fibers of the paused coroutines.
+    pub fn stored(&self) -> impl Iterator<Item = &VmFiber> {
+        self.slots.iter().filter_map(|s| s.as_deref())
+    }
+
     /// How many slots are in use: started and not yet freed, whether the fiber is stored or out
     /// for a resumption.
     pub fn live(&self) -> usize {
