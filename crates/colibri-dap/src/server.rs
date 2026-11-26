@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -62,67 +62,192 @@ enum Incoming {
 /// in the event loop does not.
 const GRACE: Duration = Duration::from_secs(2);
 
+/// [`GRACE`], or what `COLIBRI_DEBUG_GRACE_MS` says: a knob for the tests, which make the
+/// watchdog and the VM thread race for the same request.
+fn grace() -> Duration {
+    std::env::var("COLIBRI_DEBUG_GRACE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(GRACE, Duration::from_millis)
+}
+
+/// Where an end of the session stands.
+#[derive(Default)]
+struct EndState {
+    /// The VM thread has taken up an end (it answers, and ends the program): no watchdog is
+    /// armed from now on, so a long `defer` is never cut.
+    acked: bool,
+    /// The watchdog is ending the process: the VM thread must not answer.
+    exiting: bool,
+}
+
 /// Shared by the reader thread and the VM thread: how a session ends when the program does not
 /// answer. It sets the pause flag (a running program stops, and `stopped` answers with
 /// `Terminate`), and a watchdog ends the process if the VM thread has not taken up the request.
 struct Ending {
     pause: Mutex<Option<colibri::debug::PauseHandle>>,
-    /// `IDLE`, then `ACKED` when the VM thread took up the end, or `EXITING` when the watchdog
-    /// did; whoever comes first decides.
-    state: AtomicU8,
-    /// Without a debugger nothing answers while the program runs: no grace is given.
+    state: Mutex<EndState>,
+    /// Without a debugger nothing answers while the program runs: no grace is given then.
     no_debug: AtomicBool,
+    /// The program is running (not between the steps of a session).
+    running: AtomicBool,
     out: Arc<Mutex<Out>>,
 }
 
 impl Ending {
-    const IDLE: u8 = 0;
-    const ACKED: u8 = 1;
-    const EXITING: u8 = 2;
+    /// The VM thread takes up the end of the session. False if the watchdog has it: the
+    /// process is about to end and the caller must not write anything.
+    fn ack(&self) -> bool {
+        let mut state = self.state.lock().expect("the end state");
+        if state.exiting {
+            return false;
+        }
+        state.acked = true;
+        true
+    }
 
-    /// The VM thread has taken up the end of the session (it answers, and ends the program).
-    fn ack(&self) {
-        let _ = self.state.compare_exchange(
-            Self::IDLE,
-            Self::ACKED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+    /// [`Ending::ack`], and if the watchdog won, waits for the end of the process.
+    fn ack_or_wait(&self) {
+        if !self.ack() {
+            loop {
+                std::thread::park();
+            }
+        }
     }
 
     /// `reply`: the request to answer if the watchdog has to end the session.
     fn begin(self: &Arc<Self>, reply: Option<(i64, String)>) {
-        self.state.store(Self::IDLE, Ordering::Release);
+        if self.state.lock().expect("the end state").acked {
+            return;
+        }
         if let Some(handle) = self.pause.lock().expect("the pause handle").as_ref() {
             handle.pause();
         }
         let me = Arc::clone(self);
         std::thread::spawn(move || {
-            if !me.no_debug.load(Ordering::Acquire) {
-                std::thread::sleep(GRACE);
+            let blind = me.no_debug.load(Ordering::Acquire) && me.running.load(Ordering::Acquire);
+            if !blind {
+                std::thread::sleep(grace());
             }
-            let took = me.state.compare_exchange(
-                Self::IDLE,
-                Self::EXITING,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-            if took.is_err() {
-                return;
-            }
-            if let Some((seq, command)) = reply {
-                let request = Request {
-                    seq,
-                    command,
-                    args: Value::Null,
-                };
-                me.out
-                    .lock()
-                    .expect("the output")
-                    .respond(&request, Ok(Value::Null));
-            }
-            std::process::exit(0);
+            me.end_session(reply, || std::process::exit(0));
         });
+    }
+
+    /// The watchdog's action, if the VM thread has not taken up the end: answers the request, says
+    /// `terminated` for a `terminate`, closes the output, and calls `exit` while still holding
+    /// the output (a frame the VM thread was writing is finished first, and none starts after).
+    /// Returns false, doing nothing, when the VM thread has the end.
+    fn end_session(&self, reply: Option<(i64, String)>, exit: impl FnOnce()) -> bool {
+        {
+            let mut state = self.state.lock().expect("the end state");
+            if state.acked || state.exiting {
+                return false;
+            }
+            state.exiting = true;
+        }
+        let mut out = self.out.lock().expect("the output");
+        if let Some((seq, command)) = reply {
+            let request = Request {
+                seq,
+                command: command.clone(),
+                args: Value::Null,
+            };
+            out.respond(&request, Ok(Value::Null));
+            if command == "terminate" {
+                out.event("terminated", json!({}));
+            }
+        }
+        out.closed = true;
+        exit();
+        true
+    }
+}
+
+#[cfg(test)]
+mod ending_tests {
+    use super::*;
+
+    /// A writer whose bytes the test can read.
+    #[derive(Clone, Default)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn ending() -> (Arc<Ending>, Sink) {
+        let sink = Sink::default();
+        let out = Arc::new(Mutex::new(Out {
+            writer: Box::new(sink.clone()),
+            seq: 0,
+            closed: false,
+        }));
+        let ending = Arc::new(Ending {
+            pause: Mutex::new(None),
+            state: Mutex::new(EndState::default()),
+            no_debug: AtomicBool::new(false),
+            running: AtomicBool::new(false),
+            out,
+        });
+        (ending, sink)
+    }
+
+    /// The messages written so far, each read whole.
+    fn messages(sink: &Sink) -> Vec<Value> {
+        let bytes = sink.0.lock().unwrap().clone();
+        let mut input = io::Cursor::new(bytes);
+        let mut out = Vec::new();
+        while let Ok(m) = read_message(&mut input) {
+            out.push(m);
+        }
+        assert_eq!(
+            input.position() as usize,
+            input.get_ref().len(),
+            "a torn frame"
+        );
+        out
+    }
+
+    #[test]
+    fn when_the_watchdog_has_the_end_the_vm_thread_is_told_so_and_one_answer_is_written() {
+        let (ending, sink) = ending();
+        let mut held = false;
+        let fired = ending.end_session(Some((7, "disconnect".into())), || {
+            // The output is still held when the process would end.
+            held = ending.out.try_lock().is_err();
+        });
+        assert!(fired && held);
+        assert!(!ending.ack(), "the VM thread must not answer");
+        assert!(!ending.end_session(Some((7, "disconnect".into())), || {}));
+        let written = messages(&sink);
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0]["request_seq"], 7);
+        assert!(ending.out.lock().unwrap().closed);
+    }
+
+    #[test]
+    fn when_the_vm_thread_has_the_end_the_watchdog_does_nothing() {
+        let (ending, sink) = ending();
+        assert!(ending.ack());
+        assert!(!ending.end_session(Some((1, "terminate".into())), || panic!("exit")));
+        assert!(messages(&sink).is_empty());
+        assert!(!ending.out.lock().unwrap().closed);
+    }
+
+    #[test]
+    fn a_terminate_the_watchdog_answers_is_followed_by_terminated() {
+        let (ending, sink) = ending();
+        assert!(ending.end_session(Some((2, "terminate".into())), || {}));
+        let written = messages(&sink);
+        assert_eq!(written.len(), 2);
+        assert_eq!(written[0]["type"], "response");
+        assert_eq!(written[1]["event"], "terminated");
     }
 }
 
@@ -335,8 +460,9 @@ pub fn serve(
     }));
     let ending = Arc::new(Ending {
         pause: Mutex::new(None),
-        state: AtomicU8::new(Ending::IDLE),
+        state: Mutex::new(EndState::default()),
         no_debug: AtomicBool::new(false),
+        running: AtomicBool::new(false),
         out: Arc::clone(&out),
     });
     let reader_ending = Arc::clone(&ending);
@@ -386,7 +512,7 @@ fn run_session(state: &Rc<RefCell<State>>) {
         match request.command.as_str() {
             "disconnect" | "terminate" => {
                 let st = state.borrow_mut();
-                st.ending.ack();
+                st.ending.ack_or_wait();
                 st.reply(&request, Ok(Value::Null));
                 if request.command == "disconnect" {
                     return;
@@ -441,7 +567,10 @@ fn run_session(state: &Rc<RefCell<State>>) {
         vm.debug_stop_on_entry();
     }
     // No borrow of the state is held while the program runs: the debugger calls back into it.
+    let ending = Arc::clone(&state.borrow().ending);
+    ending.running.store(true, Ordering::Release);
     let outcome = vm.run_main().and_then(|()| vm.run_event_loop());
+    ending.running.store(false, Ordering::Release);
     let (code, disconnected) = {
         let mut st = state.borrow_mut();
         (st.finish(&mut vm, outcome), st.disconnected)
@@ -479,12 +608,12 @@ fn after_program(state: &Rc<RefCell<State>>) {
         let mut st = state.borrow_mut();
         match request.command.as_str() {
             "disconnect" => {
-                st.ending.ack();
+                st.ending.ack_or_wait();
                 st.reply(&request, Ok(Value::Null));
                 return;
             }
             "terminate" => {
-                st.ending.ack();
+                st.ending.ack_or_wait();
                 st.reply(&request, Ok(Value::Null));
             }
             "threads" => st.reply(&request, Ok(json!({"threads": []}))),
@@ -904,7 +1033,7 @@ impl State {
                 }
             },
             "terminate" | "disconnect" => {
-                self.ending.ack();
+                self.ending.ack_or_wait();
                 self.end_requested = true;
                 self.disconnected = request.command == "disconnect";
                 match ctl {
@@ -1348,7 +1477,7 @@ impl Debugger for Adapter {
 impl State {
     /// The client went away: the program is ended, and nothing more is sent.
     fn go_away(&mut self) {
-        self.ending.ack();
+        self.ending.ack_or_wait();
         self.end_requested = true;
         self.disconnected = true;
         self.out.lock().expect("the output").closed = true;

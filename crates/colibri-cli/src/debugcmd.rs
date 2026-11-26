@@ -57,6 +57,15 @@ fn build_program_vm(args: LaunchArgs) -> Result<colibri_runtime::Vm, String> {
         cfg = cfg.with_feature(name);
     }
     cfg.debug = true;
+    // The build configuration is set once for the process: a second launch with other features
+    // would silently keep the first ones.
+    static FIRST: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    if *FIRST.get_or_init(|| args.features.clone()) != args.features {
+        return Err(format!(
+            "the features of this session were fixed by the first launch ({}); start a new debug session to use others",
+            FIRST.get().map_or(String::new(), |f| f.join(", "))
+        ));
+    }
     crate::set_build_cfg(cfg);
     let mut args = args;
     // What `colibri run` prints on standard error goes to the client as output.

@@ -905,3 +905,102 @@ fn a_launch_that_cannot_start_fails_the_request_and_can_be_tried_again() {
     assert_eq!(dap.finish(), Some(0));
     dap.disconnect();
 }
+
+#[test]
+fn a_disconnect_after_the_program_ended_is_answered_once_and_the_stream_ends_whole() {
+    // With no grace the adapter's watchdog and its main thread race for the same request: one
+    // of them answers, never both and never half a frame.
+    let src = "fn main() {\n    print(\"done\")\n}\n";
+    for round in 0..30 {
+        let mut dap = Dap::start_with_grace("end-race", Some(0));
+        dap.launch(src, json!({"noDebug": true}));
+        dap.configuration_done();
+        dap.finish();
+        let seq = dap.send("disconnect", json!({}));
+        let response = dap.response_to(seq);
+        assert_eq!(response["success"], true);
+        dap.drain();
+        let answers = dap
+            .history
+            .iter()
+            .filter(|m| m["type"] == "response" && m["command"] == "disconnect")
+            .count();
+        assert_eq!(answers, 1, "round {round}: {:?}", dap.history);
+        dap.wait_exit();
+    }
+}
+
+#[test]
+fn a_terminate_the_watchdog_answers_is_followed_by_terminated() {
+    let mut dap = Dap::start("terminate-watchdog");
+    dap.launch(SPIN, json!({"noDebug": true}));
+    dap.configuration_done();
+    let seq = dap.send("terminate", json!({}));
+    assert_eq!(dap.response_to(seq)["success"], true);
+    dap.event("terminated");
+    dap.drain();
+    dap.wait_exit();
+}
+
+#[test]
+fn a_second_launch_with_other_features_is_refused() {
+    let mut dap = Dap::start("features");
+    let path = dap
+        .temp
+        .write("main.colibri", "fn main() {\n    print(1)\n}\n");
+    // A manifest in a folder of its own, so that the script is not part of its package.
+    let pkg = dap.temp.0.join("pkg");
+    std::fs::create_dir(&pkg).unwrap();
+    let manifest = pkg.join("colibri.toml");
+    std::fs::write(&manifest, "[package]\nname = \"x\"\n").unwrap();
+    dap.request("initialize", json!({}));
+    // Fails after the features were taken, on the manifest.
+    dap.request_fails(
+        "launch",
+        json!({"program": json_path(&manifest), "features": ["a"]}),
+    );
+    let why = dap.request_fails(
+        "launch",
+        json!({"program": json_path(&path), "features": ["b"]}),
+    );
+    assert!(why.contains("features"), "{why}");
+    dap.request(
+        "launch",
+        json!({"program": json_path(&path), "features": ["a"]}),
+    );
+    dap.event("initialized");
+    dap.disconnect();
+}
+
+#[test]
+fn a_disconnect_followed_by_the_end_of_input_does_not_cut_a_long_defer() {
+    // The adapter's watchdog is for a program that does not answer; a program that has taken
+    // up the disconnect and is running its defers (here, for longer than the watchdog's
+    // grace) is left alone, whatever else arrives after the disconnect.
+    let src = r#"import fs
+import time
+fn cleanup() {
+    time.sleep(3.0)
+    let _ = fs.write("late.txt", "x")
+}
+fn main() {
+    defer cleanup()
+    print("ready")
+    let mut n = 0
+    while true {
+        n += 1
+    }
+}
+"#;
+    let mut dap = Dap::start("long-defer");
+    let folder = dap.temp.0.clone();
+    dap.launch(src, json!({"cwd": json_path(&folder)}));
+    dap.configuration_done();
+    while !dap.output("stdout").contains("ready") {
+        dap.event("output");
+    }
+    let seq = dap.send("disconnect", json!({}));
+    dap.response_to(seq);
+    dap.close_input();
+    assert!(folder.join("late.txt").exists());
+}

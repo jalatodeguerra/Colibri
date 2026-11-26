@@ -107,7 +107,16 @@ pub struct Dap {
 
 impl Dap {
     pub fn start(name: &str) -> Dap {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_colibri"))
+        Dap::start_with_grace(name, None)
+    }
+
+    /// [`Dap::start`] with the adapter's watchdog grace set (milliseconds).
+    pub fn start_with_grace(name: &str, grace_ms: Option<u64>) -> Dap {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_colibri"));
+        if let Some(ms) = grace_ms {
+            command.env("COLIBRI_DEBUG_GRACE_MS", ms.to_string());
+        }
+        let mut child = command
             .arg("debug")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -388,6 +397,22 @@ impl Dap {
 }
 
 impl Dap {
+    /// Reads everything the adapter still writes until it closes its output: every frame must
+    /// parse completely (the reader is strict), so a torn last frame fails here.
+    pub fn drain(&mut self) {
+        loop {
+            match self.rx.recv_timeout(HANG_GUARD) {
+                Ok(Ok(message)) => {
+                    self.history.push(message.clone());
+                    self.inbox.push_back(message);
+                }
+                Ok(Err(why)) => panic!("the adapter's output is not whole frames ({why})"),
+                Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => panic!("the adapter's output did not end"),
+            }
+        }
+    }
+
     /// The adapter must end by itself, successfully.
     pub fn wait_exit(&mut self) {
         let deadline = Instant::now() + HANG_GUARD;
@@ -407,7 +432,7 @@ impl Dap {
     }
 
     /// Closes the adapter's input; it must end by itself, successfully.
-    pub fn close_input(mut self) {
+    pub fn close_input(&mut self) {
         drop(self.stdin.take());
         let deadline = Instant::now() + HANG_GUARD;
         loop {
