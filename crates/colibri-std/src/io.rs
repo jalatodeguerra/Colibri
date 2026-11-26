@@ -40,6 +40,18 @@ fn with_input<T>(
     })
 }
 
+/// Writes to the configured standard error, or the process's.
+fn write_stderr(cx: &mut Ctx, text: &str) {
+    match cx.state_mut::<State>().and_then(|s| s.stderr.as_mut()) {
+        Some(out) => {
+            let _ = out.write_all(text.as_bytes());
+        }
+        None => {
+            let _ = std::io::stderr().write_all(text.as_bytes());
+        }
+    }
+}
+
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     Kind::declare(vm)?;
     let mut m = vm.std_module("io");
@@ -49,12 +61,16 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             cx.write_stdout(&text);
         }),
     )?;
-    plain(m.register_fn_named("eprint", ["text"], |text: String| {
-        let _ = std::io::stderr().write_all(text.as_bytes());
-    }))?;
-    plain(m.register_fn_named("eprintln", ["text"], |text: String| {
-        let _ = writeln!(std::io::stderr(), "{text}");
-    }))?;
+    plain(
+        m.register_fn_named("eprint", ["text"], |cx: &mut Ctx, text: String| {
+            write_stderr(cx, &text);
+        }),
+    )?;
+    plain(
+        m.register_fn_named("eprintln", ["text"], |cx: &mut Ctx, text: String| {
+            write_stderr(cx, &format!("{text}\n"));
+        }),
+    )?;
     // The next line without its line ending, or `none` at the end of the input.
     needs(
         Cap::Os,

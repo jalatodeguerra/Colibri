@@ -203,6 +203,8 @@ pub struct DebugVar {
     pub ty: String,
     /// For `Machine::debug_children`, when the value has parts.
     pub handle: Option<u32>,
+    /// How many positional parts (`[0]`, `[1]`, ...) a list or a set has: a client pages them.
+    pub indexed: Option<usize>,
 }
 
 /// What a debugger holds a number for.
@@ -524,6 +526,20 @@ impl Machine {
         }
     }
 
+    /// Makes the program stop (as a step) at its first statement: the stop on entry of a debug
+    /// session. Call it before the program runs.
+    pub fn debug_stop_on_entry(&mut self) {
+        if let Some(d) = self.debug.as_mut() {
+            d.mode = Mode::Step(StepState {
+                kind: StepKind::In,
+                coroutine: None,
+                depth: 0,
+                line: None,
+            });
+        }
+        self.slice_for_mode();
+    }
+
     /// The handle that pauses the program from another thread.
     pub fn debug_pause_handle(&self) -> PauseHandle {
         self.debug
@@ -693,6 +709,10 @@ impl Machine {
 
     /// Calls the debugger with the program stopped, and carries out what it answers.
     pub(crate) fn debug_stop(&mut self, fiber: &mut VmFiber, stop: Stop) -> Result<(), Ctl> {
+        // A program that is being ended runs its `defer`s to the end: nothing stops it again.
+        if self.debug.as_ref().is_some_and(|d| d.terminating) {
+            return Ok(());
+        }
         let Some(mut sink) = self.debug.as_mut().and_then(|d| d.sink.take()) else {
             return Ok(());
         };
@@ -1043,12 +1063,14 @@ impl Machine {
             .map(|(name, v, ty)| {
                 let value = self.shown(&v);
                 let ty = ty.unwrap_or_else(|| self.type_name(&v));
+                let indexed = Self::indexed_len(&v);
                 let handle = self.has_parts(&v).then(|| self.new_handle(v));
                 DebugVar {
                     name,
                     value,
                     ty,
                     handle,
+                    indexed,
                 }
             })
             .collect()
@@ -1374,6 +1396,17 @@ impl Machine {
                 .map(|v| v.fields.iter().map(|f| f.name.clone()).collect())
                 .unwrap_or_default(),
             _ => Vec::new(),
+        }
+    }
+
+    /// The number of positional parts of a list or a set.
+    fn indexed_len(v: &Value) -> Option<usize> {
+        match v {
+            Value::List(l) => Some(l.len()),
+            Value::Set(s) => Some(s.len()),
+            Value::Dyn(d) => Self::indexed_len(&d.val),
+            Value::Cell(c) => Self::indexed_len(&c.get()),
+            _ => None,
         }
     }
 

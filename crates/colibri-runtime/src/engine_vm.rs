@@ -326,6 +326,10 @@ impl RuntimeEngine for VmEngine {
         self.machine.debug_break_on_panic(on);
     }
 
+    fn debug_stop_on_entry(&mut self) {
+        self.machine.debug_stop_on_entry();
+    }
+
     fn debug_pause_handle(&self) -> colibri_vm::debug::PauseHandle {
         self.machine.debug_pause_handle()
     }

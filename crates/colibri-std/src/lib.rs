@@ -258,6 +258,14 @@ pub fn exit_code(vm: &mut Vm) -> Option<i32> {
     vm.state_mut::<config::State>().and_then(|s| s.exit)
 }
 
+/// Makes `io.eprint` and `io.eprintln` write to `writer` instead of the process's standard
+/// error (a debug adapter, whose own standard output is the protocol, turns them into events).
+pub fn set_stderr(vm: &mut Vm, writer: Box<dyn std::io::Write>) {
+    if let Some(state) = vm.state_mut::<config::State>() {
+        state.stderr = Some(writer);
+    }
+}
+
 /// Tags a registration with a capability.
 pub(crate) fn needs(cap: Cap, r: Result<Registration<'_>, Error>) -> Result<(), Error> {
     r?.requires(cap);

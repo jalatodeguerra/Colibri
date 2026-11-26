@@ -43,6 +43,27 @@ pub fn refuse_package_file(target: &Path) -> Result<(), ExitCode> {
     Ok(())
 }
 
+/// [`prepare`] for a caller that has no terminal (the debug adapter): the notes are returned,
+/// and a failure is the message that `prepare` would have printed.
+pub fn prepare_quiet(target: &Path, flags: DepFlags) -> Result<Vec<String>, String> {
+    if !target.is_dir()
+        && let Some(message) = colibri_runtime::not_a_script(target)
+    {
+        return Err(format!("{}: {message}", target.display()));
+    }
+    let root = if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or(Path::new(""))
+    };
+    let options = SyncOptions {
+        update: Update::Nothing,
+        locked: flags.locked,
+        offline: flags.offline,
+    };
+    sync_dependencies(root, &options).map(|report| report.notes)
+}
+
 fn sync(target: &Path, flags: DepFlags, update: Update) -> Result<(), ExitCode> {
     let root = if target.is_dir() {
         target

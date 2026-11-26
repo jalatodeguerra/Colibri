@@ -1,0 +1,12 @@
+[package]
+name = "colibri-dap"
+description = "The Colibri debug adapter (`colibri debug`): the Debug Adapter Protocol over the VM's debugger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+colibri-runtime = { path = "../colibri-runtime", default-features = false }
+colibri-std = { path = "../colibri-std" }
+serde_json = "1"

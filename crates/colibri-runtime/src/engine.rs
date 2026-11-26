@@ -223,6 +223,7 @@ pub(crate) trait RuntimeEngine: HostCx {
     ) -> Vec<colibri_vm::debug::BreakpointInfo>;
     fn debug_break_on_panic(&mut self, on: bool);
     fn debug_pause_handle(&self) -> colibri_vm::debug::PauseHandle;
+    fn debug_stop_on_entry(&mut self);
 
     /// Makes the code compiled from now on count reference-count traffic by line.
     fn start_rc_profile(&mut self);
