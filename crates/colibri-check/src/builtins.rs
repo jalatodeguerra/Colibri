@@ -13,13 +13,14 @@ use crate::checker::ParamInfo;
 use crate::hir::{self, Builtin, Callee, Expr};
 use crate::modules::BASE;
 use crate::optres::{
-    COGROUP_METHODS, COROUTINE_METHODS, ERROR_METHODS, OPTION_METHODS, RESULT_METHODS,
-    SIGNAL_METHODS, cogroup_sig, coroutine_sig, error_sig, option_sig, result_sig, signal_sig,
+    CHANNEL_METHODS, COGROUP_METHODS, COROUTINE_METHODS, ERROR_METHODS, OPTION_METHODS,
+    RESULT_METHODS, SHARED_METHODS, SIGNAL_METHODS, TASK_METHODS, channel_sig, cogroup_sig,
+    coroutine_sig, error_sig, option_sig, result_sig, shared_sig, signal_sig, task_sig,
 };
 use crate::suggest;
 use crate::types::{
-    BYTES_BUILDER_TYPE, COGROUP_TYPE, COROUTINE_TYPE, ERROR_TYPE, ITER, IntTy, RESULT_TYPE,
-    SIGNAL_TYPE, STR_BUILDER_TYPE, Ty,
+    BYTES_BUILDER_TYPE, CHANNEL_TYPE, COGROUP_TYPE, COROUTINE_TYPE, ERROR_TYPE, ITER, IntTy,
+    RESULT_TYPE, SHARED_TYPE, SIGNAL_TYPE, STR_BUILDER_TYPE, TASK_TYPE, Ty,
 };
 
 /// What a method needs of the element type beyond its signature.
@@ -594,6 +595,9 @@ pub(crate) fn builtin_method_exists(ty: &Ty, name: &str) -> bool {
         Ty::Adt(COROUTINE_TYPE, a) if a.len() == 1 => coroutine_sig(&a[0], name).is_some(),
         Ty::Adt(COGROUP_TYPE, _) => name == "go" || cogroup_sig(name).is_some(),
         Ty::Adt(SIGNAL_TYPE, _) => signal_sig(name).is_some(),
+        Ty::Adt(TASK_TYPE, a) if a.len() == 1 => task_sig(&a[0], name).is_some(),
+        Ty::Adt(CHANNEL_TYPE, a) if a.len() == 1 => channel_sig(&a[0], name).is_some(),
+        Ty::Adt(SHARED_TYPE, a) if a.len() == 1 => shared_sig(&a[0], name).is_some(),
         Ty::Adt(STR_BUILDER_TYPE, _) => name == "write" || str_builder_sig(name).is_some(),
         Ty::Adt(BYTES_BUILDER_TYPE, _) => bytes_builder_sig(name).is_some(),
         _ => false,
@@ -636,6 +640,18 @@ pub(crate) fn builtin_methods(ty: &Ty) -> Vec<crate::members::MethodSig> {
             .map(|n| (*n, cogroup_sig(n)))
             .collect(),
         Ty::Adt(SIGNAL_TYPE, _) => SIGNAL_METHODS.iter().map(|n| (*n, signal_sig(n))).collect(),
+        Ty::Adt(TASK_TYPE, a) if a.len() == 1 => TASK_METHODS
+            .iter()
+            .map(|n| (*n, task_sig(&a[0], n)))
+            .collect(),
+        Ty::Adt(CHANNEL_TYPE, a) if a.len() == 1 => CHANNEL_METHODS
+            .iter()
+            .map(|n| (*n, channel_sig(&a[0], n)))
+            .collect(),
+        Ty::Adt(SHARED_TYPE, a) if a.len() == 1 => SHARED_METHODS
+            .iter()
+            .map(|n| (*n, shared_sig(&a[0], n)))
+            .collect(),
         Ty::Adt(STR_BUILDER_TYPE, _) => STR_BUILDER_METHODS
             .iter()
             .map(|n| (*n, str_builder_sig(n)))
@@ -695,6 +711,13 @@ impl FnCtx<'_, '_> {
             }
             Ty::Adt(COGROUP_TYPE, _) => (cogroup_sig(&name.name), COGROUP_METHODS),
             Ty::Adt(SIGNAL_TYPE, _) => (signal_sig(&name.name), SIGNAL_METHODS),
+            Ty::Adt(TASK_TYPE, a) if a.len() == 1 => (task_sig(&a[0], &name.name), TASK_METHODS),
+            Ty::Adt(CHANNEL_TYPE, a) if a.len() == 1 => {
+                (channel_sig(&a[0], &name.name), CHANNEL_METHODS)
+            }
+            Ty::Adt(SHARED_TYPE, a) if a.len() == 1 => {
+                (shared_sig(&a[0], &name.name), SHARED_METHODS)
+            }
             Ty::Adt(STR_BUILDER_TYPE, _) => {
                 if name.name == "write" {
                     return Ok(self.check_str_builder_write(recv, args, span));
@@ -775,6 +798,11 @@ impl FnCtx<'_, '_> {
         };
         if !self.check_need(&sig.need, &name.name, name.span, span) {
             return Ok(self.error_expr_typed(span, sig.ret));
+        }
+        if sig.op == Builtin::ChannelSend
+            && let (Ty::Adt(_, a), [arg]) = (&recv_ty, args)
+        {
+            self.note_channel_send(&a[0], &arg.value);
         }
         Ok(self.finish_call(
             Callee::builtin(sig.op),

@@ -1,0 +1,24 @@
+// allow: unused
+// A type parameter is not looked into: the body of a generic function is checked once, for every
+// `T`, and there is no bound to ask for. A `T` that cannot be sent is refused when the value
+// reaches the copy at run time. A concrete type is refused where it is written.
+fn spawn[T](value: T) -> Task[T] {
+    return task.run(fn() => value)
+}
+
+fn pipe[T](ch: Channel[T], value: T) {
+    ch.send(value)
+}
+
+fn share[T](value: T) -> Shared[T] {
+    return Shared(value)
+}
+
+fn uses() {
+    let a: Task[int] = spawn(1)
+    let b: Task[str] = spawn("x")
+    let c = share([1, 2])
+    let d = Channel[Task[int]]() // error: the element type of the channel is a `Task`
+}
+
+fn main() {}

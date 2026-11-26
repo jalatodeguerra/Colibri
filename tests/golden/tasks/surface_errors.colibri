@@ -1,0 +1,34 @@
+// allow: unused
+// What the surface refuses: wrong types, wrong arguments, unknown methods.
+fn work() -> int => 1
+
+fn types() {
+    let ch = Channel[int]()
+    let a: int = ch.recv() // error: expected `int`, found `int?`
+    let b: int = ch.try_recv() // error: expected `int`, found `int?`
+    ch.send("text") // error: expected `int`, found `str`
+    let t = task.run(work)
+    let c: int = t.join() // error: expected `int`, found `Result[int]`
+    let d: Result[int] = t.try_join() // error: expected `Result[int]`, found `Result[int]?`
+    let e: Task[str] = t // error: expected `Task[str]`, found `Task[int]`
+    t.cancel() // error: has no method `cancel`
+    ch.peek() // error: has no method `peek`
+    let s = Shared(1)
+    s.set(2) // error: has no method `set`
+    let f: str = s.get() // error: expected `str`, found `{integer}`
+}
+
+fn arguments() {
+    let a = task.run() // error: takes exactly one argument
+    let b = task.run(work, work) // error: takes exactly one argument
+    let c = task.run(fn(x: int) => x) // error: this closure takes 1 parameter, but 0 are expected here
+    let d = task.run(5) // error: expected `fn() -> _`, found `{integer}`
+    let e = Channel[int](capacity: "x") // error: expected `int`, found `str`
+    let f = Channel[int](1, 2) // error: takes no arguments, or one
+    let g = Channel() // error: cannot tell what this channel carries
+    let h = Shared() // error: takes exactly one value
+    let i = Shared(1, 2) // error: takes exactly one value
+    let j = Channel[int, int]() // error: `Channel` takes 1 type argument, found 2
+}
+
+fn main() {}

@@ -1,0 +1,63 @@
+// caps: net
+// allow: unused
+// The type a task returns, the element type of a `Channel` and the value of a `Shared` are
+// copied between threads too. The path starts at the type's name, and `some` is not a step.
+import net
+
+struct Job {
+    id: int
+    conn: net.Conn
+}
+
+struct Row {
+    name: str
+    runner: Coroutine[int]
+}
+
+struct Rows {
+    rows: List[Row]
+}
+
+enum Msg {
+    Quit
+    Send(Job)
+}
+
+fn find() -> Job? {
+    return none
+}
+
+fn runner() -> int => 1
+
+fn make_rows() -> Rows {
+    return Rows { rows: [Row { name: "a", runner: go runner() }] }
+}
+
+fn next_msg() -> Msg {
+    return Msg.Quit
+}
+
+fn open() -> net.Conn {
+    panic("not reached")
+}
+
+fn results() {
+    let a = task.run(find) // error: `Job.conn` is a `net.Conn`, which cannot be sent to another thread
+    let b = task.run(make_rows) // error: `Rows.rows[_].runner` is a `Coroutine`, which cannot be sent to another thread
+    let c = task.run(next_msg) // error: `Msg.Send.0.conn` is a `net.Conn`
+    let d = task.run(open) // error: the result of the task is a `net.Conn`, which cannot be sent to another thread
+}
+
+fn channels() {
+    let a = Channel[Job]() // error: `Job.conn` is a `net.Conn`, which cannot be sent to another thread
+    let b = Channel[Rows](capacity: 2) // error: `Rows.rows[_].runner` is a `Coroutine`
+    let c = Channel[net.Conn]() // error: the element type of the channel is a `net.Conn`
+    let d = Channel[Task[int]]() // error: the element type of the channel is a `Task`, which cannot be sent to another thread
+}
+
+fn shared(job: Job, rows: Rows) {
+    let a = Shared(job) // error: `Job.conn` is a `net.Conn`, which cannot be sent to another thread
+    let b = Shared(rows) // error: `Rows.rows[_].runner` is a `Coroutine`
+}
+
+fn main() {}

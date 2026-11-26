@@ -1,0 +1,42 @@
+// allow: unused
+// The error shows the whole chain of calls from the task to the value, the shortest one.
+let mut counter = 0
+
+fn log_line(text: str) {
+    counter += 1
+    print(text)
+}
+
+fn step() {
+    log_line("step")
+}
+
+fn worker() {
+    step()
+}
+
+struct Logger {
+    prefix: str
+}
+
+impl Logger {
+    fn write(self, text: str) {
+        log_line(self.prefix)
+        log_line(text)
+    }
+}
+
+fn through_calls() {
+    task.run(worker) // error: `worker -> step -> log_line -> counter` reads `counter`, which belongs to the main thread
+}
+
+fn through_a_closure() {
+    task.run(fn() { step() }) // error: `closure -> step -> log_line -> counter` reads `counter`
+}
+
+fn through_a_method() {
+    let logger = Logger { prefix: "p" }
+    task.run(fn() { logger.write("x") }) // error: `closure -> Logger.write -> log_line -> counter` reads `counter`
+}
+
+fn main() {}

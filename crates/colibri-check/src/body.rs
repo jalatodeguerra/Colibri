@@ -178,6 +178,10 @@ pub(crate) struct FnCtx<'c, 'a> {
     pub obligations: Vec<Obligation>,
     /// Calls of generic functions, whose type arguments must all be known by the end.
     pub generic_calls: Vec<GenericCall>,
+    /// Types that must be sendable to another thread, decided with the bounds.
+    pub(crate) send_checks: Vec<crate::sendable::SendCheck>,
+    /// `ch.send(v)` calls whose value must be a visible copy if it is not plain data.
+    pub(crate) fresh_sends: Vec<crate::sendable::FreshSend>,
     /// How many `unsafe` blocks enclose the code being checked (a closure starts again at 0).
     pub(crate) unsafe_depth: u32,
     /// The target of a plain `x = value` is being resolved: naming `x` there is not a read.
@@ -253,6 +257,8 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             done: Vec::new(),
             obligations: Vec::new(),
             generic_calls: Vec::new(),
+            send_checks: Vec::new(),
+            fresh_sends: Vec::new(),
             unsafe_depth: 0,
             whole_assign_target: false,
         }
@@ -307,13 +313,18 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         self.obligations = pending;
     }
 
+    /// How many uses of module-level items are recorded so far, for [`FnCtx::deps_since`].
+    pub(crate) fn deps_mark(&self) -> usize {
+        self.deps.len()
+    }
+
     /// Records a use of a module-level item at `span`.
     pub fn add_dep(&mut self, dep: Dep, span: Span) {
         self.deps.push((dep, span));
     }
 
     /// The items referred to since `mark` (a length of the list), each once with its first use.
-    fn deps_since(&self, mark: usize) -> Vec<(Dep, Span)> {
+    pub(crate) fn deps_since(&self, mark: usize) -> Vec<(Dep, Span)> {
         let mut seen = std::collections::HashSet::new();
         self.deps[mark..]
             .iter()
@@ -622,6 +633,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 }
             }
         }
+        self.settle_sends();
         let obligations = std::mem::take(&mut self.obligations);
         let mut seen: Vec<(Ty, crate::types::TypeId, Span)> = Vec::new();
         for ob in obligations {

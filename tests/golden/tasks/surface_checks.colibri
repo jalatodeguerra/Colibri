@@ -1,0 +1,80 @@
+// allow: unused
+// The surface of thread tasks, channels and `Shared` checks without running: the functions below
+// are checked and never called, because the runtime that executes them comes later. What a
+// program can write, and the types it gets back.
+struct Report {
+    title: str
+    rows: List[int]
+}
+
+fn square(n: int) -> int {
+    return n * n
+}
+
+fn tasks() {
+    let a: Task[int] = task.run(fn() => 7)
+    let b = task.run(fn() { print("no value") })
+    let c: Task[Report] = task.run(fn() => Report { title: "t", rows: [1, 2] })
+    let d: Task[int] = task.run(fn() => square(3))
+    let joined: Result[int] = a.join()
+    let unit: Result[()] = b.join()
+    let finished: bool = a.done()
+    let polled: Result[int]? = a.try_join()
+    let value: int = a.join().expect("task failed")
+}
+
+fn captures() {
+    let n = 3
+    let names = ["a", "b"]
+    let report = Report { title: "t", rows: [1] }
+    let t = task.run(fn() => n + names.len() + report.rows.len())
+    let ch = Channel[int]()
+    let shared = Shared(names)
+    let u = task.run(fn() {
+        ch.send(1)
+        print(shared.get().len())
+    })
+}
+
+fn channels() {
+    let ch = Channel[int]()
+    let bounded = Channel[str](capacity: 4)
+    let positional = Channel[int](8)
+    ch.send(1)
+    let got: int? = ch.recv()
+    let polled: int? = ch.try_recv()
+    ch.close()
+    for x in ch {
+        let doubled: int = x * 2
+    }
+    for word in bounded {
+        print(word.len())
+    }
+    let reports = Channel[Report]()
+    reports.send(Report { title: "x", rows: [] })
+    let kept = Report { title: "y", rows: [] }
+    reports.send(kept.clone())
+    let inferred: Channel[int] = Channel()
+}
+
+fn shared() {
+    let table = Shared({"a": 1, "b": 2})
+    let copy: Map[str, int] = table.get()
+    let report = Shared(Report { title: "t", rows: [1] })
+    let title: str = report.get().title
+    let handle: Shared[Report] = report
+}
+
+fn handles_cross(ch: Channel[int], s: Shared[str]) {
+    let t = task.run(fn() {
+        ch.send(s.get().len())
+    })
+    let nested = Channel[Shared[Report]]()
+    let of_channels = Channel[Channel[int]]()
+}
+
+fn main() {
+    print("checked")
+}
+
+// expect: checked

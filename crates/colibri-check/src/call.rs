@@ -380,11 +380,14 @@ impl FnCtx<'_, '_> {
             );
             return self.error_expr(span);
         }
+        if name.name == "run" {
+            return self.check_task_run(args, span);
+        }
         if name.name != "tick" {
             self.check_args_loosely(args);
             self.ck.report(
                 Diagnostic::error(format!("`task` has no function `{}`", name.name), name.span)
-                    .with_hint("`task.tick(dt)` resumes the coroutines; it is the only one so far"),
+                    .with_hint("`task.tick(dt)` resumes the coroutines and `task.run(f)` starts a thread task; they are the only two"),
             );
             return self.error_expr(span);
         }
@@ -423,6 +426,73 @@ impl FnCtx<'_, '_> {
                 args: vec![Arg::Value(arg)],
             })),
             Ty::Unit,
+            span,
+        )
+    }
+
+    /// `task.run(f)` (DESIGN §14.1): starts `f`, a function without parameters, on another thread
+    /// and gives its `Task[T]`, `T` being what `f` returns.
+    ///
+    /// The closure is the visible boundary of the copy (Q2): what it captures and what it returns
+    /// are copied implicitly, so each must be sendable (`crate::sendable`). What the function
+    /// refers to is kept for the module-state rule (`Checker::check_task_state`).
+    fn check_task_run(&mut self, args: &[ast::Arg], span: Span) -> Expr {
+        if args.len() != 1 || args[0].name.is_some() {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error(
+                    "`task.run` takes exactly one argument: the function to run",
+                    span,
+                )
+                .with_hint(
+                    "write `task.run(fn() { ... })`; give the task its data by capturing it",
+                ),
+            );
+            return self.error_expr(span);
+        }
+        let ret = self.infer.fresh(crate::infer::VarKind::General);
+        let want = Ty::Fn(Vec::new(), Box::new(ret.clone()));
+        let mark = self.deps_mark();
+        let arg = self.check_expr(&args[0].value, Some(&want));
+        let reason = Some((
+            args[0].value.span,
+            "`task.run` takes a function without parameters".to_string(),
+        ));
+        if !self.expect(&arg, &want, reason) {
+            return self.error_expr(span);
+        }
+        let closure = match &arg.kind {
+            hir::ExprKind::Closure(c) => Some(c.f),
+            _ => None,
+        };
+        if let Some(f) = closure
+            && let Some(done) = self.done.iter().find(|d| d.f == f)
+        {
+            let captured: Vec<(String, Ty)> = done
+                .frame
+                .captures
+                .iter()
+                .filter_map(|c| done.frame.locals.get(c.inner.0 as usize))
+                .map(|l| (l.name.clone(), l.ty.clone()))
+                .collect();
+            for (name, ty) in captured {
+                self.require_sendable(&ty, crate::sendable::SendOrigin::Capture(name), arg.span);
+            }
+        }
+        self.require_sendable(&ret, crate::sendable::SendOrigin::Result, arg.span);
+        let deps = self.deps_since(mark);
+        self.ck.task_sites.push(crate::checker::TaskSite {
+            deps,
+            closure: closure.is_some(),
+            span,
+        });
+        self.mk(
+            hir::ExprKind::Call(Box::new(hir::Call {
+                callee: Callee::Intrinsic(Intrinsic::TaskRun),
+                type_args: Vec::new(),
+                args: vec![Arg::Value(arg)],
+            })),
+            Ty::Adt(crate::types::TASK_TYPE, vec![ret]),
             span,
         )
     }

@@ -31,6 +31,10 @@ const PRELUDE_CLASSES: &[&str] = &[
     "Signal",
     "StrBuilder",
     "BytesBuilder",
+    "Task",
+    "Channel",
+    "Shared",
+    "Mutex",
 ];
 
 /// What HIR does not keep about a user type.

@@ -7,6 +7,7 @@ use colibri_syntax::{Diagnostic, Span};
 use crate::body::FnCtx;
 use crate::hir::{self, Builtin, Callee, Expr};
 use crate::infer::VarKind;
+use crate::sendable::SendOrigin;
 use crate::types::Ty;
 
 /// Reads an expression such as `Map[str, List[int]]` back as a type (the parser cannot tell
@@ -144,11 +145,14 @@ impl FnCtx<'_, '_> {
                 let ExprKind::Ident(id) = &base.kind else {
                     return None;
                 };
-                if !matches!(id.name.as_str(), "List" | "Map" | "Set")
+                if !matches!(id.name.as_str(), "List" | "Map" | "Set" | "Channel")
                     || self.lookup_local(&id.name).is_some()
                     || self.ck.values.contains_key(&id.name)
                 {
                     return None;
+                }
+                if id.name == "Channel" {
+                    return Some(self.check_channel_new(Some(callee), args, expected, span));
                 }
                 Some(self.check_empty_constructor(callee, &id.name, args, span))
             }
@@ -165,6 +169,8 @@ impl FnCtx<'_, '_> {
                     "StrBuilder" => Some(self.check_str_builder_new(args, span)),
                     "Bytes" => Some(self.check_bytes_new(args, span)),
                     "BytesBuilder" => Some(self.check_bytes_builder_new(args, span)),
+                    "Channel" => Some(self.check_channel_new(None, args, expected, span)),
+                    "Shared" => Some(self.check_shared_new(args, expected, span)),
                     "CoGroup" | "Signal" => {
                         Some(self.check_group_or_signal_new(&id.name, args, span))
                     }
@@ -256,6 +262,123 @@ impl FnCtx<'_, '_> {
             return self.error_expr(span);
         }
         self.builtin_call(Builtin::BytesFromList, vec![value], Ty::Bytes, span)
+    }
+
+    /// `Channel[T]()` and `Channel[T](capacity: n)` (DESIGN §14.1): a queue between threads. A
+    /// channel without a capacity is unbounded. `callee` is the `Channel[T]` that was written;
+    /// without it (`Channel()`) the element type comes from the context.
+    fn check_channel_new(
+        &mut self,
+        callee: Option<&ast::Expr>,
+        args: &[ast::Arg],
+        expected: Option<&Ty>,
+        span: Span,
+    ) -> Expr {
+        let elem = match callee {
+            Some(callee) => {
+                let Some(texpr) = expr_as_type(callee) else {
+                    self.check_args_loosely(args);
+                    self.ck
+                        .report(Diagnostic::error("expected a type here", callee.span));
+                    return self.error_expr(span);
+                };
+                match self.ck.resolve_type(&texpr) {
+                    Ty::Adt(crate::types::CHANNEL_TYPE, a) if a.len() == 1 => a[0].clone(),
+                    Ty::Error => {
+                        self.check_args_loosely(args);
+                        return self.error_expr(span);
+                    }
+                    _ => {
+                        self.check_args_loosely(args);
+                        self.ck.report(Diagnostic::error(
+                            "`Channel` takes one type: the type of what it carries",
+                            callee.span,
+                        ));
+                        return self.error_expr(span);
+                    }
+                }
+            }
+            None => match expected.map(|t| self.infer.shallow(t)) {
+                Some(Ty::Adt(crate::types::CHANNEL_TYPE, a)) if a.len() == 1 => a[0].clone(),
+                _ => {
+                    self.check_args_loosely(args);
+                    self.ck.report(
+                        Diagnostic::error("cannot tell what this channel carries", span)
+                            .with_hint("write the type: `Channel[int]()`"),
+                    );
+                    return self.error_expr(span);
+                }
+            },
+        };
+        let mut call_args = Vec::new();
+        match args {
+            [] => {}
+            [a] if a.name.as_ref().is_none_or(|n| n.name == "capacity") => {
+                let cap = self.check_expr(&a.value, Some(&Ty::INT));
+                let reason = Some((
+                    a.value.span,
+                    "the capacity is a number of values".to_string(),
+                ));
+                if !self.expect(&cap, &Ty::INT, reason) {
+                    return self.error_expr(span);
+                }
+                call_args.push(hir::Arg::Value(cap));
+            }
+            _ => {
+                self.check_args_loosely(args);
+                self.ck.report(
+                    Diagnostic::error("`Channel` takes no arguments, or one: `capacity`", span)
+                        .with_hint("write `Channel[int]()` or `Channel[int](capacity: 8)`"),
+                );
+                return self.error_expr(span);
+            }
+        }
+        self.require_sendable(&elem, SendOrigin::ChannelElem, span);
+        self.mk(
+            hir::ExprKind::Call(Box::new(hir::Call {
+                callee: hir::Callee::Intrinsic(hir::Intrinsic::NewChannel),
+                type_args: Vec::new(),
+                args: call_args,
+            })),
+            Ty::Adt(crate::types::CHANNEL_TYPE, vec![elem]),
+            span,
+        )
+    }
+
+    /// `Shared(x)` (DESIGN §14.1): a frozen copy of `x` that every thread can read with `get()`.
+    fn check_shared_new(&mut self, args: &[ast::Arg], expected: Option<&Ty>, span: Span) -> Expr {
+        let [arg] = args else {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error("`Shared` takes exactly one value", span)
+                    .with_hint("write `Shared(table)`"),
+            );
+            return self.error_expr(span);
+        };
+        if arg.name.is_some() {
+            self.check_args_loosely(args);
+            self.ck.report(Diagnostic::error(
+                "`Shared` takes its value without a name",
+                span,
+            ));
+            return self.error_expr(span);
+        }
+        let want = match expected.map(|t| self.infer.shallow(t)) {
+            Some(Ty::Adt(crate::types::SHARED_TYPE, a)) if a.len() == 1 => Some(a[0].clone()),
+            _ => None,
+        };
+        let value = self.check_expr(&arg.value, want.as_ref());
+        let ty = value.ty.clone();
+        self.require_sendable(&ty, SendOrigin::SharedValue, arg.value.span);
+        self.mk(
+            hir::ExprKind::Call(Box::new(hir::Call {
+                callee: hir::Callee::Intrinsic(hir::Intrinsic::NewShared),
+                type_args: Vec::new(),
+                args: vec![hir::Arg::Value(value)],
+            })),
+            Ty::Adt(crate::types::SHARED_TYPE, vec![ty]),
+            span,
+        )
     }
 
     /// `CoGroup()` and `Signal()` (DESIGN §14.2).

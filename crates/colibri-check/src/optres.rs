@@ -128,6 +128,50 @@ pub(crate) fn coroutine_sig(t: &Ty, name: &str) -> Option<Sig> {
     })
 }
 
+pub(crate) const TASK_METHODS: &[&str] = &["join", "done", "try_join"];
+
+/// The signature of a method of `Task[T]` (DESIGN §14.1).
+pub(crate) fn task_sig(t: &Ty, name: &str) -> Option<Sig> {
+    Some(match name {
+        "join" => sig(Builtin::TaskJoin, vec![], result_ty(t.clone(), error_ty())),
+        "done" => sig(Builtin::TaskDone, vec![], Ty::Bool),
+        "try_join" => sig(
+            Builtin::TaskTryJoin,
+            vec![],
+            optional(result_ty(t.clone(), error_ty())),
+        ),
+        _ => return None,
+    })
+}
+
+pub(crate) const CHANNEL_METHODS: &[&str] = &["send", "recv", "try_recv", "close", "iter"];
+
+/// The signature of a method of `Channel[T]` (DESIGN §14.1, Q3).
+pub(crate) fn channel_sig(t: &Ty, name: &str) -> Option<Sig> {
+    Some(match name {
+        "send" => sig(Builtin::ChannelSend, vec![("value", t.clone())], Ty::Unit),
+        "recv" => sig(Builtin::ChannelRecv, vec![], optional(t.clone())),
+        "try_recv" => sig(Builtin::ChannelTryRecv, vec![], optional(t.clone())),
+        "close" => sig(Builtin::ChannelClose, vec![], Ty::Unit),
+        "iter" => sig(
+            Builtin::ChannelIter,
+            vec![],
+            crate::builtins::iter_of(t.clone()),
+        ),
+        _ => return None,
+    })
+}
+
+pub(crate) const SHARED_METHODS: &[&str] = &["get"];
+
+/// The signature of a method of `Shared[T]`.
+pub(crate) fn shared_sig(t: &Ty, name: &str) -> Option<Sig> {
+    Some(match name {
+        "get" => sig(Builtin::SharedGet, vec![], t.clone()),
+        _ => return None,
+    })
+}
+
 pub(crate) const COGROUP_METHODS: &[&str] = &["go", "cancel", "count", "join_all"];
 
 /// The signature of a method of `CoGroup`. (`go` is a special form, see

@@ -1,0 +1,32 @@
+// allow: unused
+// A `const` is evaluated in every thread, so a task may read it, and so may the functions it
+// calls. Values it is handed (captures, parameters of called functions) are not module state.
+const LIMIT = 10
+const NAMES = ["a", "b"]
+let mut counter = 0
+
+fn limit() -> int {
+    return LIMIT + NAMES.len()
+}
+
+fn worker() -> int {
+    return limit()
+}
+
+fn pure(n: int) -> int {
+    return n * 2
+}
+
+fn make_tasks() -> int {
+    let a = task.run(worker)
+    let n = 4
+    let b = task.run(fn() => pure(n) + LIMIT)
+    counter += 1
+    return counter
+}
+
+fn main() {
+    print("checked")
+}
+
+// expect: checked

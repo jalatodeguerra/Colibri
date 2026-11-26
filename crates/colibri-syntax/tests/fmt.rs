@@ -983,3 +983,11 @@ fn the_old_var_is_refused_not_rewritten() {
         assert!(format_source("test.colibri", src).is_err(), "{src:?}");
     }
 }
+
+#[test]
+fn thread_tasks_channels_and_shared_format_like_any_call() {
+    check(
+        "fn main(){\nlet t=task.run(fn(){print(1)})\nlet ch=Channel[int](capacity:4)\nlet s=Shared([1,2])\nfor x in ch{print(x)}\nlet r:Result[int]?=t.try_join()\n}\n",
+        "fn main() {\n    let t = task.run(fn() { print(1) })\n    let ch = Channel[int](capacity: 4)\n    let s = Shared([1, 2])\n    for x in ch { print(x) }\n    let r: Result[int]? = t.try_join()\n}\n",
+    );
+}

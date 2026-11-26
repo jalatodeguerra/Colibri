@@ -1445,6 +1445,74 @@ fn main() {
 }
 
 #[test]
+fn completion_and_hover_know_tasks_channels_and_shared() {
+    let dir = temp_dir("complete_threads");
+    let file = dir.join("a.colibri");
+    let mut c = Client::start(Some(&dir), Value::Null);
+    let program = "\
+fn work() -> int {
+    return 1
+}
+
+fn main() {
+    let job = task.run(work)
+    let ch = Channel[int](capacity: 2)
+    let table = Shared([1, 2])
+    print(\"{job.done()} {ch.recv()} {table.get()}\")
+}
+";
+    c.open(&file, program);
+    assert!(c.diags(&file).is_empty(), "{:?}", c.diags(&file));
+    let cases: [(&str, &[&str]); 3] = [
+        ("job", &["join", "done", "try_join"]),
+        ("ch", &["send", "recv", "try_recv", "close"]),
+        ("table", &["get"]),
+    ];
+    for (name, expected) in cases {
+        let line = format!("    {name}.\n    print(");
+        let typing = program.replace("    print(", &line);
+        c.change(&file, &typing);
+        let items = c.complete_after(&file, &typing, &format!("    {name}."));
+        let names = labels(&items);
+        for want in expected {
+            assert!(
+                names.contains(want),
+                "{name}: {want} missing from {names:?}"
+            );
+        }
+    }
+    // The signatures have the element type filled in.
+    let typing = program.replace("    print(", "    ch.\n    print(");
+    c.change(&file, &typing);
+    let items = c.complete_after(&file, &typing, "    ch.");
+    assert_eq!(item(&items, "recv")["detail"], "fn recv() -> int?");
+    assert_eq!(item(&items, "send")["detail"], "fn send(value: int)");
+    let typing = program.replace("    print(", "    job.\n    print(");
+    c.change(&file, &typing);
+    let items = c.complete_after(&file, &typing, "    job.");
+    assert_eq!(item(&items, "join")["detail"], "fn join() -> Result[int]");
+    assert_eq!(
+        item(&items, "try_join")["detail"],
+        "fn try_join() -> Result[int]?"
+    );
+    // The types of the variables, on hover.
+    c.change(&file, program);
+    for (needle, shown) in [
+        ("job.done", "job: Task[int]"),
+        ("ch.recv", "ch: Channel[int]"),
+        ("table.get", "table: Shared[List[int]]"),
+    ] {
+        let (l, col) = pos_of(program, needle);
+        assert_eq!(
+            hover_text(&c.hover(&file, l, col)),
+            format!("```colibri\n{shown}\n```"),
+            "{needle}"
+        );
+    }
+    c.shutdown();
+}
+
+#[test]
 fn completion_after_a_module_or_a_type_name() {
     let dir = temp_dir("complete_paths");
     write(&dir, "colibri.toml", "[package]\nname = \"demo\"\n");
