@@ -164,6 +164,28 @@ fn a_program_image_with_another_hash_is_refused() {
     );
 }
 
+#[test]
+fn the_table_hash_changes_with_what_an_id_means() {
+    let hash = |source: &str| {
+        let mut vm = colibri::Vm::builder().worker_threads(1).build();
+        vm.load_source("h.colibri", source).unwrap();
+        vm.program_table_hash().unwrap()
+    };
+    let f = "fn f() -> int {\n    return 1\n}\n";
+    let g = "fn g() -> int {\n    return 2\n}\n";
+    let a = hash(&format!("{f}{g}"));
+    assert_eq!(a, hash(&format!("{f}{g}")));
+    // A body is not part of it, the tables are: the order of the functions, a signature, and
+    // whether a module value is a `const`.
+    assert_eq!(a, hash(&format!("{}{g}", f.replace("return 1", "return 5"))));
+    assert_ne!(a, hash(&format!("{g}{f}")));
+    assert_ne!(a, hash(&format!("{}{g}", f.replace("int", "float").replace("1", "1.0"))));
+    assert_ne!(
+        hash("const K = 1\nfn main() {}\n"),
+        hash("let K = 1\nfn main() {}\n")
+    );
+}
+
 // ---- module state ----
 
 const STATE: &str = r#"

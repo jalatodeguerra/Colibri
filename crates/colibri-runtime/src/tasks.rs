@@ -489,3 +489,45 @@ fn worker_main(shared: &Shared, cfg: &WorkerCfg, stats: &PoolStats) {
         let _ = reply.send(result);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sink that records each `write` call on its own, so that a test can see how the writer
+    /// cut the text.
+    struct Calls(Arc<Mutex<Vec<String>>>);
+
+    impl Write for Calls {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(buf).into_owned());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_line_writer_holds_a_partial_line_until_it_is_whole() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let sink: SharedOut = Arc::new(Mutex::new(Box::new(Calls(Arc::clone(&calls)))));
+        let mut one = LineWriter::new(Arc::clone(&sink));
+        let mut two = LineWriter::new(sink);
+        // `writeln!` writes the text and the newline apart; two threads' pieces interleave.
+        one.write_all(b"from one").unwrap();
+        two.write_all(b"from two").unwrap();
+        two.write_all(b"\n").unwrap();
+        one.write_all(b"\n").unwrap();
+        // Each line went out whole, in the order it was finished.
+        assert_eq!(*calls.lock().unwrap(), ["from two\n", "from one\n"]);
+        // Text without a newline waits for a flush.
+        one.write_all(b"tail").unwrap();
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        one.flush().unwrap();
+        assert_eq!(calls.lock().unwrap().last().unwrap(), "tail");
+    }
+}

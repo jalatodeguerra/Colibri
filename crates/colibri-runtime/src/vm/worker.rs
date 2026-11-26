@@ -64,6 +64,12 @@ impl Vm {
         self.image_hash = hash.map(|h| h ^ 1);
     }
 
+    /// The hash of the loaded program's tables that every worker must reproduce.
+    #[doc(hidden)]
+    pub fn program_table_hash(&mut self) -> Option<u64> {
+        self.image_hash_now()
+    }
+
     fn image_hash_now(&mut self) -> Option<u64> {
         if self.image_hash.is_none() {
             self.image_hash = self.program.as_deref().map(program_hash);
