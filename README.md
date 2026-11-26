@@ -766,6 +766,7 @@ entry, and two `@when` variants of one name are both kept. `colibri repl` takes 
 | `colibri update [names...]` | resolve git dependencies again (branches, tags) and rewrite `colibri.lock`: all of them, or only the ones named (transitive ones too); `--path DIR` is the package folder, `--locked` and `--offline` as for `run` |
 | `colibri repl` | interactive session |
 | `colibri lsp` | language server on stdin and stdout |
+| `colibri debug` | debug adapter (Debug Adapter Protocol) on stdin and stdout (see Debugging) |
 | `colibri build [file or folder] [-o FILE]` | write one executable that holds the program and runs it (see below) |
 | `colibri build --web [file or folder] [-o DIR]` | write a folder for a static web server in which the program runs in the page (see Web) |
 | `colibri check --web` | check a program as `build --web` does |
@@ -786,6 +787,22 @@ needs the result), hover with types and signatures, completion, go to definition
 find references, rename, the outline of a file, and formatting. A rename is refused, with the
 reason, where the editor cannot be sure to change every use. A VS Code extension with syntax
 highlighting and the language client is in [`editors/vscode`](editors/vscode/README.md).
+
+### Debugging
+
+`colibri debug` is a debug adapter: an editor that speaks the Debug Adapter Protocol starts it,
+sends a `launch` request (`program`, `args`, `cwd`, `features`, `stopOnEntry`) and debugs the
+script or package. It supports breakpoints (also in a function that has not been called yet),
+hit counts (`3`, `>= 3`, `% 2`) and logpoints (`i is {i}`), step over, in and out (through
+closures passed to `map` and the like), pause, stopping at a panic (the `panic` exception
+filter), the call stack, and the variables of every frame, with structs, classes, enums, lists,
+maps and tuples expanded. `evaluate` reads paths such as `point.pos[2]`; it does not evaluate
+expressions, and conditions other than hit counts are refused. What the program prints arrives
+as output events, so nothing but protocol goes to standard output. Inspecting a value never
+runs your code (a `Show` you wrote is not called). Debug mode compiles a step for every
+statement, so a debugged program is slower than a normal run, with the same output. The VS Code
+extension will get the launch configuration next; for now any DAP client can run
+`colibri debug`.
 
 ### Hot reload
 
@@ -1196,7 +1213,7 @@ they have.
   `Bytes` and file handles.
 - Operator interfaces (`Add`, `Sub`, `Mul`, `Div`, `Neg`) with default type parameters, which
   let a library such as `vec` define its own arithmetic.
-- Tooling: `run`, `check`, `test`, `fmt`, `new`, `build` (single-file executables, other platforms, web pages), `repl`, `lsp`, hot reload and the leak detector.
+- Tooling: `run`, `check`, `test`, `fmt`, `new`, `build` (single-file executables, other platforms, web pages), `repl`, `lsp`, `debug`, hot reload and the leak detector.
 
 **Next:**
 

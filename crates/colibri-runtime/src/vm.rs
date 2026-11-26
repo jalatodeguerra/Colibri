@@ -2461,6 +2461,13 @@ impl Vm {
         self.engine.debug_break_on_panic(on);
     }
 
+    /// Stops the program at its first statement, as a step (the stop on entry of a debug
+    /// session). Call it before running the program.
+    #[doc(hidden)]
+    pub fn debug_stop_on_entry(&mut self) {
+        self.engine.debug_stop_on_entry();
+    }
+
     /// The handle that pauses the running program at its next safepoint, from any thread.
     #[doc(hidden)]
     pub fn debug_pause_handle(&self) -> crate::debug::PauseHandle {

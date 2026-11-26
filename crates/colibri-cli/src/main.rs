@@ -250,6 +250,11 @@ enum Command {
     },
     /// Run the language server (LSP) on stdin and stdout
     Lsp,
+    /// Debug adapter: speaks the Debug Adapter Protocol on standard input and output, for an
+    /// editor to debug a Colibri script or package (breakpoints, stepping, pause, variables).
+    /// The program, its arguments and its working folder come from the editor's `launch`
+    /// request
+    Debug,
     /// Write the standard library reference as Markdown (one page for each module and an index),
     /// generated from the interfaces of the modules; with `--check`, only report whether the
     /// pages already in the folder are current. For the maintainers of the toolchain: the
@@ -435,6 +440,7 @@ fn main() -> ExitCode {
             colibri_lang::repl::run()
         }
         Command::Lsp => lsp(),
+        Command::Debug => colibri_lang::debugcmd::run(),
         Command::Doc { std, check } => colibri_lang::doccmd::run(&std, check),
     })
 }

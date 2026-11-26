@@ -1,0 +1,15 @@
+[package]
+name = "colibri-dap"
+description = "The Colibri debug adapter (`colibri debug`): the Debug Adapter Protocol over the VM's debugger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# The transcript tests drive the `colibri` binary, so they are built by `colibri-lang`
+# (its `[[test]] dap`), from the files in `tests/`.
+autotests = false
+
+[dependencies]
+colibri-runtime = { path = "../colibri-runtime", default-features = false }
+colibri-std = { path = "../colibri-std" }
+serde_json = "1"

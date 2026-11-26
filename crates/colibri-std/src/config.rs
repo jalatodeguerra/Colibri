@@ -280,6 +280,8 @@ pub(crate) struct State {
     pub env_overrides: BTreeMap<String, String>,
     pub temp_dir: Option<PathBuf>,
     pub stdin: Option<Box<dyn BufRead>>,
+    /// Where `io.eprint` and `io.eprintln` write, when a host has taken it (`set_stderr`).
+    pub stderr: Option<Box<dyn std::io::Write>>,
     pub local_offset: Option<i32>,
     pub assets: Option<Box<dyn crate::AssetSource>>,
     pub web: bool,
@@ -300,6 +302,7 @@ impl State {
             env_overrides: BTreeMap::new(),
             temp_dir: config.temp_dir,
             stdin: config.stdin,
+            stderr: None,
             local_offset: config.local_offset,
             assets: config.assets,
             web: config.web,

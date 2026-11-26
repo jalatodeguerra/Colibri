@@ -524,6 +524,20 @@ impl Machine {
         }
     }
 
+    /// Makes the program stop (as a step) at its first statement: the stop on entry of a debug
+    /// session. Call it before the program runs.
+    pub fn debug_stop_on_entry(&mut self) {
+        if let Some(d) = self.debug.as_mut() {
+            d.mode = Mode::Step(StepState {
+                kind: StepKind::In,
+                coroutine: None,
+                depth: 0,
+                line: None,
+            });
+        }
+        self.slice_for_mode();
+    }
+
     /// The handle that pauses the program from another thread.
     pub fn debug_pause_handle(&self) -> PauseHandle {
         self.debug

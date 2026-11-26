@@ -3,6 +3,7 @@
 pub mod assets;
 pub mod buildcmd;
 pub mod checkcmd;
+pub mod debugcmd;
 pub mod depscmd;
 pub mod doccmd;
 mod flame;
@@ -70,12 +71,20 @@ pub fn build_vm_with_assets(
     args: Vec<String>,
     assets: Option<Box<dyn colibri_std::AssetSource>>,
 ) -> colibri_runtime::Vm {
-    let mut vm = builder.build();
     let config = colibri_std::StdConfig {
         args,
         assets,
         ..colibri_std::StdConfig::default()
     };
+    build_vm_with_std(builder, config)
+}
+
+/// [`build_vm`] with the whole standard library configuration given.
+pub fn build_vm_with_std(
+    builder: colibri_runtime::VmBuilder,
+    config: colibri_std::StdConfig,
+) -> colibri_runtime::Vm {
+    let mut vm = builder.build();
     colibri_std::install_with(&mut vm, config)
         .expect("the standard library registers into a new Vm");
     vm
