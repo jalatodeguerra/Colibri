@@ -66,6 +66,8 @@ struct Recorder {
     out: Out,
     seen: Rc<RefCell<Vec<Seen>>>,
     logs: Rc<RefCell<Vec<String>>>,
+    /// The breakpoints reported verified later, and how many stops had happened by then.
+    verified: Rc<RefCell<Vec<(usize, BreakpointInfo)>>>,
     react: React,
 }
 
@@ -83,13 +85,15 @@ pub(crate) fn locals_of(
 
 impl Debugger for Recorder {
     fn stopped(&mut self, view: &mut DebugView<'_>, stop: &Stop) -> Resume {
+        // The computation that stopped: a coroutine, or the main one.
+        let stopped = view.stopped_coroutine();
         let frames: Vec<(String, u32)> = view
-            .frames(None)
+            .frames(stopped)
             .iter()
             .map(|f| (f.name.clone(), f.line.unwrap_or(0)))
             .collect();
-        let top = view.frames(None).first().map_or(0, |f| f.index);
-        let locals = locals_of(view, None, top);
+        let top = view.frames(stopped).first().map_or(0, |f| f.index);
+        let locals = locals_of(view, stopped, top);
         let n = self.seen.borrow().len();
         self.seen.borrow_mut().push(Seen {
             stop: stop.clone(),
@@ -107,6 +111,11 @@ impl Debugger for Recorder {
     fn output(&mut self, text: &str) {
         self.logs.borrow_mut().push(text.to_string());
     }
+    fn breakpoints_verified(&mut self, infos: &[BreakpointInfo]) {
+        let stops = self.seen.borrow().len();
+        let mut list = self.verified.borrow_mut();
+        list.extend(infos.iter().map(|i| (stops, i.clone())));
+    }
 }
 
 pub(crate) struct Run {
@@ -115,6 +124,8 @@ pub(crate) struct Run {
     pub logs: Vec<String>,
     pub panic: Option<String>,
     pub infos: Vec<BreakpointInfo>,
+    /// The breakpoints the machine reported verified later, with the number of stops before.
+    pub verified: Vec<(usize, BreakpointInfo)>,
 }
 
 /// Breakpoints of `main.colibri` to set once the program is loaded (`after`) or before.
@@ -162,12 +173,14 @@ pub(crate) fn run_debug(
     let mut m = Machine::new(Box::new(out.clone()), 1000);
     let seen = Rc::new(RefCell::new(Vec::new()));
     let logs = Rc::new(RefCell::new(Vec::new()));
+    let verified = Rc::new(RefCell::new(Vec::new()));
     m.set_debugger(
         Box::new(Recorder {
             poll: setup.poll.take(),
             out: out.clone(),
             seen: Rc::clone(&seen),
             logs: Rc::clone(&logs),
+            verified: Rc::clone(&verified),
             react: Box::new(react),
         }),
         Rc::new(Lines(sources)),
@@ -205,6 +218,7 @@ pub(crate) fn run_debug(
         logs,
         panic: failure.map(|f| f.message),
         infos,
+        verified: verified.borrow().clone(),
     }
 }
 
@@ -650,7 +664,7 @@ fn a_breakpoint_reaches_the_tail_of_a_closure_that_has_no_statement() {
 fn a_paused_coroutine_s_frames_and_locals_can_be_inspected() {
     let src = "fn worker(name: str, n: int) {
     let local = n * 10
-    wait(1.0)
+    wait(0.01)
     print(\"{name} {local}\")
 }
 fn main() {
@@ -833,4 +847,130 @@ fn debug_mode_changes_neither_the_output_nor_the_steps() {
         assert_eq!(debug.trace, normal.trace, "program {i}");
         assert_eq!(debug.steps, normal.steps, "program {i}: steps");
     }
+}
+
+#[test]
+fn a_coroutine_that_stops_is_a_thread_and_main_is_named_not_mistaken_for_it() {
+    let src = "fn worker(n: int) {
+    let local = n * 10
+    wait(0.01)
+    print(\"worker {local}\")
+}
+fn main() {
+    let a = go worker(1)
+    let b = go worker(2)
+    a.join()
+    b.join()
+}
+";
+    // What each stop saw: the stopped coroutine, then for every computation its name, whether
+    // it can be read, the function of its top frame and its locals.
+    type Row = (Option<u64>, String, bool, Option<String>, Vec<String>);
+    let stops: Rc<RefCell<Vec<(Option<u64>, Vec<Row>)>>> = Rc::default();
+    let sink = Rc::clone(&stops);
+    let run = run_debug(src, Setup::lines(&[2]), move |view, _, _| {
+        let mut rows = Vec::new();
+        for f in view.fibers() {
+            let frames = view.frames(f.coroutine);
+            let top = frames.first().map_or(0, |fr| fr.index);
+            let locals = if frames.is_empty() {
+                Vec::new()
+            } else {
+                locals_of(view, f.coroutine, top)
+            };
+            rows.push((
+                f.coroutine,
+                f.name,
+                f.inspectable,
+                frames.first().map(|fr| fr.name.clone()),
+                locals,
+            ));
+        }
+        sink.borrow_mut().push((view.stopped_coroutine(), rows));
+        Resume::Continue
+    });
+    assert_eq!(run.seen.len(), 2, "{:#?}", run.seen);
+    let stops = stops.borrow();
+    // The stop is before `let local` runs: only the parameter is live. First stop: the first
+    // worker, started by `main`'s `go`. Main is listed and named, and its
+    // frames are not readable (it is waiting for the coroutine it started), where they were
+    // those of the coroutine before.
+    let (first_id, rows) = &stops[0];
+    assert!(first_id.is_some());
+    assert_eq!(rows.len(), 2, "{rows:#?}");
+    assert_eq!(
+        rows[0],
+        (
+            *first_id,
+            "worker".to_string(),
+            true,
+            Some("worker".to_string()),
+            vec!["n = 1".to_string()]
+        )
+    );
+    assert_eq!(rows[1], (None, "main".to_string(), false, None, Vec::new()));
+    // Second stop: the second worker is the stopped one; the first is paused in its `wait`, and
+    // its locals can be read by its id while the stopped one's are by its own.
+    let (second_id, rows) = &stops[1];
+    assert!(second_id.is_some() && second_id != first_id);
+    assert_eq!(rows.len(), 3, "{rows:#?}");
+    assert_eq!(rows[0].4, ["n = 2"]);
+    assert_eq!(rows[1].0, None);
+    let paused = rows.iter().find(|r| r.0 == *first_id).expect("paused one");
+    assert_eq!(paused.1, "worker");
+    assert!(paused.2);
+    assert_eq!(paused.4, ["n = 1", "local = 10"]);
+}
+
+#[test]
+fn main_stopping_lists_the_paused_coroutines_and_addresses_itself() {
+    let src = "fn worker() {
+    wait(0.01)
+}
+fn main() {
+    let a = go worker()
+    print(\"main\")
+    a.join()
+}
+";
+    let seen: Rc<RefCell<Vec<(Option<u64>, usize, usize)>>> = Rc::default();
+    let sink = Rc::clone(&seen);
+    run_debug(src, Setup::lines(&[6]), move |view, _, _| {
+        for f in view.fibers() {
+            sink.borrow_mut().push((
+                f.coroutine,
+                view.frames(f.coroutine).len(),
+                f.current as usize,
+            ));
+        }
+        Resume::Continue
+    });
+    let seen = seen.borrow();
+    assert_eq!(seen.len(), 2);
+    // Main is the stopped one and has its frame; the coroutine is paused in `worker`.
+    assert_eq!((seen[0].0, seen[0].1, seen[0].2), (None, 1, 1));
+    assert!(seen[1].0.is_some() && seen[1].1 == 1 && seen[1].2 == 0);
+}
+
+#[test]
+fn a_breakpoint_that_goes_live_when_its_function_is_compiled_is_reported_before_its_stop() {
+    let src = "fn late() -> int {
+    let v = 5
+    return v
+}
+fn main() {
+    print(\"a\")
+    print(late())
+}
+";
+    let run = run_debug(src, Setup::lines(&[2]), |_, _, _| Resume::Continue);
+    // Not compiled when the breakpoint was set.
+    assert!(!run.infos[0].verified);
+    assert_eq!(run.seen.len(), 1);
+    // Told once, before the stop that it causes.
+    assert_eq!(run.verified.len(), 1, "{:?}", run.verified);
+    assert_eq!(run.verified[0].0, 0, "reported before the first stop");
+    assert!(run.verified[0].1.verified);
+    assert_eq!(run.verified[0].1.line, 2);
+    assert_eq!(run.verified[0].1.id, run.infos[0].id);
 }

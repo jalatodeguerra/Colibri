@@ -251,6 +251,9 @@ impl Machine {
         self.env = CompileEnv::for_program(program);
         self.env.count_rc = self.rc.is_some();
         self.env.debug = self.debug.as_ref().map(|d| Rc::clone(&d.shared));
+        if let Some(d) = &self.debug {
+            d.shared.next_epoch();
+        }
         if program.script_from < program.init_order.len() {
             self.uninit = vec![None; program.globals.len()];
             for g in &program.init_order[program.script_from..] {

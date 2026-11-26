@@ -471,6 +471,21 @@ impl Scheduler {
         self.resumptions
     }
 
+    /// For a debugger: the coroutines that have not finished, in start order, each with the name
+    /// of its handle while the program still holds the handle.
+    pub fn debug_coroutines(&self) -> Vec<(u64, Option<String>)> {
+        self.entries
+            .iter()
+            .filter(|e| e.state != State::Finished)
+            .map(|e| (e.id, e.handle.upgrade().map(|h| handle_name(&h))))
+            .collect()
+    }
+
+    /// The coroutines whose stacks are active now, outermost first (each resumed the next).
+    pub fn running_coroutines(&self) -> &[u64] {
+        &self.running
+    }
+
     /// Whether a coroutine is running now (on any level of a resume chain).
     pub fn coroutine_running(&self) -> bool {
         !self.running.is_empty()

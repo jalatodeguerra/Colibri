@@ -118,6 +118,9 @@ impl Machine {
         self.env = CompileEnv::for_program(program);
         self.env.count_rc = self.rc.is_some();
         self.env.debug = self.debug.as_ref().map(|d| Rc::clone(&d.shared));
+        if let Some(d) = &self.debug {
+            d.shared.next_epoch();
+        }
         // Only the host functions' (empty) bodies: `load_host` would also
         // forget the host classes and hooks the runtime installed after loading, which a reload
         // keeps.

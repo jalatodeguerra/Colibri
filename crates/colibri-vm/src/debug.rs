@@ -62,6 +62,16 @@ pub trait Locator {
     fn line(&self, span: Span) -> Option<u32>;
     /// The name of the span's file as diagnostics show it.
     fn file(&self, span: Span) -> Option<String>;
+    /// The name of the file `id` of this program (`None`: unknown, or a locator that cannot
+    /// say). Breakpoints remember it, to find their file again after a hot reload.
+    fn file_name(&self, _id: FileId) -> Option<String> {
+        None
+    }
+    /// The id the file called `name` has in this program (`None`: it has none, or a locator
+    /// that cannot say).
+    fn file_id(&self, _name: &str) -> Option<FileId> {
+        None
+    }
 }
 
 /// When the hits of a breakpoint count (the hit-count condition of a conditional breakpoint).
@@ -153,6 +163,11 @@ pub trait Debugger {
 
     /// The text of a logpoint.
     fn output(&mut self, _text: &str) {}
+
+    /// Breakpoints that were not verified, and now are: the function they are in was just
+    /// compiled. Called on the machine's thread at the next stop or poll, so a breakpoint that
+    /// hits at once is reported before the stop.
+    fn breakpoints_verified(&mut self, _infos: &[BreakpointInfo]) {}
 }
 
 /// Asks a running program to stop at its next safepoint; may be sent to another thread.
@@ -180,12 +195,18 @@ pub struct DebugFrame {
 /// A coroutine, or the main computation, that can be inspected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DebugFiber {
-    /// `None` for the computation that is not a coroutine.
+    /// `None` for the main computation (the one that is not a coroutine).
     pub coroutine: Option<u64>,
-    /// The function the computation began in.
+    /// The function the computation began in (a coroutine: the function its `go` started).
     pub name: String,
     /// The one that stopped.
     pub current: bool,
+    /// Whether its frames can be read now. The stopped computation and the paused coroutines
+    /// can. A computation that is waiting for the one that stopped (it resumed it, so its
+    /// frames are on the machine's native stack) cannot: its frames are empty. That is the main
+    /// computation, and the coroutines that started or resumed the stopped one, when it is a
+    /// coroutine.
+    pub inspectable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,6 +274,11 @@ pub(crate) struct DebugState {
 struct Bp {
     id: u32,
     file: FileId,
+    /// The file's name as the locator said it when the breakpoint was made: the file is found
+    /// again by it when a hot reload gives the program new file numbers.
+    file_name: Option<String>,
+    /// Whether a compiled statement has had it, ever.
+    verified: bool,
     line: u32,
     hit: Option<HitCondition>,
     log: Option<String>,
@@ -267,6 +293,8 @@ pub(crate) struct DebugShared {
     next_id: Cell<u32>,
     chunks: RefCell<Vec<Weak<Chunk>>>,
     locator: RefCell<Option<Rc<dyn Locator>>>,
+    /// Breakpoints a compilation verified since the debugger was told last.
+    newly: RefCell<Vec<BreakpointInfo>>,
 }
 
 impl std::fmt::Debug for DebugShared {
@@ -287,8 +315,32 @@ impl DebugShared {
             }
             chunks.push(Rc::downgrade(chunk));
         }
-        for bp in self.bps.borrow().iter() {
-            self.put(chunk, bp);
+        for bp in self.bps.borrow_mut().iter_mut() {
+            if self.put(chunk, bp) && !bp.verified {
+                bp.verified = true;
+                self.newly.borrow_mut().push(BreakpointInfo {
+                    id: bp.id,
+                    line: bp.line,
+                    verified: true,
+                });
+            }
+        }
+    }
+
+    /// A hot reload swapped the program's bodies: the chunks of the old one are not looked at
+    /// again (a frame still running one keeps what it has; a breakpoint taken out later is
+    /// ignored when such a chunk reports it), and the breakpoints look for their files by name
+    /// in the new program.
+    pub(crate) fn next_epoch(&self) {
+        self.chunks.borrow_mut().clear();
+    }
+
+    /// The program has other file numbers: each breakpoint follows its file by name.
+    fn rebind(&self, locator: &dyn Locator) {
+        for bp in self.bps.borrow_mut().iter_mut() {
+            if let Some(id) = bp.file_name.as_deref().and_then(|n| locator.file_id(n)) {
+                bp.file = id;
+            }
         }
     }
 
@@ -394,13 +446,20 @@ pub struct DebugView<'a> {
 }
 
 impl DebugView<'_> {
-    /// The computations that can be inspected: the one that stopped first, then the paused
-    /// coroutines.
+    /// The computations: the one that stopped first, then the main computation (when it is
+    /// not the one that stopped), the coroutines that are waiting for the stopped one, and the
+    /// paused coroutines.
     pub fn fibers(&self) -> Vec<DebugFiber> {
         self.vm.debug_fibers(self.fiber)
     }
 
-    /// The frames of a computation, innermost first (`None`: the one that stopped).
+    /// The coroutine that stopped (`None`: the main computation).
+    pub fn stopped_coroutine(&self) -> Option<u64> {
+        self.fiber.state.coro
+    }
+
+    /// The frames of a computation, innermost first (`None`: the main computation, which has
+    /// no frames to read while a coroutine it started is the one that stopped).
     pub fn frames(&self, coroutine: Option<u64>) -> Vec<DebugFrame> {
         self.vm.debug_frames(self.fiber, coroutine)
     }
@@ -512,6 +571,7 @@ impl Machine {
     /// Replaces the locator (a new program has other files).
     pub fn set_debug_locator(&mut self, locator: Rc<dyn Locator>) {
         if let Some(d) = self.debug.as_ref() {
+            d.shared.rebind(&*locator);
             *d.shared.locator.borrow_mut() = Some(locator);
         }
     }
@@ -577,9 +637,11 @@ impl Machine {
         for spec in specs {
             let id = shared.next_id.get();
             shared.next_id.set(id + 1);
-            let bp = Bp {
+            let mut bp = Bp {
                 id,
                 file,
+                file_name: shared.locator().and_then(|l| l.file_name(file)),
+                verified: false,
                 line: spec.line,
                 hit: spec.hit,
                 log: spec.log.clone(),
@@ -589,6 +651,7 @@ impl Machine {
             for chunk in &chunks {
                 verified |= shared.put(chunk, &bp);
             }
+            bp.verified = verified;
             shared.bps.borrow_mut().push(bp);
             out.push(BreakpointInfo {
                 id,
@@ -716,6 +779,7 @@ impl Machine {
         let Some(mut sink) = self.debug.as_mut().and_then(|d| d.sink.take()) else {
             return Ok(());
         };
+        self.tell_verified(&mut *sink);
         if let Some(d) = self.debug.as_mut() {
             d.mode = Mode::Run;
             d.handles.clear();
@@ -756,6 +820,17 @@ impl Machine {
         }
     }
 
+    /// Tells the debugger which breakpoints a compilation has verified since it was told last.
+    fn tell_verified(&self, sink: &mut dyn Debugger) {
+        let Some(d) = self.debug.as_ref() else {
+            return;
+        };
+        let list = d.shared.newly.take();
+        if !list.is_empty() {
+            sink.breakpoints_verified(&list);
+        }
+    }
+
     /// Where a step that begins now begins.
     fn step_origin(&self, fiber: &VmFiber, kind: StepKind) -> StepState {
         let top = fiber.frames.iter().rev().find(|f| steppable(f));
@@ -787,6 +862,7 @@ impl Machine {
             Mode::Step(_) => self.step_check(fiber),
             Mode::Run => {
                 if let Some(mut sink) = d.sink.take() {
+                    self.tell_verified(&mut *sink);
                     {
                         let mut view = DebugView {
                             vm: &mut *self,
@@ -919,37 +995,76 @@ impl Machine {
 
     // ---- inspection ----
 
-    /// The computations: `current` (the one that stopped) first, then the coroutines that
-    /// are paused.
+    /// The computations: `current` (the one that stopped) first, then the main computation if
+    /// that is not it, the coroutines whose stacks wait for `current`, and the paused ones.
     pub fn debug_fibers(&self, current: &VmFiber) -> Vec<DebugFiber> {
-        let name_of = |f: &VmFiber| {
+        let first_frame = |f: &VmFiber| {
             f.frames
                 .iter()
                 .find(|fr| fr.kind != FrameKind::HostShim)
-                .map_or_else(|| "main".to_string(), |fr| fr.chunk.body.name.clone())
+                .map(|fr| fr.chunk.body.name.clone())
+        };
+        let sched = &self.core.sched;
+        let known = sched.debug_coroutines();
+        // A coroutine is named for the function it started: the scheduler's handle has it
+        // while the program holds the handle, else the bottom frame.
+        let name_of = |id: u64, fiber: Option<&VmFiber>| {
+            known
+                .iter()
+                .find(|(i, _)| *i == id)
+                .and_then(|(_, n)| n.clone())
+                .or_else(|| fiber.and_then(first_frame))
+                .unwrap_or_else(|| "?".to_string())
         };
         let mut out = vec![DebugFiber {
             coroutine: current.state.coro,
-            name: name_of(current),
+            name: match current.state.coro {
+                Some(id) => name_of(id, Some(current)),
+                None => first_frame(current).unwrap_or_else(|| "main".to_string()),
+            },
             current: true,
+            inspectable: true,
         }];
-        for f in self.fibers.stored() {
+        if current.state.coro.is_some() {
             out.push(DebugFiber {
-                coroutine: f.state.coro,
-                name: name_of(f),
+                coroutine: None,
+                name: "main".to_string(),
                 current: false,
+                inspectable: false,
             });
+        }
+        for &id in sched.running_coroutines() {
+            if Some(id) != current.state.coro {
+                out.push(DebugFiber {
+                    coroutine: Some(id),
+                    name: name_of(id, None),
+                    current: false,
+                    inspectable: false,
+                });
+            }
+        }
+        for f in self.fibers.stored() {
+            let Some(id) = f.state.coro else { continue };
+            if out.iter().all(|o| o.coroutine != Some(id)) {
+                out.push(DebugFiber {
+                    coroutine: Some(id),
+                    name: name_of(id, Some(f)),
+                    current: false,
+                    inspectable: true,
+                });
+            }
         }
         out
     }
 
-    /// The fiber of `coroutine` (`None`, or the id of `current` itself: `current`).
+    /// The fiber of `coroutine` (`None`: the main computation), when it can be read: it is
+    /// `current` or it is paused in the slab.
     fn fiber_of<'a>(&'a self, current: &'a VmFiber, coroutine: Option<u64>) -> Option<&'a VmFiber> {
-        match coroutine {
-            None => Some(current),
-            Some(id) if current.state.coro == Some(id) => Some(current),
-            Some(id) => self.fibers.stored().find(|f| f.state.coro == Some(id)),
+        if current.state.coro == coroutine {
+            return Some(current);
         }
+        let id = coroutine?;
+        self.fibers.stored().find(|f| f.state.coro == Some(id))
     }
 
     /// The frames of a computation, innermost first, without the prelude's own frames (a
