@@ -67,7 +67,10 @@ mod values;
 
 use colibri_runtime::{Cap, Error, Interface, Registration, Vm};
 
-pub use assets::{AssetError, AssetSource};
+pub use assets::{
+    AssetError, AssetSource, NOT_A_FOLDER, NOT_AN_ASSET, PackAssets, check_dir, children, for_pack,
+    io_reason,
+};
 pub use config::{Clock, EnvSource, ManualClock, StdConfig, SystemClock};
 pub use rand::Rng;
 
@@ -78,14 +81,18 @@ pub const MODULES: &[&str] = &[
     "process", "net", "datetime", "base64", "hex", "hash", "csv", "toml", "assets",
 ];
 
-/// On the web (`target_family = "wasm"`) the modules that reach the machine are not built:
-/// `io`, `fs`, `os`, `http`, `process` and `net`. Which of the rest a web program may import,
-/// and the compile error for the others, is the web build's own step.
-#[cfg(target_family = "wasm")]
-pub const MODULES: &[&str] = &[
+/// The modules of a web build (`os == "web"`, and the only ones the web runner is built with):
+/// the rest reach the machine, and importing one is the compile error "`fs` is not available in a
+/// web build" (`colibri_runtime::WEB_UNAVAILABLE_STD`). `vec` is Colibri source, in [`sources`].
+pub const WEB_MODULES: &[&str] = &[
     "path", "math", "rand", "time", "str", "json", "regex", "args", "datetime", "base64", "hex",
     "hash", "csv", "toml", "assets",
 ];
+
+/// On the web (`target_family = "wasm"`) the modules that reach the machine are not built:
+/// `io`, `fs`, `os`, `http`, `process` and `net`.
+#[cfg(target_family = "wasm")]
+pub const MODULES: &[&str] = WEB_MODULES;
 
 /// The text of the `vec` module (`import vec`): Colibri source, not a host module.
 const VEC: &str = include_str!("colibri/vec.colibri");
@@ -216,10 +223,27 @@ pub fn interfaces() -> Vec<Interface> {
 /// no such module. Only that module is registered and rendered: what [`interfaces`] does for
 /// all of them.
 pub fn interface(name: &str) -> Option<Interface> {
+    interface_for(name, false)
+}
+
+/// [`interface`] for a web build: what a program for a page is checked against. A module a page
+/// does not have is `None` (the loader says so before it asks), and `time` has no `sleep`.
+pub fn web_interface(name: &str) -> Option<Interface> {
+    interface_for(name, true)
+}
+
+fn interface_for(name: &str, web: bool) -> Option<Interface> {
     let short = name.strip_prefix("std.").unwrap_or(name);
     let short = *MODULES.iter().find(|m| **m == short)?;
+    if web && !WEB_MODULES.contains(&short) {
+        return None;
+    }
     let mut vm = Vm::builder().stdout(Box::new(std::io::sink())).build();
-    install(&mut vm).expect("the standard library registers into an empty Vm");
+    let config = StdConfig {
+        web,
+        ..StdConfig::default()
+    };
+    install_with(&mut vm, config).expect("the standard library registers into an empty Vm");
     let text = vm.std_module(short).interface_text();
     Some(
         Interface::from_text(&format!("std.{short}"), &text)
@@ -248,6 +272,30 @@ pub(crate) fn plain(r: Result<Registration<'_>, Error>) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every standard module is either in the web build or refused there by name (the loader's
+    /// list is `WEB_UNAVAILABLE_STD`, which `colibri-check` cannot derive from this crate).
+    #[test]
+    fn every_standard_module_is_in_the_web_build_or_refused_there() {
+        let refused = colibri_runtime::WEB_UNAVAILABLE_STD;
+        let everything = MODULES
+            .iter()
+            .copied()
+            .chain(sources().into_iter().map(|s| s.name));
+        for name in everything {
+            let in_web = WEB_MODULES.contains(&name) || name == "vec";
+            assert!(
+                in_web != refused.contains(&name),
+                "`{name}` must be in exactly one of the web build's modules and WEB_UNAVAILABLE_STD"
+            );
+        }
+        for name in WEB_MODULES.iter().chain(refused) {
+            assert!(
+                MODULES.contains(name) || sources().iter().any(|s| s.name == *name),
+                "`{name}` is no standard module"
+            );
+        }
+    }
 
     /// Each embedded source module is checked as an ordinary program here, because a std source
     /// module has its warnings dropped: it must have none to drop.

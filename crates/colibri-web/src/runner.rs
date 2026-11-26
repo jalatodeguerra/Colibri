@@ -12,7 +12,7 @@ use std::io::Write;
 use std::rc::Rc;
 
 use colibri_pack::{Pack, Start};
-use colibri_runtime::{Entry, Error, Vm};
+use colibri_runtime::{Cap, Entry, Error, Vm};
 
 /// The size of the wasm stack, which `build.rs` asks the linker for.
 pub const STACK_SIZE: usize = 8 * 1024 * 1024;
@@ -85,7 +85,7 @@ impl Runner {
                 return runner;
             }
         };
-        runner.vm = Runner::build_vm(&pack, &sink);
+        runner.vm = Runner::build_vm(&pack, bytes, &sink);
         let (fs, start) = pack.file_system();
         let report = Rc::clone(&sink);
         runner.vm.on_warnings(move |warnings| {
@@ -108,15 +108,25 @@ impl Runner {
         runner
     }
 
-    /// The `Vm` of a pack: no capability (nothing on the web reaches the machine), the pack's
-    /// build configuration, and the standard modules that exist on the web.
-    fn build_vm(pack: &Pack, sink: &Rc<std::cell::RefCell<Box<dyn Sink>>>) -> Vm {
+    /// The `Vm` of a pack: the `os` capability only (the clocks and the time zone come from the
+    /// page; there is no `os` module, and `time.sleep` is not there), the pack's build configuration,
+    /// the standard modules that exist on the web, and the pack's assets, read from its bytes.
+    fn build_vm(pack: &Pack, bytes: &[u8], sink: &Rc<std::cell::RefCell<Box<dyn Sink>>>) -> Vm {
         let mut vm = Vm::builder()
             .stdout(Box::new(OutWriter(Rc::clone(sink))))
             .build_cfg(pack.cfg.clone())
             .native_stack_budget(NATIVE_STACK_BUDGET)
+            .allow(Cap::Os)
             .build();
-        colibri_std::install(&mut vm).expect("the standard library registers into an empty Vm");
+        // The assets stay in a copy of the pack's bytes, as natively they stay in the file.
+        let assets = colibri_std::for_pack(pack, std::io::Cursor::new(bytes.to_vec()));
+        let config = colibri_std::StdConfig {
+            assets: Some(assets),
+            web: true,
+            ..colibri_std::StdConfig::default()
+        };
+        colibri_std::install_with(&mut vm, config)
+            .expect("the standard library registers into an empty Vm");
         vm
     }
 

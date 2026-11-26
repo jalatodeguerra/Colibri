@@ -372,6 +372,14 @@ impl FnCtx<'_, '_> {
     /// `task.tick(dt)`: the scheduler of the coroutines (DESIGN §14.2). `task` needs no import;
     /// a local, a module-level value or an imported module called `task` takes precedence.
     fn check_task_member(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        if name.name == "run" && self.ck.host.is_web() {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error("thread tasks are not available in a web build", name.span)
+                    .with_hint("a page has one thread: use `go` for a coroutine, which `wait`s without blocking the page"),
+            );
+            return self.error_expr(span);
+        }
         if name.name != "tick" {
             self.check_args_loosely(args);
             self.ck.report(
@@ -388,6 +396,19 @@ impl FnCtx<'_, '_> {
                     span,
                 )
                 .with_hint("write `task.tick(1.0 / 60.0)`"),
+            );
+            return self.error_expr(span);
+        }
+        // On the web every piece of code that runs after start-up is in a coroutine (`main` and
+        // the script are), and a coroutine cannot tick: it is refused wherever it is written.
+        if self.ck.host.is_web() {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error(
+                    "`task.tick` is not available in a web build: the page ticks the coroutines itself",
+                    span,
+                )
+                .with_hint("`wait(seconds)` in `main` lets the other coroutines run"),
             );
             return self.error_expr(span);
         }

@@ -1,0 +1,15 @@
+// A std function that refuses its arguments raises a Colibri panic, which cannot unwind in the
+// wasm build: the instance stops, but the page is told why (natively this is an ordinary panic,
+// exit 101, which can be handled by nothing either).
+// node-only: the wasm build ends the instance; natively the runner ends the program with 101.
+// web-lost: yes
+// web-stderr: panic: division by zero
+import math
+
+fn main() {
+    print("before")
+    print(math.floor_div(1, 0))
+    print("never")
+}
+
+// expect: before

@@ -172,8 +172,8 @@ pub use colibri_check::package::{
     AssetPatterns, Build, Manifest, asset_path_problem, parse_manifest,
 };
 pub use colibri_check::package::{
-    BuildCfg, COMPLETE_MARKER, DiskFs, Entry, MemoryFs, Recorded, RecordingFs, SourceFs,
-    cache_root, checkout_dir, feature_name_problem,
+    BuildCfg, COMPLETE_MARKER, DiskFs, Entry, MemoryFs, Recorded, RecordingFs, SourceFs, WEB_OS,
+    WEB_UNAVAILABLE_STD, cache_root, checkout_dir, feature_name_problem,
 };
 /// Git dependencies and `colibri.lock`: what the command line tool does before it loads a
 /// program (the loader itself never uses the network).
@@ -193,7 +193,7 @@ pub use colibri_vm::{Profile, ProfileSample, ProfileWeight, RcLine, RcProfile};
 pub use convert::{Args, Bytes, FromColibri, IntoColibri, Never, TypedError, Value, ValueKind};
 #[doc(hidden)]
 pub use ctx::Incomplete;
-pub use ctx::{Caller, Ctx, Cx};
+pub use ctx::{Caller, Ctx, Cx, raised_message};
 /// The default of [`VmBuilder::native_stack_budget`]: 1 MiB.
 pub const DEFAULT_NATIVE_STACK_BUDGET: usize = colibri_vm::DEFAULT_NATIVE_STACK_BUDGET;
 pub use error::{Error, Location, Report, StackFrame};
@@ -405,6 +405,7 @@ fn check_entry_lazy(
     for cap in config.caps.iter() {
         env.grant(cap.name());
     }
+    env.set_web(config.cfg.os == colibri_check::package::WEB_OS);
     let mut names = env.named_modules();
     names.extend(lazy_names.iter().cloned());
     let mut sources = SourceMap::new();

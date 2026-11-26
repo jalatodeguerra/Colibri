@@ -1,0 +1,10 @@
+// `time.sleep` would hold up the whole page, so a web build does not have it: the program does
+// not compile, and `wait(seconds)` is what to use.
+// web-exit: 1
+// web-stderr: sleep
+import time
+
+fn main() {
+    print("never")
+    time.sleep(0.5)
+}

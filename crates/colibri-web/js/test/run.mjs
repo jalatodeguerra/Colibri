@@ -75,18 +75,26 @@ async function runOne(module, dir, name) {
     clearTimeout: page.clearTimeout,
     now: () => page.now,
     nowUnix: () => 1_700_000_000 + page.now / 1000,
+    // +05:30 until 1700000100 s, then -05:00 (the offset is asked for each instant).
+    utcOffset: (unix) => (unix < 1_700_000_100 ? 19_800 : -18_000),
     // What the programs that check the seams expect (`web-tests/host_seams.colibri`).
     random: (bytes) => bytes.fill(0xa5),
   });
   const problems = [];
   let result = null;
+  let lost = false;
   try {
     page.drain();
     result = await Promise.race([handle.finished, Promise.resolve(null)]);
   } catch (error) {
-    problems.push(`the runner was lost: ${error}`);
+    // A program that makes the module trap (a std function that refuses its arguments) ends it so.
+    if (sidecar(dir, name, "lost") === null) problems.push(`the runner was lost: ${error}`);
+    lost = true;
   }
-  if (result === null && problems.length === 0) {
+  if (sidecar(dir, name, "lost") !== null && !lost) {
+    problems.push("the instance was meant to be lost, and the program ended");
+  }
+  if (result === null && !lost && problems.length === 0) {
     problems.push("the program never ended: nothing was armed to run it again");
   }
   const expectedOut = readFileSync(join(dir, `${name}.out`), "utf8");
@@ -96,7 +104,7 @@ async function runOne(module, dir, name) {
   const exit = sidecar(dir, name, "exit");
   const wantState = exit === null ? "done" : "failed";
   const wantCode = exit === null ? 0 : Number(exit);
-  if (result && (result.state !== wantState || result.exitCode !== wantCode)) {
+  if (!lost && result && (result.state !== wantState || result.exitCode !== wantCode)) {
     problems.push(`ended ${result.state} with ${result.exitCode}, wanted ${wantState} with ${wantCode}`);
   }
   const err = sidecar(dir, name, "err");

@@ -8,6 +8,7 @@ pub mod doccmd;
 mod flame;
 pub mod fmt;
 pub mod golden;
+pub mod inflate;
 pub mod leakcmd;
 #[doc(hidden)]
 pub mod macho;
@@ -20,6 +21,7 @@ mod repl_input;
 pub mod runcmd;
 pub mod testcmd;
 pub mod watch;
+pub mod webbuild;
 
 use std::thread;
 

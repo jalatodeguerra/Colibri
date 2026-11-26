@@ -22,20 +22,17 @@
 //! so that nobody can move them meanwhile). A link put in the place of a piece after the listing
 //! is therefore refused as well.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use colibri_runtime::{AssetPatterns, MANIFEST_FILE, asset_path_problem, parse_manifest};
-use colibri_std::{AssetError, AssetSource};
+use colibri_std::{AssetError, AssetSource, NOT_A_FOLDER, NOT_AN_ASSET, check_dir, children};
+pub use colibri_std::{PackAssets, for_pack, io_reason};
 use colibri_syntax::FileId;
 
-use crate::pack::{Fnv, Pack, PackAsset};
-
-/// What every "no" says: the one thing a program can do about it.
-const NOT_AN_ASSET: &str = "not an asset of this program: `[build] assets` in `colibri.toml` lists the files a program can read";
+use crate::pack::PackAsset;
 
 /// The package folder of the program that starts at `entry` (a package folder or a script).
 pub fn package_root(entry: &Path) -> PathBuf {
@@ -74,99 +71,6 @@ pub fn for_entry(entry: &Path) -> Box<dyn AssetSource> {
     Box::new(DiskAssets::new(root, patterns))
 }
 
-/// The assets of a built program, from its pack: `source` is the file the pack was read from.
-/// Nothing is read from it here; an asset is read, and checked against its check sum, when the
-/// program asks for it.
-pub fn for_pack<R: Read + Seek + 'static>(pack: &Pack, source: R) -> Box<dyn AssetSource> {
-    let mut index = BTreeMap::new();
-    for asset in &pack.assets {
-        if let crate::pack::AssetData::Packed { offset } = asset.data {
-            index.insert(
-                asset.path.clone(),
-                (pack.assets_at + offset, asset.len, asset.sum),
-            );
-        }
-    }
-    Box::new(PackAssets { source, index })
-}
-
-/// The names directly in the folder `dir` (`""` is the top) among `paths`, sorted; a folder's
-/// name ends with `/`. `None` if nothing is below `dir`, which is no folder of assets.
-fn children<'a>(paths: impl Iterator<Item = &'a str>, dir: &str) -> Option<Vec<String>> {
-    let prefix = if dir.is_empty() {
-        String::new()
-    } else {
-        format!("{dir}/")
-    };
-    let mut names = BTreeSet::new();
-    let mut found = false;
-    for path in paths {
-        let Some(rest) = path.strip_prefix(prefix.as_str()) else {
-            continue;
-        };
-        found = true;
-        names.insert(match rest.split_once('/') {
-            Some((folder, _)) => format!("{folder}/"),
-            None => rest.to_string(),
-        });
-    }
-    (found || dir.is_empty()).then(|| names.into_iter().collect())
-}
-
-/// The assets of a built program: the files the pack holds, read from `source` on demand.
-pub struct PackAssets<R> {
-    source: R,
-    /// Path to where the bytes are in `source`, how long they are and their check sum.
-    index: BTreeMap<String, (u64, u64, u64)>,
-}
-
-impl<R: Read + Seek> AssetSource for PackAssets<R> {
-    fn read(&mut self, path: &str) -> Result<Vec<u8>, AssetError> {
-        if let Some(why) = asset_path_problem(path) {
-            return Err(AssetError::Invalid(why.to_string()));
-        }
-        let Some(&(at, len, sum)) = self.index.get(path) else {
-            return Err(AssetError::NotFound(NOT_AN_ASSET.to_string()));
-        };
-        let cannot = |e: std::io::Error| {
-            AssetError::Other(format!("cannot read the program's data: {}", io_reason(&e)))
-        };
-        // `len` was checked against the size of the file when the pack was read.
-        let mut data = vec![
-            0u8;
-            usize::try_from(len).map_err(|_| {
-                AssetError::Other("the asset is too large for this machine".to_string())
-            })?
-        ];
-        self.source.seek(SeekFrom::Start(at)).map_err(cannot)?;
-        self.source.read_exact(&mut data).map_err(cannot)?;
-        let mut check = Fnv::new();
-        check.update(&data);
-        if check.finish() != sum {
-            return Err(AssetError::Other(
-                "the program's data is damaged (the check sum of this asset does not match)"
-                    .to_string(),
-            ));
-        }
-        Ok(data)
-    }
-
-    fn list(&mut self, dir: &str) -> Result<Vec<String>, AssetError> {
-        check_dir(dir)?;
-        children(self.index.keys().map(String::as_str), dir)
-            .ok_or_else(|| AssetError::NotFound(NOT_A_FOLDER.to_string()))
-    }
-}
-
-const NOT_A_FOLDER: &str = "no assets are in this folder: `[build] assets` in `colibri.toml` lists the files a program can read";
-
-fn check_dir(dir: &str) -> Result<(), AssetError> {
-    match (dir.is_empty(), asset_path_problem(dir)) {
-        (false, Some(why)) => Err(AssetError::Invalid(why.to_string())),
-        _ => Ok(()),
-    }
-}
-
 /// The text of an [`AssetError`], without its kind.
 pub fn error_text(e: &AssetError) -> &str {
     match e {
@@ -202,22 +106,6 @@ impl DiskAssets {
 
 fn other(what: &str, e: &std::io::Error) -> AssetError {
     AssetError::Other(format!("{what}: {}", io_reason(e)))
-}
-
-/// The same few words on every system for the common cases, so no message depends on the
-/// wording of the OS.
-pub fn io_reason(e: &std::io::Error) -> String {
-    match e.kind() {
-        std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
-        std::io::ErrorKind::NotFound => "no such file".to_string(),
-        _ => {
-            let text = e.to_string();
-            text.split(" (os error")
-                .next()
-                .unwrap_or(&text)
-                .to_lowercase()
-        }
-    }
 }
 
 fn is_link_error() -> AssetError {
@@ -597,8 +485,18 @@ pub fn collect(
         ));
     }
     let out = fs::canonicalize(out).ok();
+    // An output that is a folder inside the package (`colibri build --web`'s) is not part of it:
+    // what a build wrote there before is no asset, so a second build works with `assets = ["**"]`.
+    let skip_below = out.clone().filter(|o| {
+        o.is_dir() && fs::canonicalize(root).is_ok_and(|r| r != *o && !r.starts_with(o))
+    });
     let mut assets = Vec::new();
     for path in paths {
+        if let Some(dir) = &skip_below
+            && fs::canonicalize(root.join(&path)).is_ok_and(|p| p.starts_with(dir))
+        {
+            continue;
+        }
         if out.is_some() && fs::canonicalize(root.join(&path)).ok() == out {
             return Err(format!(
                 "the output is the asset `{path}`: choose another file with `-o`, or write it outside the assets"
@@ -612,9 +510,9 @@ pub fn collect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pack::{AssetData, PackDisk, Start};
+    use crate::pack::{AssetData, Pack, PackDisk, Start};
     use std::cell::{Cell, RefCell};
-    use std::io::Cursor;
+    use std::io::{Cursor, Seek, SeekFrom};
     use std::rc::Rc;
 
     fn patterns(texts: &[&str]) -> AssetPatterns {
@@ -632,23 +530,6 @@ mod tests {
         let full = dir.join(rel);
         fs::create_dir_all(full.parent().unwrap()).unwrap();
         fs::write(full, data).unwrap();
-    }
-
-    #[test]
-    fn a_folder_listing_names_folders_with_a_slash() {
-        let paths = ["a.txt", "d/x", "d/sub/y", "d/sub/z", "e/q"];
-        let list = |dir: &str| children(paths.iter().copied(), dir);
-        assert_eq!(list("").unwrap(), ["a.txt", "d/", "e/"]);
-        assert_eq!(list("d").unwrap(), ["sub/", "x"]);
-        assert_eq!(list("d/sub").unwrap(), ["y", "z"]);
-        assert_eq!(list("none"), None);
-        // A folder that only shares a prefix with another is not it.
-        assert_eq!(list("e").unwrap(), ["q"]);
-        assert_eq!(
-            children(std::iter::empty(), "").unwrap(),
-            Vec::<String>::new()
-        );
-        assert_eq!(children(["dd/x"].into_iter(), "d"), None);
     }
 
     #[test]

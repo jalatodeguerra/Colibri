@@ -115,14 +115,26 @@ enum Command {
     /// codes and `os.args()`, every capability granted). Arguments given to it go to the
     /// program, never to `colibri`. The program is checked first; git dependencies are
     /// resolved as for `run`. It runs on the platform of this `colibri`, unless `--target` and
-    /// `--runner` name another
+    /// `--runner` name another. With `--web` it writes a folder for a static web server
+    /// instead (`index.html`, `colibri.js`, `colibri.wasm`, `app.pack`): the program runs in
+    /// the page, which shows what it prints
     Build {
         /// A script, or a package folder (the current folder by default)
         file: Option<PathBuf>,
         /// Where to write the executable (by default the name of the script, or of the
-        /// package folder, in the current folder)
+        /// package folder, in the current folder); with `--web`, the folder (`NAME-web` by
+        /// default)
         #[arg(short, long, value_name = "FILE")]
         output: Option<PathBuf>,
+        /// Build for a web page instead of an executable: the program is checked against the
+        /// standard library a page has (`os` is `"web"`; `fs`, `os`, `io`, `process`, `net`,
+        /// `http` and `task.run` are errors), and the output is a folder to serve
+        #[arg(long, conflicts_with_all = ["target", "runner"])]
+        web: bool,
+        /// With `--web`: use this `colibri.wasm` (or its gzip) as the page's runner instead of
+        /// the one inside this `colibri`; for a runner just built from `crates/colibri-web`
+        #[arg(long, value_name = "FILE", requires = "web")]
+        web_runner: Option<PathBuf>,
         /// Build for another platform (linux, macos or windows, then x86_64 or aarch64:
         /// `linux-aarch64`). Needs `--runner`, and `@when(os == ..)` and `@when(arch == ..)`
         /// are decided for this platform
@@ -140,6 +152,10 @@ enum Command {
     /// Type-check a Colibri script or package without running it
     Check {
         file: Option<PathBuf>,
+        /// Check for a web page, as `colibri build --web` does: `os` is `"web"` and only the
+        /// standard library of a page is there
+        #[arg(long)]
+        web: bool,
         /// An interface file (`.cbi`) describing what the embedding program provides; may be
         /// given more than once
         #[arg(long = "interface", value_name = "FILE")]
@@ -249,6 +265,12 @@ enum Command {
     },
 }
 
+/// The platform a web page is: `@when(os == "web")` and `arch == "wasm32"`.
+fn web_platform(cfg: &mut colibri_runtime::BuildCfg) {
+    cfg.os = colibri_runtime::WEB_OS.to_string();
+    cfg.arch = "wasm32".to_string();
+}
+
 /// Serves the language server protocol on stdin and stdout.
 fn lsp() -> ExitCode {
     let config = colibri_lsp::Config {
@@ -300,11 +322,16 @@ fn main() -> ExitCode {
     on_big_stack(move || match cli.command {
         Command::Check {
             file,
+            web,
             interfaces,
             build,
             deps,
         } => {
-            colibri_lang::set_build_cfg(build.cfg());
+            let mut cfg = build.cfg();
+            if web {
+                web_platform(&mut cfg);
+            }
+            colibri_lang::set_build_cfg(cfg);
             match colibri_lang::checkcmd::check(
                 &file.unwrap_or_else(|| PathBuf::from(".")),
                 &interfaces,
@@ -318,12 +345,24 @@ fn main() -> ExitCode {
         Command::Build {
             file,
             output,
+            web,
+            web_runner,
             target,
             runner,
             build,
             deps,
         } => {
             let mut cfg = build.cfg();
+            if web {
+                web_platform(&mut cfg);
+                colibri_lang::set_build_cfg(cfg);
+                return colibri_lang::webbuild::build(&colibri_lang::webbuild::Options {
+                    path: &file.unwrap_or_else(|| PathBuf::from(".")),
+                    out: output.as_deref(),
+                    deps,
+                    runner: web_runner.as_deref(),
+                });
+            }
             // The files a program reads are chosen by `@when(os == ..)` while it is checked.
             if let Some(target) = target {
                 cfg.os = target.os_name().to_string();

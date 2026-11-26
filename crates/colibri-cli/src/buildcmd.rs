@@ -50,7 +50,7 @@ pub fn build(options: &Options<'_>) -> ExitCode {
     }
 }
 
-fn fail(message: impl std::fmt::Display) -> ExitCode {
+pub(crate) fn fail(message: impl std::fmt::Display) -> ExitCode {
     eprintln!("error: {message}");
     ExitCode::from(1)
 }
@@ -132,7 +132,7 @@ const MAX_LISTED_ASSETS: usize = 50;
 
 /// The pack of the program at `path`, from the files its check read and the assets its manifest
 /// lists. `out` is the file the executable will be written to.
-fn make_pack(path: &Path, reads: Vec<Recorded>, out: &Path) -> Result<Pack, ExitCode> {
+pub(crate) fn make_pack(path: &Path, reads: Vec<Recorded>, out: &Path) -> Result<Pack, ExitCode> {
     let cache = colibri::cache_root().ok();
     let mut files = Vec::new();
     let mut checkouts: Vec<String> = Vec::new();
@@ -207,7 +207,7 @@ fn checkout_of(rel: &str) -> Option<String> {
 
 /// What the program is called: the folder of a package, the file name of a script without its
 /// extension.
-fn program_name(path: &Path) -> String {
+pub(crate) fn program_name(path: &Path) -> String {
     let named = if path.is_dir() {
         fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
     } else {
@@ -346,7 +346,7 @@ fn warn_unsigned(out: &Path, thin: bool) {
 }
 
 /// The name of a source file of the program that `out` would overwrite, if there is one.
-fn clobbers(out: &Path, pack: &Pack, entry: &Path) -> Option<String> {
+pub(crate) fn clobbers(out: &Path, pack: &Pack, entry: &Path) -> Option<String> {
     let out = fs::canonicalize(out).ok()?;
     let same = |p: &Path| fs::canonicalize(p).is_ok_and(|p| p == out);
     if same(entry) {
@@ -376,7 +376,7 @@ fn temp_name(name: &str, attempt: u32) -> String {
 
 /// Creates a new, empty file next to `out` under a name that is not taken. `create_new` never
 /// opens an existing file and never follows a link that is already there.
-fn create_temp(out: &Path) -> std::io::Result<(fs::File, PathBuf)> {
+pub(crate) fn create_temp(out: &Path) -> std::io::Result<(fs::File, PathBuf)> {
     let name = out
         .file_name()
         .map_or_else(|| "out".into(), |n| n.to_string_lossy().into_owned());

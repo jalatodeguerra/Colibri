@@ -450,6 +450,7 @@ fn a_config_replaces_the_world() {
             stdin: Some(Box::new(Cursor::new("a\nb"))),
             local_offset: None,
             assets: None,
+            web: false,
         },
     )
     .unwrap();

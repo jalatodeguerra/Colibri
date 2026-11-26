@@ -46,7 +46,13 @@ fn code(state: State) -> i32 {
 /// this text on the error stream.
 fn report_panics() {
     std::panic::set_hook(Box::new(|info| {
-        write(2, format!("internal error: {info}\n").as_bytes());
+        // A std function that refuses its arguments (`math.floor_div(1, 0)`) raises a Colibri
+        // panic, which cannot unwind here: the message is all the page learns before it stops.
+        let text = match colibri_runtime::raised_message(info.payload()) {
+            Some(message) => format!("panic: {message}\n"),
+            None => format!("internal error: {info}\n"),
+        };
+        write(2, text.as_bytes());
     }));
 }
 

@@ -35,6 +35,9 @@ fn main() {
         if let Some(code) = support::web_exit(&source) {
             std::fs::write(out.join(format!("{name}.exit")), code.to_string()).expect("write");
         }
+        if support::web_lost(&source) {
+            std::fs::write(out.join(format!("{name}.lost")), "yes").expect("write");
+        }
         if let Some(text) = support::web_stderr(&source) {
             std::fs::write(out.join(format!("{name}.err")), text).expect("write");
         }

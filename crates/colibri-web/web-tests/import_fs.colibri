@@ -1,0 +1,9 @@
+// A pack that imports a module a page does not have fails to load with the web build's message,
+// as `colibri build --web` says it when the program is checked.
+// web-exit: 1
+// web-stderr: `fs` is not available in a web build
+import fs
+
+fn main() {
+    print("never")
+}

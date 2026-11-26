@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use colibri_pack::{Kind, Pack, PackFile, Start};
+use colibri_pack::{Kind, Pack, PackAsset, PackFile, Start};
 use colibri_runtime::BuildCfg;
 
 /// The folder of the golden tests of the whole project.
@@ -48,7 +48,10 @@ pub fn pack_of(name: &str, source: &str) -> Vec<u8> {
             name: format!("{name}.colibri"),
             data: source.as_bytes().to_vec(),
         }],
-        assets: Vec::new(),
+        assets: web_assets(source)
+            .into_iter()
+            .map(|(path, text)| PackAsset::held(path, text.into_bytes()))
+            .collect(),
         assets_at: 0,
     };
     pack.append_held(0)
@@ -115,6 +118,12 @@ fn directive(source: &str, name: &str) -> Option<String> {
         .map(|rest| rest.trim().to_string())
 }
 
+/// `// web-lost: yes` in a program of `web-tests`: the wasm instance ends (a trap) instead of the
+/// program, after writing why to the error stream.
+pub fn web_lost(source: &str) -> bool {
+    directive(source, "web-lost").is_some()
+}
+
 /// `// web-max-ticks: N` in a program of `web-tests`: the run takes at most this many ticks.
 pub fn max_ticks(source: &str) -> Option<u32> {
     directive(source, "web-max-ticks").and_then(|n| n.parse().ok())
@@ -125,4 +134,15 @@ pub fn max_ticks(source: &str) -> Option<u32> {
 /// test leaves it out.
 pub fn node_only(source: &str) -> bool {
     directive(source, "node-only").is_some()
+}
+
+/// `// web-asset: PATH = TEXT` lines in a program of `web-tests`: the assets its pack holds (one
+/// line of text each).
+pub fn web_assets(source: &str) -> Vec<(String, String)> {
+    source
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("// web-asset:"))
+        .filter_map(|rest| rest.split_once(" = "))
+        .map(|(path, text)| (path.trim().to_string(), text.to_string()))
+        .collect()
 }

@@ -1,0 +1,26 @@
+// The wall clock and the time zone come from the page, and only the node harness can say what they
+// are: its wall clock is 1700000000 s (2023-11-14 22:13:20 UTC) plus the virtual time, and its time
+// zone is +05:30 until 1700000100 s and -05:00 after (the offset is asked for each instant, as a
+// real one changes with daylight saving).
+// node-only: the wall clock and the time zone are the harness's.
+// web-max-ticks: 4
+import datetime
+import time
+
+fn main() {
+    print("unix: {time.unix()}")
+    let first = datetime.now()
+    print("utc: {datetime.to_iso(first)}")
+    print("local: {datetime.to_iso(datetime.now_local())}")
+    wait(200.0)
+    print("unix later: {time.unix()}")
+    print("local later: {datetime.to_iso(datetime.now_local())}")
+    print("diff: {datetime.diff(datetime.now(), first)}")
+}
+
+// expect: unix: 1700000000.0
+// expect: utc: 2023-11-14T22:13:20Z
+// expect: local: 2023-11-15T03:43:20+05:30
+// expect: unix later: 1700000200.0
+// expect: local later: 2023-11-14T17:16:40-05:00
+// expect: diff: 200.0
