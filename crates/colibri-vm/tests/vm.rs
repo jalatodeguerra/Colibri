@@ -235,7 +235,7 @@ fn run() {
     let expected = "\
 0000  Step 2
 0001  LoadInt r1 0
-0002  NewStruct r0 struct#22 [r1]
+0002  NewStruct r0 struct#26 [r1]
 0003  LoadInt r3 3
 0004  Move r2 r0
 0005  Call r1 base=r2 fn#1
@@ -465,7 +465,7 @@ fn run() -> int => two(mk(P { x: 1 }, 3), 4)";
     // the code drop what is alive at each call, in the same order.
     let expected = "\
 0000  LoadInt r3 1
-0001  NewStruct r2 struct#22 [r3]
+0001  NewStruct r2 struct#26 [r3]
 0002  LoadInt r3 3
 0003  Call r1 base=r2 fn#1
 0004  LoadInt r3 4
