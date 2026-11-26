@@ -193,7 +193,7 @@ pub use colibri_vm::{Profile, ProfileSample, ProfileWeight, RcLine, RcProfile};
 pub use convert::{Args, Bytes, FromColibri, IntoColibri, Never, TypedError, Value, ValueKind};
 #[doc(hidden)]
 pub use ctx::Incomplete;
-pub use ctx::{Caller, Ctx, Cx};
+pub use ctx::{Caller, Ctx, Cx, raised_message};
 /// The default of [`VmBuilder::native_stack_budget`]: 1 MiB.
 pub const DEFAULT_NATIVE_STACK_BUDGET: usize = colibri_vm::DEFAULT_NATIVE_STACK_BUDGET;
 pub use error::{Error, Location, Report, StackFrame};

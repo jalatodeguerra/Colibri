@@ -1047,15 +1047,15 @@ running in the page:
 
 ```console
 $ colibri build --web examples/web -o site
-built site (1 source file, 1 asset; colibri.wasm 4816792 bytes, app.pack 1488 bytes): serve it with ...
+built site (1 source file, 1 asset; colibri.wasm 3595681 bytes, app.pack 1488 bytes): serve it with ...
 $ node examples/web/serve.mjs site          # or any static file server
 serving site at http://127.0.0.1:41893/
 ```
 
 The folder holds `index.html` (a page with one element for the program's output), `colibri.js` (the
-loop that runs the program), `colibri.wasm` (the runner, 4.8 MB: the engine built for WebAssembly)
+loop that runs the program), `colibri.wasm` (the runner, 3.6 MB: the engine built for WebAssembly)
 and `app.pack` (the program: its source files, dependencies and assets). Without `-o` the folder is
-`NAME-web`. Files already in it that are not these four stay; the four are replaced whole. A page
+`NAME-web`. Files already in it that are not these four stay; the four are replaced whole, except an `index.html` that `colibri build --web` did not write, which makes the build stop. A page
 opened straight from disk (`file://`) cannot load its files, so serve the folder. The
 [`examples/web`](examples/web/main.colibri) package is a small program for a page, which CI builds,
 serves and runs under node.
@@ -1078,17 +1078,22 @@ serves and runs under node.
   `httpd` (``error: `fs` is not available in a web build``), `extern` blocks (no foreign functions),
   `task.run` ("thread tasks are not available in a web build"), `time.sleep` (use `wait`) and
   `task.tick` called from `main` or from the top level of a script, since those are coroutines
-  there. A function that `main` calls and that ticks is a run-time error instead: the check does not
-  follow calls. `colibri check --web` reports all of them without building anything.
+  there (a `task.tick` anywhere in a web build is refused). `colibri check --web` reports all of
+  them without building anything.
+- **A std function that refuses its arguments stops the page's program.** `math.floor_div(1, 0)`,
+  `rand.int(5, 1)`, `str.repeat("x", -1)` and the like raise a panic that cannot be caught or
+  recovered in WebAssembly (there is no unwinding): the page writes `panic: <message>` to the error
+  stream and the program ends there, without running its `defer`s or `Drop` hooks. An ordinary
+  panic (`panic(..)`, an index out of range, `expect`, arithmetic) is unaffected.
 - **The runner is part of `colibri`.** It is `crates/colibri-web` built for `wasm32-unknown-unknown`
-  and compiled into the `colibri` of a release, gzipped (1.5 MB; the raw module would carry
+  and compiled into the `colibri` of a release, gzipped (1.1 MB; the raw module would carry
   `colibri` over its 15 MB size limit). A `colibri` built from source without it says so, and
   `--web-runner FILE` names a `colibri.wasm` (or its gzip) to use instead:
 
   ```console
   $ rustup target add wasm32-unknown-unknown
-  $ cargo build --release --target wasm32-unknown-unknown -p colibri-web
-  $ gzip -9n -c target/wasm32-unknown-unknown/release/colibri_web.wasm > /abs/path/colibri.wasm.gz
+  $ cargo build --profile web --target wasm32-unknown-unknown -p colibri-web
+  $ gzip -9n -c target/wasm32-unknown-unknown/web/colibri_web.wasm > /abs/path/colibri.wasm.gz
   $ COLIBRI_WEB_RUNNER=/abs/path/colibri.wasm.gz cargo build --release -p colibri-lang
   ```
 

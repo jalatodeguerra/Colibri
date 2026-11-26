@@ -618,6 +618,10 @@ impl<'a> Checker<'a> {
         );
         if let Some(hint) = self.excluded_hint(m, member) {
             diag = diag.with_hint(hint);
+        } else if self.host.is_web() && info.name == "std.time" && member == "sleep" {
+            diag = diag.with_hint(
+                "a page cannot sleep: `wait(seconds)` pauses a coroutine without blocking it",
+            );
         } else if let Some(hint) = removed_item_hint(&info.name, member) {
             diag = diag.with_hint(hint);
         } else if let Some(s) = suggest::closest(member, visible.iter().copied()) {

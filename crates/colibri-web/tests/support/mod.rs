@@ -118,6 +118,12 @@ fn directive(source: &str, name: &str) -> Option<String> {
         .map(|rest| rest.trim().to_string())
 }
 
+/// `// web-lost: yes` in a program of `web-tests`: the wasm instance ends (a trap) instead of the
+/// program, after writing why to the error stream.
+pub fn web_lost(source: &str) -> bool {
+    directive(source, "web-lost").is_some()
+}
+
 /// `// web-max-ticks: N` in a program of `web-tests`: the run takes at most this many ticks.
 pub fn max_ticks(source: &str) -> Option<u32> {
     directive(source, "web-max-ticks").and_then(|n| n.parse().ok())

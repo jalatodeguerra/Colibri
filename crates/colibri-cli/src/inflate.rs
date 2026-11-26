@@ -1,5 +1,5 @@
 //! A gzip reader (RFC 1952 around RFC 1951 "deflate"), for the one place the tool needs it: the
-//! web runner is embedded in `colibri` compressed, because the raw 4.8 MB would carry the tool
+//! web runner is embedded in `colibri` compressed, because the raw 3.6 MB would carry the tool
 //! over its 15 MB size gate, and `colibri build --web` writes it out again as `colibri.wasm`.
 //! The release pipeline compresses it with `gzip -9n`.
 //!

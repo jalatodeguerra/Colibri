@@ -1,7 +1,7 @@
 //! Embeds the web runner (`colibri.wasm`) in `colibri`, if the build says where it is.
 //!
 //! `COLIBRI_WEB_RUNNER` is the absolute path of the runner the release pipeline built from
-//! `crates/colibri-web` and compressed with `gzip -9n` (a raw `.wasm` works too, but it is 4.8 MB
+//! `crates/colibri-web` and compressed with `gzip -9n` (a raw `.wasm` works too, but it is 3.6 MB
 //! and the tool's size gate is 15 MB: see `colibri build --web` in the README). Without it the cfg
 //! `web_runner` is not set, and `colibri build --web` says that this `colibri` was built without
 //! the runner. A path that is not there, or a file that is neither gzip nor wasm, fails the build:

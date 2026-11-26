@@ -15,3 +15,10 @@ lto = "fat"
 codegen-units = 1
 # No symbols: every built program carries a copy of `colibri`, so its size counts.
 strip = true
+
+# The web runner (`colibri.wasm`) is built with `--profile web`: it is embedded in `colibri`, whose
+# size is gated, and `z` makes it 25% smaller than `3` (3.6 MB against 4.8 MB) with no measurable
+# loss on the engine's own work in a browser's wasm compiler.
+[profile.web]
+inherits = "release"
+opt-level = "z"

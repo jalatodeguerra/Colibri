@@ -399,20 +399,16 @@ impl FnCtx<'_, '_> {
             );
             return self.error_expr(span);
         }
-        // On the web `main` and the top-level statements are coroutines, and a coroutine cannot
-        // tick (a call from a function that `main` calls cannot be seen from here: it is the
-        // runtime's "cannot be called from a coroutine").
-        if self.ck.host.is_web()
-            && self.frame_id == 0
-            && matches!(self.name.as_str(), "main" | "<script>")
-        {
+        // On the web every piece of code that runs after start-up is in a coroutine (`main` and
+        // the script are), and a coroutine cannot tick: it is refused wherever it is written.
+        if self.ck.host.is_web() {
             self.check_args_loosely(args);
             self.ck.report(
                 Diagnostic::error(
-                    "`task.tick` cannot be called from `main` in a web build: `main` is a coroutine there",
+                    "`task.tick` is not available in a web build: the page ticks the coroutines itself",
                     span,
                 )
-                .with_hint("the page ticks the coroutines itself: `wait(seconds)` in `main` lets them run"),
+                .with_hint("`wait(seconds)` in `main` lets the other coroutines run"),
             );
             return self.error_expr(span);
         }

@@ -109,7 +109,7 @@ impl Runner {
     }
 
     /// The `Vm` of a pack: the `os` capability only (the clocks and the time zone come from the
-    /// page; there is no `os` module, and `time.sleep` refuses), the pack's build configuration,
+    /// page; there is no `os` module, and `time.sleep` is not there), the pack's build configuration,
     /// the standard modules that exist on the web, and the pack's assets, read from its bytes.
     fn build_vm(pack: &Pack, bytes: &[u8], sink: &Rc<std::cell::RefCell<Box<dyn Sink>>>) -> Vm {
         let mut vm = Vm::builder()

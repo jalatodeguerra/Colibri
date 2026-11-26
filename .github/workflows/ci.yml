@@ -53,18 +53,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: cargo build --release --target wasm32-unknown-unknown -p colibri-web
+      - run: cargo build --profile web --target wasm32-unknown-unknown -p colibri-web
       - name: Size of colibri.wasm
         run: |
-          size=$(stat -c %s target/wasm32-unknown-unknown/release/colibri_web.wasm)
-          gz=$(gzip -9n -c target/wasm32-unknown-unknown/release/colibri_web.wasm | wc -c)
+          size=$(stat -c %s target/wasm32-unknown-unknown/web/colibri_web.wasm)
+          gz=$(gzip -9n -c target/wasm32-unknown-unknown/web/colibri_web.wasm | wc -c)
           echo "colibri.wasm: $size bytes, gzipped $gz"
       - name: Unit tests of colibri.js
         run: node crates/colibri-web/js/test/unit.mjs
       - name: Packs of the golden programs
         run: cargo run -p colibri-web --example make_packs -- web-packs
       - name: Run them with colibri.js in node
-        run: node crates/colibri-web/js/test/run.mjs target/wasm32-unknown-unknown/release/colibri_web.wasm web-packs
+        run: node crates/colibri-web/js/test/run.mjs target/wasm32-unknown-unknown/web/colibri_web.wasm web-packs
 
   test:
     strategy:
@@ -99,7 +99,7 @@ jobs:
 
   # DESIGN §17.4: a stripped release `colibri` is under 15 MB, and a built program starts fast.
   # The `colibri` measured is the one that ships: with the web runner inside. The runner is built
-  # first (`crates/colibri-web`, 4.8 MB) and gzipped (1.5 MB), and `COLIBRI_WEB_RUNNER` names it for
+  # first (`crates/colibri-web` with `--profile web`, opt-level z, 3.6 MB) and gzipped (1.1 MB), and `COLIBRI_WEB_RUNNER` names it for
   # the build of `colibri` (`crates/colibri-cli/build.rs`); embedded raw it would not fit.
   gates:
     runs-on: ubuntu-latest
@@ -114,8 +114,8 @@ jobs:
           node-version: 22
       - name: Web runner
         run: |
-          cargo build --release --target wasm32-unknown-unknown -p colibri-web
-          cp target/wasm32-unknown-unknown/release/colibri_web.wasm colibri.wasm
+          cargo build --profile web --target wasm32-unknown-unknown -p colibri-web
+          cp target/wasm32-unknown-unknown/web/colibri_web.wasm colibri.wasm
           gzip -9n -c colibri.wasm > "$RUNNER_TEMP/colibri.wasm.gz"
           echo "colibri.wasm: $(stat -c %s colibri.wasm) bytes, gzipped $(stat -c %s "$RUNNER_TEMP/colibri.wasm.gz")"
       - name: colibri with the web runner inside

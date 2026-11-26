@@ -321,9 +321,29 @@ fn the_output_may_not_be_a_file_or_an_asset_and_other_files_in_the_folder_stay()
         leftovers.is_empty(),
         "temporary files are gone: {leftovers:?}"
     );
+    // A page of somebody's own is not replaced; one of an earlier build is.
+    dir.write("site4/index.html", "<p>mine</p>");
+    let out = dir.build_web(&["hello.colibri", "-o", "site4"]);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("not a page written by"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path("site4/index.html")).unwrap(),
+        "<p>mine</p>"
+    );
+    assert!(
+        !dir.path("site4/app.pack").exists(),
+        "nothing else was written"
+    );
     // A folder that holds files already: the page's files are replaced, others stay.
     dir.write("site2/notes.txt", "mine");
-    dir.write("site2/index.html", "an older page");
+    dir.write(
+        "site2/index.html",
+        "<!-- written by colibri build --web -->an older page",
+    );
     let out = dir.build_web(&["hello.colibri", "-o", "site2"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
@@ -447,6 +467,11 @@ fn the_clocks_are_there_and_sleeping_is_not() {
     let out = dir.check_web("prog.colibri");
     assert_eq!(out.code, 1);
     assert!(out.stderr.contains("sleep"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("use") || out.stderr.contains("`wait(seconds)`"),
+        "{}",
+        out.stderr
+    );
     assert_eq!(
         dir.colibri(&["check", "prog.colibri"]).code,
         0,
@@ -488,45 +513,33 @@ fn thread_tasks_are_a_compile_error_on_the_web() {
 }
 
 #[test]
-fn ticking_from_main_is_a_compile_error_on_the_web_and_ticking_elsewhere_is_not() {
+fn ticking_is_a_compile_error_everywhere_on_the_web_and_fine_natively() {
     let dir = Dir::new("tick");
-    // In `main` and in the top-level statements of a script.
-    dir.write("a.colibri", "fn main() {\n    task.tick(0.1)\n}\n");
-    dir.write("b.colibri", "task.tick(0.1)\n");
-    for file in ["a.colibri", "b.colibri"] {
-        let out = dir.check_web(file);
+    // In `main`, in the top level of a script, in a helper, in a closure and in a method.
+    let programs = [
+        "fn main() {\n    task.tick(0.1)\n}\n",
+        "task.tick(0.1)\n",
+        "fn pump() {\n    task.tick(0.1)\n}\n\nfn main() {\n    pump()\n}\n",
+        "fn main() {\n    let step = fn() {\n        task.tick(0.1)\n    }\n    step()\n}\n",
+        "struct S {}\n\nimpl S {\n    fn step(self) {\n        task.tick(0.1)\n    }\n}\n\nfn main() {\n    print(1)\n}\n",
+    ];
+    for (n, text) in programs.iter().enumerate() {
+        let file = format!("p{n}.colibri");
+        dir.write(&file, text);
+        let out = dir.check_web(&file);
         assert_eq!(out.code, 1, "{file}: {}", out.stderr);
         assert!(
             out.stderr
-                .contains("`task.tick` cannot be called from `main` in a web build"),
+                .contains("`task.tick` is not available in a web build"),
             "{file}: {}",
             out.stderr
         );
         assert_eq!(
-            dir.colibri(&["check", file]).code,
+            dir.colibri(&["check", &file]).code,
             0,
             "{file} is fine natively"
         );
     }
-    // A function `main` calls is not seen from here: it is the runtime's error then, so the check
-    // passes (see the notes: the call graph is not followed).
-    dir.write(
-        "c.colibri",
-        "fn pump() {\n    task.tick(0.1)\n}\n\nfn main() {\n    pump()\n}\n",
-    );
-    assert_eq!(dir.check_web("c.colibri").code, 0);
-    // A closure written in `main` may be run by anything, so it is not judged either.
-    dir.write(
-        "e.colibri",
-        "fn main() {\n    let step = fn() {\n        task.tick(0.1)\n    }\n    step()\n}\n",
-    );
-    assert_eq!(dir.check_web("e.colibri").code, 0);
-    // A method called `main` of a type is no `main`.
-    dir.write(
-        "d.colibri",
-        "struct S {}\n\nimpl S {\n    fn main(self) {\n        task.tick(0.1)\n    }\n}\n\nfn main() {\n    print(1)\n}\n",
-    );
-    assert_eq!(dir.check_web("d.colibri").code, 0);
 }
 
 #[test]
@@ -571,4 +584,31 @@ fn the_demo_page_checks_builds_and_prints_what_the_smoke_test_expects() {
     let printed = String::from_utf8_lossy(&run.stdout).replace("os: not the web", "os: web");
     let expected = fs::read_to_string(std::path::Path::new(demo).join("expected.txt")).unwrap();
     assert_eq!(printed, expected);
+}
+
+/// With `assets = ["**"]` in a package, the folder of the first build is inside the package, and
+/// the second build must not take what the first wrote for assets.
+#[test]
+fn building_twice_into_the_default_folder_with_a_broad_asset_pattern_works() {
+    let dir = Dir::new("twice");
+    dir.write(
+        "app/colibri.toml",
+        "[package]\nname = \"app\"\n\n[build]\nassets = [\"**\"]\n",
+    );
+    dir.write("app/main.colibri", "fn main() {}\n");
+    dir.write("app/data.txt", "one");
+    dir.write_bytes("runner.wasm", RUNNER);
+    for round in 0..2 {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+        cmd.args(["build", "--web", "--web-runner", "../runner.wasm"])
+            .current_dir(dir.path("app"))
+            .env("COLIBRI_HOME", dir.path("home"));
+        let out = cmd.output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "round {round}: {err}");
+    }
+    let pack = pack_of(&dir, "app/app-web/app.pack");
+    let mut paths: Vec<&str> = pack.assets.iter().map(|a| a.path.as_str()).collect();
+    paths.sort();
+    assert_eq!(paths, ["colibri.toml", "data.txt", "main.colibri"]);
 }

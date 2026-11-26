@@ -14,7 +14,7 @@
 //!
 //! **The runner.** `colibri.wasm` is built by the release pipeline and compiled into `colibri`
 //! from the file `COLIBRI_WEB_RUNNER` names when `colibri` is built (see `build.rs`), compressed:
-//! raw it is 4.8 MB, which would carry `colibri` over its 15 MB size gate, gzipped it is 1.5 MB.
+//! raw it is 3.6 MB, which would take `colibri` near its 15 MB size gate, gzipped it is 1.1 MB.
 //! A `colibri` built without it says so and builds nothing; `--web-runner FILE` names a runner
 //! to use instead (a `colibri.wasm` just built from `crates/colibri-web`, or the pipeline's
 //! gzip file).
@@ -44,6 +44,9 @@ const EMBEDDED_RUNNER: Option<&[u8]> = Some(include_bytes!(env!("COLIBRI_WEB_RUN
 #[cfg(not(web_runner))]
 const EMBEDDED_RUNNER: Option<&[u8]> = None;
 
+/// What the page says of itself in a comment: a folder whose `index.html` has it is a web build's.
+const PAGE_MARKER: &str = "written by colibri build --web";
+
 /// The files of the folder, in the order they are moved into place (the page last).
 pub const FILES: [&str; 4] = ["app.pack", "colibri.wasm", "colibri.js", "index.html"];
 
@@ -70,6 +73,7 @@ pub fn build(options: &Options<'_>) -> ExitCode {
 fn index_html(title: &str) -> String {
     format!(
         r#"<!doctype html>
+<!-- {MARKER} -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -91,7 +95,8 @@ fn index_html(title: &str) -> String {
 </body>
 </html>
 "#,
-        escape_html(title)
+        escape_html(title),
+        MARKER = PAGE_MARKER
     )
 }
 
@@ -114,7 +119,7 @@ fn runner_wasm(given: Option<&Path>) -> Result<Vec<u8>, String> {
         None => {
             let Some(bytes) = EMBEDDED_RUNNER else {
                 return Err("this colibri was built without the web runner; build `crates/colibri-web` first \
-                     (`cargo build --release --target wasm32-unknown-unknown -p colibri-web`), \
+                     (`cargo build --profile web --target wasm32-unknown-unknown -p colibri-web`), \
                      then build colibri with `COLIBRI_WEB_RUNNER` set to the absolute path of the \
                      result (gzipped, `gzip -9n`), or pass `--web-runner FILE`"
                     .to_string());
@@ -151,8 +156,16 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
             out.display()
         )));
     }
-    let pack = make_pack(path, reads, &out.join(FILES[0]))?;
+    let pack = make_pack(path, reads, &out)?;
     refuse_to_overwrite_the_program(&out, &pack, path)?;
+    // A page that was not written by this command is somebody's own: it is not replaced.
+    let page = out.join("index.html");
+    if page.is_file() && !fs::read_to_string(&page).is_ok_and(|t| t.contains(PAGE_MARKER)) {
+        return Err(fail(format!(
+            "`{}` exists and is not a page written by `colibri build --web`: choose another folder with `-o`, or move it away",
+            page.display()
+        )));
+    }
     let html = index_html(&pack.name);
     let cannot = |e: std::io::Error| fail(format!("cannot write in `{}`: {e}", out.display()));
     fs::create_dir_all(&out).map_err(cannot)?;

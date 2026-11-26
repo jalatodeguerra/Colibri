@@ -112,7 +112,13 @@ impl<'a> Ctx<'a> {
     /// and the host sees [`Error::Panic`]. The Rust stack unwinds to the `Vm` (no panic message
     /// is printed), so state the host function needs afterwards must be set first.
     pub fn raise(&mut self, message: impl Into<String>) -> ! {
-        std::panic::resume_unwind(Box::new(RaisedPanic(message.into())))
+        let raised = RaisedPanic(message.into());
+        // Where nothing can unwind (the web: the module is built with `panic=abort`) the raise
+        // goes through the panic hook, so the host can say why the program stopped.
+        if cfg!(target_family = "wasm") {
+            std::panic::panic_any(raised)
+        }
+        std::panic::resume_unwind(Box::new(raised))
     }
 
     /// Runs `work` on a background thread and returns its result, **without blocking the
@@ -463,4 +469,10 @@ pub(crate) fn panic_error(core: &colibri_core::Core, info: PanicInfo) -> Error {
         stack,
         notes: info.notes,
     }
+}
+
+/// The message of a panic payload that [`Ctx::raise`] made, for a panic hook (the web runner's
+/// says why the page stopped).
+pub fn raised_message(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
+    payload.downcast_ref::<RaisedPanic>().map(|r| r.0.as_str())
 }

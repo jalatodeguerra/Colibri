@@ -485,8 +485,18 @@ pub fn collect(
         ));
     }
     let out = fs::canonicalize(out).ok();
+    // An output that is a folder inside the package (`colibri build --web`'s) is not part of it:
+    // what a build wrote there before is no asset, so a second build works with `assets = ["**"]`.
+    let skip_below = out.clone().filter(|o| {
+        o.is_dir() && fs::canonicalize(root).is_ok_and(|r| r != *o && !r.starts_with(o))
+    });
     let mut assets = Vec::new();
     for path in paths {
+        if let Some(dir) = &skip_below
+            && fs::canonicalize(root.join(&path)).is_ok_and(|p| p.starts_with(dir))
+        {
+            continue;
+        }
         if out.is_some() && fs::canonicalize(root.join(&path)).ok() == out {
             return Err(format!(
                 "the output is the asset `{path}`: choose another file with `-o`, or write it outside the assets"

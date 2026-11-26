@@ -82,13 +82,19 @@ async function runOne(module, dir, name) {
   });
   const problems = [];
   let result = null;
+  let lost = false;
   try {
     page.drain();
     result = await Promise.race([handle.finished, Promise.resolve(null)]);
   } catch (error) {
-    problems.push(`the runner was lost: ${error}`);
+    // A program that makes the module trap (a std function that refuses its arguments) ends it so.
+    if (sidecar(dir, name, "lost") === null) problems.push(`the runner was lost: ${error}`);
+    lost = true;
   }
-  if (result === null && problems.length === 0) {
+  if (sidecar(dir, name, "lost") !== null && !lost) {
+    problems.push("the instance was meant to be lost, and the program ended");
+  }
+  if (result === null && !lost && problems.length === 0) {
     problems.push("the program never ended: nothing was armed to run it again");
   }
   const expectedOut = readFileSync(join(dir, `${name}.out`), "utf8");
@@ -98,7 +104,7 @@ async function runOne(module, dir, name) {
   const exit = sidecar(dir, name, "exit");
   const wantState = exit === null ? "done" : "failed";
   const wantCode = exit === null ? 0 : Number(exit);
-  if (result && (result.state !== wantState || result.exitCode !== wantCode)) {
+  if (!lost && result && (result.state !== wantState || result.exitCode !== wantCode)) {
     problems.push(`ended ${result.state} with ${result.exitCode}, wanted ${wantState} with ${wantCode}`);
   }
   const err = sidecar(dir, name, "err");
