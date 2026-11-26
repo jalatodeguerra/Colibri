@@ -145,6 +145,15 @@ impl Gate {
 }
 
 const GATED: &str = r#"
+fn entry_alloc() -> int {
+    wait_over()
+    let mut xs: List[int] = []
+    for i in 0..200000 {
+        xs.push(i)
+    }
+    return xs.len()
+}
+
 fn hog(n: int) -> int {
     grab()
     let mut t = 0
@@ -217,6 +226,28 @@ fn a_workers_breach_does_not_fail_the_main_threads_entry() {
     );
     // And what the worker held is back: the count is the main thread's alone.
     assert!(vm.memory_used().unwrap() < 4 * MIB);
+}
+
+#[test]
+fn main_allocates_freely_while_a_worker_is_over_the_limit() {
+    let gate = Gate::new();
+    let mut vm = gated_vm(&gate, 8 * MIB);
+    let task = vm
+        .submit_portable("hog", vec![Portable::Int(20_000)])
+        .unwrap();
+    // The worker holds 9 MiB (over the limit) and is parked; the main entry builds a list of
+    // 3 MiB meanwhile, which is far under the limit for what the main thread itself holds.
+    let entry = vm.get_fn::<(), i64>("entry_alloc").unwrap();
+    let called = entry.call(&mut vm, ());
+    gate.go_tx.lock().unwrap().send(()).unwrap();
+    assert_eq!(
+        called.expect("main is not failed by a worker's memory"),
+        200_000
+    );
+    assert_eq!(
+        task.wait().unwrap_err(),
+        TaskFailure::MemoryLimit { limit: 8 * MIB }
+    );
 }
 
 #[test]
