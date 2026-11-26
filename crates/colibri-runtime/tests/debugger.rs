@@ -316,7 +316,7 @@ fn a_breakpoint_survives_a_hot_reload_patch_and_hits_the_new_body() {
         2,
         "the breakpoint hit in the new body: {seen:#?}"
     );
-    assert_eq!(seen[1].1[0], ("twice".to_string(), 2));
+    assert_eq!(seen[1].1[0], ("util.twice".to_string(), 2));
     assert_eq!(seen[1].2, ["n = 4"]);
 }
 
@@ -365,6 +365,6 @@ fn a_breakpoint_follows_its_file_across_a_restart_that_renumbers_the_files() {
     assert_eq!(call_f(&mut s.vm, "run", 2), 8);
     let seen = s.seen.borrow();
     assert_eq!(seen.len(), 2, "{seen:#?}");
-    assert_eq!(seen[1].1[0], ("b".to_string(), 2));
+    assert_eq!(seen[1].1[0], ("beta.b".to_string(), 2));
     assert_eq!(seen[1].2, ["n = 2"]);
 }
