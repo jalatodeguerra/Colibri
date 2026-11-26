@@ -143,7 +143,9 @@ impl Vm {
                 .find(|(m, _)| *m == module)
                 .map(|(_, text)| text.as_str());
             for line in own.lines().filter(|l| !l.trim().is_empty()) {
-                if line.starts_with("//") {
+                // The comment and the header (which carries the hash of what follows) are
+                // not declarations.
+                if line.starts_with("//") || line.starts_with("@interface(") {
                     continue;
                 }
                 if !main.is_some_and(|text| text.lines().any(|l| l == line)) {

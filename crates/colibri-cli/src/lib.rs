@@ -84,7 +84,27 @@ pub fn build_vm_with_std(
     builder: colibri_runtime::VmBuilder,
     config: colibri_std::StdConfig,
 ) -> colibri_runtime::Vm {
-    let mut vm = builder.build();
+    // A thread task's isolate gets the same library (with every capability the `Vm` was given):
+    // what it prints, reads and so on is the process's, like the main thread's.
+    let (args, temp_dir, local_offset, web) = (
+        config.args.clone(),
+        config.temp_dir.clone(),
+        config.local_offset,
+        config.web,
+    );
+    let mut vm = builder
+        .worker_setup(move |worker| {
+            let config = colibri_std::StdConfig {
+                args: args.clone(),
+                temp_dir: temp_dir.clone(),
+                local_offset,
+                web,
+                ..colibri_std::StdConfig::default()
+            };
+            colibri_std::install_with(worker, config)
+                .expect("the standard library registers into a new Vm");
+        })
+        .build();
     colibri_std::install_with(&mut vm, config)
         .expect("the standard library registers into a new Vm");
     vm
