@@ -141,13 +141,26 @@ impl FnCompiler<'_> {
             return;
         }
         let at = self.code_len() as u32;
+        let locals = self.locals_by_start.get_or_insert_with(|| {
+            let mut v: Vec<_> = self
+                .body
+                .locals
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (l.span.start, l.span.end, l.span.file, i as u32))
+                .collect();
+            v.sort_unstable();
+            v
+        });
+        // The locals declared inside the statement start between its start and its end.
+        let from = locals.partition_point(|l| l.0 < s.span.start);
         let mut ids = Vec::new();
-        for (i, local) in self.body.locals.iter().enumerate() {
-            let inside = local.span.file == s.span.file
-                && local.span.start >= s.span.start
-                && local.span.end <= s.span.end;
-            if inside {
-                ids.push((colibri_check::hir::LocalId(i as u32), at));
+        for &(start, end, file, i) in &locals[from..] {
+            if start > s.span.end {
+                break;
+            }
+            if file == s.span.file && end <= s.span.end {
+                ids.push((colibri_check::hir::LocalId(i), at));
             }
         }
         scope.live.extend(ids);
@@ -167,17 +180,14 @@ impl FnCompiler<'_> {
         if self.env.debug.is_none() || self.free {
             return;
         }
+        let mut live = std::collections::HashMap::new();
+        for &(id, pc) in &scope.live {
+            live.entry(id).or_insert(pc);
+        }
         let locals = b
             .locals
             .iter()
-            .map(|&l| {
-                let from = scope
-                    .live
-                    .iter()
-                    .find(|(id, _)| *id == l)
-                    .map_or(scope.start, |&(_, pc)| pc);
-                (l, from)
-            })
+            .map(|&l| (l, live.get(&l).copied().unwrap_or(scope.start)))
             .collect();
         self.scopes.push(crate::bytecode::ScopeInfo {
             start: scope.start,

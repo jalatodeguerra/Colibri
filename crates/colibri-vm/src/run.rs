@@ -1472,7 +1472,7 @@ impl Machine {
             start = 1;
         }
         self.core.budget.left -= i64::from(steps);
-        if fiber.visible_depth() >= self.max_depth || self.core.budget.left < 0 {
+        if self.core.budget.left < 0 || fiber.visible_depth() >= self.max_depth {
             return self.push_call_slow(fiber, callee, new_base, ret, start, caller, pc);
         }
         Self::push_frame(fiber, callee, new_base, ret, start);

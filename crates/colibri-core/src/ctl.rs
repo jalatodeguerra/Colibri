@@ -36,6 +36,9 @@ pub struct PanicInfo {
     pub notes: Vec<String>,
     /// The instruction budget ran out (EMBEDDING §5): the panic is not the program's own.
     pub budget: bool,
+    /// Set by a debugger that stopped at this panic (`colibri_vm::debug`): which one it was, so
+    /// that the panic is not reported again as it passes through further frames. `0` otherwise.
+    pub debug_serial: u64,
 }
 
 /// Evaluation outcomes the host can see: only panics and cancellation leave the engine.
@@ -49,6 +52,7 @@ pub fn into_panic(ctl: Ctl, fallback: Span) -> Box<PanicInfo> {
             stack: Vec::new(),
             notes: Vec::new(),
             budget: false,
+            debug_serial: 0,
         }),
     }
 }

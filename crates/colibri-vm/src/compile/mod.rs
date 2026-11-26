@@ -464,6 +464,9 @@ pub(crate) struct FnCompiler<'a> {
     /// Debug mode: the statement being counted is a lowering (a `while`'s `break`) and is not
     /// in the table.
     pub(crate) unlisted: bool,
+    /// Debug mode: the body's locals by where they start (span start, span end, file, index),
+    /// built when the first statement needs it.
+    pub(crate) locals_by_start: Option<Vec<(u32, u32, colibri_syntax::FileId, u32)>>,
     scopes: Vec<crate::bytecode::ScopeInfo>,
     /// The body is the prelude's own code: it takes no budget steps (the call that reaches it
     /// charges what the native built-in did, see `Op::CallHidden`).
@@ -509,6 +512,7 @@ impl<'a> FnCompiler<'a> {
             step_at: None,
             stmts: Vec::new(),
             unlisted: false,
+            locals_by_start: None,
             scopes: Vec::new(),
             free: colibri_check::is_prelude_span(body.span),
             failure: None,

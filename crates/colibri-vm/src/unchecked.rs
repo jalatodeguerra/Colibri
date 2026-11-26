@@ -62,8 +62,9 @@ impl Running {
         // (`Cell::set`, whole instructions, by the debugger's patching in `crate::debug`), and a
         // `Cell` may be written while shared references to it exist. The reference handed out
         // is a shared one to the slice, never a reference to an `Op`, so no `&Op` can see a
-        // half-written instruction: `Cell<Op>` is not `Sync` and the chunk is not `Send`
-        // (it is in an `Rc`), so no other thread can write while this one reads.
+        // half-written instruction: `Cell<Op>` is not `Sync`, and the chunk is only reachable
+        // through an `Rc`, which is not `Send`, so no other thread can hold a reference to these
+        // cells, and none can write while this one reads.
         #[allow(unsafe_code)]
         unsafe {
             &*self.ops

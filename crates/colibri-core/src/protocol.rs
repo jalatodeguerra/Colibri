@@ -21,6 +21,7 @@ pub trait Protocol: Engine {
             stack,
             notes: Vec::new(),
             budget: false,
+            debug_serial: 0,
         }))
     }
 

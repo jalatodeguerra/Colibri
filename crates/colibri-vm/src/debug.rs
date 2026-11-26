@@ -53,6 +53,9 @@ const SUMMARY_CHARS: usize = 120;
 /// How many children `debug_children` returns at most in one call.
 const MAX_CHILDREN: usize = 10_000;
 
+/// The message of the panic that `Resume::Terminate` raises: what ends the program.
+pub(crate) const TERMINATION: &str = "the program was ended by the debugger";
+
 /// Turns spans into what a debugger shows. The runtime implements it over its source map.
 pub trait Locator {
     /// The 1-based line a span starts on (`None` for a span with no source, the prelude's).
@@ -239,10 +242,10 @@ pub(crate) struct DebugState {
     pause: PauseHandle,
     handles: Vec<Handle>,
     /// A `Resume::Terminate` is unwinding the program: nothing stops it again.
-    terminating: bool,
-    /// The panic that was last reported, so that it is not reported again when it passes
-    /// through a native entry on its way out.
-    reported: Option<(usize, Span)>,
+    pub(crate) terminating: bool,
+    /// The serial number the next reported panic gets (`PanicInfo::debug_serial`), so that a panic
+    /// is reported once as it passes through a native entry on its way out.
+    next_serial: u64,
 }
 
 struct Bp {
@@ -448,7 +451,7 @@ impl Machine {
                     pause: PauseHandle::default(),
                     handles: Vec::new(),
                     terminating: false,
-                    reported: None,
+                    next_serial: 1,
                 }));
             }
             (false, true) => {
@@ -511,7 +514,10 @@ impl Machine {
         }
     }
 
-    /// Stop at a panic that nothing handles, before anything unwinds.
+    /// Stop at a panic before anything unwinds (before a `defer` runs), once. It is every fresh
+    /// panic, not only one that nothing will catch: whether a `join_result` is going to turn a
+    /// coroutine's panic into an `err` is not known where it is raised. Budget exhaustion, the
+    /// VM's refusals and a panic raised while another unwinds are not stops.
     pub fn debug_break_on_panic(&mut self, on: bool) {
         if let Some(d) = self.debug.as_mut() {
             d.break_on_panic = on;
@@ -724,7 +730,7 @@ impl Machine {
                     .frames
                     .last()
                     .map_or(Span::new(FileId(0), 0, 0), |f| f.span());
-                Err(self.panic(fiber, span, "the program was ended by the debugger"))
+                Err(self.panic(fiber, span, TERMINATION))
             }
             _ => Ok(()),
         }
@@ -862,7 +868,7 @@ impl Machine {
     }
 
     /// The hook of `Machine::catch`: a panic is about to unwind, and nothing has run yet.
-    pub(crate) fn debug_panic(&mut self, fiber: &mut VmFiber, ctl: &Ctl) {
+    pub(crate) fn debug_panic(&mut self, fiber: &mut VmFiber, ctl: &mut Ctl) {
         let Some(d) = self.debug.as_ref() else {
             return;
         };
@@ -873,23 +879,19 @@ impl Machine {
             return;
         };
         // Running out of budget is the host's doing, a refusal is the VM's, and a panic that
-        // is already unwinding (in a `defer`) is a note of the one that was reported.
+        // is already unwinding (in a `defer`) is a note of the one that was reported. One that
+        // has a serial number was reported already.
         if info.budget
+            || info.debug_serial != 0
             || info.message.starts_with(crate::unwind::REFUSAL)
             || !fiber.unwinding.is_empty()
         {
             return;
         }
-        let key = (
-            std::ptr::from_ref::<colibri_core::ctl::PanicInfo>(info) as usize,
-            info.span,
-        );
-        if d.reported == Some(key) {
-            return;
-        }
         let message = info.message.clone();
         if let Some(d) = self.debug.as_mut() {
-            d.reported = Some(key);
+            info.debug_serial = d.next_serial;
+            d.next_serial += 1;
         }
         // The debugger cannot fail the program here, only stop it; `Terminate` lets the panic go.
         let _ = self.debug_stop(fiber, Stop::Panic(message));
@@ -1262,11 +1264,11 @@ impl Machine {
             Value::List(l) => {
                 out.push('[');
                 let n = l.len();
-                for (i, p) in l.snapshot().iter().take(6).enumerate() {
+                for (i, p) in (0..n.min(6)).filter_map(|i| l.at(i)).enumerate() {
                     if i > 0 {
                         out.push_str(", ");
                     }
-                    self.summary(p, depth + 1, out);
+                    self.summary(&p, depth + 1, out);
                 }
                 if n > 6 {
                     let _ = write!(out, ", ... {n} items");
@@ -1276,7 +1278,7 @@ impl Machine {
             Value::Set(s) => {
                 out.push_str("Set([");
                 let n = s.len();
-                for (i, p) in s.snapshot().iter().take(6).enumerate() {
+                for (i, p) in set_items(s, 0, 6).iter().enumerate() {
                     if i > 0 {
                         out.push_str(", ");
                     }
@@ -1293,7 +1295,7 @@ impl Machine {
                     out.push_str("{:}");
                 } else {
                     out.push('{');
-                    for (i, (k, p)) in m.snapshot().iter().take(4).enumerate() {
+                    for (i, (k, p)) in map_entries(m, 0, 4).iter().enumerate() {
                         if i > 0 {
                             out.push_str(", ");
                         }
@@ -1462,19 +1464,13 @@ impl Machine {
             Value::List(l) => (start..start.saturating_add(count).min(l.len()))
                 .filter_map(|i| Some((format!("[{i}]"), l.at(i)?, None)))
                 .collect(),
-            Value::Set(s) => s
-                .snapshot()
+            Value::Set(s) => set_items(s, start, count)
                 .into_iter()
                 .enumerate()
-                .skip(start)
-                .take(count)
-                .map(|(i, p)| (format!("[{i}]"), p, None))
+                .map(|(i, p)| (format!("[{}]", start + i), p, None))
                 .collect(),
-            Value::Map(m) => m
-                .snapshot()
+            Value::Map(m) => map_entries(m, start, count)
                 .into_iter()
-                .skip(start)
-                .take(count)
                 .map(|(k, p)| (self.shown(&k), p, None))
                 .collect(),
             Value::Weak(w) => w
@@ -1490,6 +1486,36 @@ impl Machine {
             _ => Vec::new(),
         }
     }
+}
+
+/// `count` items of a set from the `start`th on, in order, without copying the rest.
+fn set_items(s: &colibri_core::heap::SetObj, start: usize, count: usize) -> Vec<Value> {
+    let (mut out, mut pos, mut seen) = (Vec::new(), 0, 0);
+    while out.len() < count {
+        let Some((v, next)) = s.next_item(pos) else {
+            break;
+        };
+        if seen >= start {
+            out.push(v);
+        }
+        (pos, seen) = (next, seen + 1);
+    }
+    out
+}
+
+/// `count` entries of a map from the `start`th on, in order, without copying the rest.
+fn map_entries(m: &colibri_core::heap::MapObj, start: usize, count: usize) -> Vec<(Value, Value)> {
+    let (mut out, mut pos, mut seen) = (Vec::new(), 0, 0);
+    while out.len() < count {
+        let Some((k, v, next)) = m.next_entry(pos) else {
+            break;
+        };
+        if seen >= start {
+            out.push((k, v));
+        }
+        (pos, seen) = (next, seen + 1);
+    }
+    out
 }
 
 /// Cuts a text at [`SUMMARY_CHARS`] characters.

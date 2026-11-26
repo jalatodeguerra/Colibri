@@ -38,7 +38,7 @@ impl Machine {
             || (self.refused && matches!(ctl, Ctl::Cancel));
         // A debugger that breaks on panics sees it here, with every frame as it was.
         if !skip_top && self.debug.is_some() {
-            self.debug_panic(fiber, &ctl);
+            self.debug_panic(fiber, &mut ctl);
         }
         loop {
             let frame = fiber.frames.last_mut().expect("a frame to unwind");

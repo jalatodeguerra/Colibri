@@ -381,7 +381,7 @@ fn debug_forced() -> bool {
     }
 }
 
-/// The debugger of `COLIBRI_TEST_DEBUG`: it only lets the program run.
+/// The debugger of `COLIBRI_TEST_DEBUG`: it only lets the program run, at every stop.
 struct Idle;
 
 impl colibri::debug::Debugger for Idle {
@@ -429,6 +429,9 @@ fn run_with(
     }
     if debug_forced() {
         vm.set_debugger(Box::new(Idle));
+        // Every panic of the goldens passes the hook of `Machine::catch`, which stops (and goes
+        // on at once) before anything unwinds.
+        vm.debug_break_on_panic(true);
     }
     colibri_std::install_with(&mut vm, hermetic_std(&temp.0))
         .expect("the standard library registers into a new Vm");

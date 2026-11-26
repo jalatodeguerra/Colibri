@@ -349,6 +349,7 @@ pub(crate) fn bare_panic(message: &str) -> Box<PanicInfo> {
         stack: Vec::new(),
         notes: Vec::new(),
         budget: false,
+        debug_serial: 0,
     })
 }
 
@@ -360,5 +361,6 @@ pub(crate) fn budget_panic() -> Ctl {
         stack: Vec::new(),
         notes: Vec::new(),
         budget: true,
+        debug_serial: 0,
     }))
 }

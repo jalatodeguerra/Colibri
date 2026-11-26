@@ -384,12 +384,18 @@ impl Machine {
             Err(ctl) => self.end_coroutine(fiber, Err(ctl)),
         };
         // A refusal ends the program, not just this coroutine: whatever resumed it raises it.
+        // The same goes for the end a debugger asked for (`Resume::Terminate`): it must not be
+        // caught by a `join_result` either. It ran its `defer`s already, and is not a `Drop` hook's
+        // panic, so it is not among them.
         if let Finish::Panicked(info) = &finish
-            && info.message.starts_with(crate::unwind::REFUSAL)
+            && let refusal = info.message.starts_with(crate::unwind::REFUSAL)
+            && (refusal || info.message.starts_with(crate::debug::TERMINATION))
             && let Some(id) = fiber.state.coro
         {
             let info = (**info).clone();
-            self.core.hook_panics.push(info.clone());
+            if refusal {
+                self.core.hook_panics.push(info.clone());
+            }
             self.pending_refusal = Some((id, info));
         }
         Resumed::Finished(finish)
@@ -415,6 +421,10 @@ impl Machine {
     /// to be raised to, so it is dropped (with its copy among the `Drop` panics), but the
     /// coroutine's own failure stays queued, so the next tick or event loop still reports it.
     pub(crate) fn discard_pending_refusal(&mut self) {
+        // A termination ends with the run it ended, too.
+        if let Some(d) = self.debug.as_mut() {
+            d.terminating = false;
+        }
         if self.pending_refusal.take().is_some() {
             self.core
                 .hook_panics

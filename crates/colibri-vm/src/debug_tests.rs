@@ -557,6 +557,37 @@ fn a_running_while_true_pauses_when_another_thread_asks() {
 }
 
 #[test]
+fn terminate_inside_a_coroutine_ends_the_program_whatever_joins_it() {
+    let src = "fn bad(i: int) -> int {
+    defer print(\"cleanup {i}\")
+    let x = i + 1
+    return x
+}
+fn main() {
+    defer print(\"main cleanup\")
+    for i in 0..4 {
+        let c: Coroutine[int] = go bad(i)
+        let r = c.join_result()
+        print(\"joined {i} {r.is_ok()}\")
+    }
+    print(\"end\")
+}
+";
+    // The breakpoint is in `bad`, which the first `go` runs. The debugger ends the program there:
+    // the coroutine's `defer` and `main`'s run, but nothing catches the end: not `join_result`,
+    // and no later stop happens. Break on panic stays on for what follows.
+    let mut setup = Setup::lines(&[3]);
+    setup.break_on_panic = true;
+    let run = run_debug(src, setup, |_, stop, _| {
+        assert!(matches!(stop, Stop::Breakpoint(_)), "{stop:?}");
+        Resume::Terminate
+    });
+    assert_eq!(run.seen.len(), 1, "{:#?}", run.seen);
+    assert_eq!(run.out, "cleanup 0\nmain cleanup\n");
+    assert!(run.panic.expect("ended").contains("ended by the debugger"));
+}
+
+#[test]
 fn a_breakpoint_on_a_while_line_hits_where_the_condition_is_checked() {
     let src = "fn main() {
     let mut i = 0
