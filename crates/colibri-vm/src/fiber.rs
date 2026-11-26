@@ -101,6 +101,9 @@ pub(crate) struct CoStart {
     /// The values the callee owns.
     pub values: Vec<Value>,
     pub span: Span,
+    /// The program's top-level statements, which a host starts as a coroutine
+    /// ([`crate::Machine::start_entry`]); then `callee` is not used.
+    pub script: Option<std::rc::Rc<crate::bytecode::Chunk>>,
 }
 
 /// The entry frame of a running coroutine: its parameters are released after the frame's own

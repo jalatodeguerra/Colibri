@@ -1,0 +1,11 @@
+// A wait longer than a timer can hold (2^31 ms, about 25 days) is armed in pieces: a delay that
+// `setTimeout` reads as a 32-bit number would fire at once, and the page would tick every
+// millisecond for the whole wait.
+// virtual-ms: 3000000000
+// web-max-ticks: 5
+fn main() {
+    wait(3000000.0)
+    print("done")
+}
+
+// expect: done

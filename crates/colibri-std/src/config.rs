@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::PathBuf;
+#[cfg(not(target_family = "wasm"))]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::rand::Rng;
@@ -22,15 +23,26 @@ pub trait Clock {
 }
 
 /// The machine's clocks. This is the default.
+///
+/// On the web (`target_family = "wasm"`) `Instant`, `SystemTime` and a sleeping thread are not
+/// there (they panic), so the clocks are the host's imports `host_now_real` (milliseconds on a
+/// monotonic clock, `performance.now()`) and `host_now_unix` (seconds since 1970, `Date.now()`),
+/// and `sleep` returns at once: nothing can block the page.
 #[derive(Debug)]
 pub struct SystemClock {
+    #[cfg(not(target_family = "wasm"))]
     start: Instant,
+    #[cfg(target_family = "wasm")]
+    start_ms: f64,
 }
 
 impl SystemClock {
     pub fn new() -> Self {
         SystemClock {
+            #[cfg(not(target_family = "wasm"))]
             start: Instant::now(),
+            #[cfg(target_family = "wasm")]
+            start_ms: web::now_real_ms(),
         }
     }
 }
@@ -41,6 +53,7 @@ impl Default for SystemClock {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Clock for SystemClock {
     fn monotonic_nanos(&mut self) -> u64 {
         u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX)
@@ -57,6 +70,77 @@ impl Clock for SystemClock {
         let wait =
             Duration::try_from_secs_f64(seconds).unwrap_or(Duration::from_secs(u64::MAX / 4));
         std::thread::sleep(wait);
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl Clock for SystemClock {
+    fn monotonic_nanos(&mut self) -> u64 {
+        ms_to_nanos(web::now_real_ms() - self.start_ms)
+    }
+
+    fn unix_seconds(&mut self) -> f64 {
+        web::now_unix_seconds()
+    }
+
+    fn sleep(&mut self, _seconds: f64) {}
+}
+
+/// Milliseconds as whole nanoseconds; a step back or a NaN is zero, and a huge value saturates.
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+fn ms_to_nanos(ms: f64) -> u64 {
+    if ms <= 0.0 {
+        0
+    } else {
+        (ms * 1_000_000.0) as u64
+    }
+}
+
+/// The seed of a generator that was not given one, from `fill`: a source of random bytes (the
+/// host's `crypto.getRandomValues` on the web).
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+fn seed_from(fill: fn(&mut [u8])) -> u64 {
+    let mut bytes = [0u8; 8];
+    fill(&mut bytes);
+    u64::from_le_bytes(bytes)
+}
+
+/// The seed of an unseeded generator: the host's random bytes on the web, whatever the clocks
+/// say now elsewhere.
+#[cfg(target_family = "wasm")]
+fn default_seed(_clock: &mut dyn Clock) -> u64 {
+    seed_from(web::fill_random)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn default_seed(clock: &mut dyn Clock) -> u64 {
+    clock.unix_seconds().to_bits() ^ clock.monotonic_nanos()
+}
+
+/// The imports of the web build (the module `env`), defined by the host page. `colibri-web`
+/// documents them next to the others.
+#[cfg(target_family = "wasm")]
+mod web {
+    #[link(wasm_import_module = "env")]
+    unsafe extern "C" {
+        fn host_now_real() -> f64;
+        fn host_now_unix() -> f64;
+        fn host_random(ptr: *mut u8, len: usize);
+    }
+
+    pub(super) fn now_real_ms() -> f64 {
+        // SAFETY: no arguments, no preconditions.
+        unsafe { host_now_real() }
+    }
+
+    pub(super) fn now_unix_seconds() -> f64 {
+        // SAFETY: no arguments, no preconditions.
+        unsafe { host_now_unix() }
+    }
+
+    pub(super) fn fill_random(bytes: &mut [u8]) {
+        // SAFETY: the host writes `len` bytes at `ptr`, which `bytes` owns.
+        unsafe { host_random(bytes.as_mut_ptr(), bytes.len()) }
     }
 }
 
@@ -158,6 +242,7 @@ impl Default for StdConfig {
 
 /// The configuration plus what the modules change while a program runs. It is the host state
 /// (`Vm::insert_state`) the functions reach through `Ctx::state_mut`.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) struct State {
     pub clock: Box<dyn Clock>,
     pub args: Vec<String>,
@@ -177,10 +262,7 @@ pub(crate) struct State {
 impl State {
     pub fn new(config: StdConfig) -> State {
         let mut clock = config.clock;
-        let seed = config.seed.unwrap_or_else(|| {
-            // Unseeded: whatever the clocks say now.
-            clock.unix_seconds().to_bits() ^ clock.monotonic_nanos()
-        });
+        let seed = config.seed.unwrap_or_else(|| default_seed(&mut *clock));
         State {
             clock,
             args: config.args,
@@ -193,5 +275,29 @@ impl State {
             rng: Rng::from_seed(seed),
             exit: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unseeded_generator_takes_its_seed_from_the_hosts_random_bytes() {
+        let seed = seed_from(|bytes| bytes.copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]));
+        assert_eq!(seed, 0x0807_0605_0403_0201);
+        // The host's bytes decide the seed: different bytes, different sequence.
+        let other = seed_from(|bytes| bytes.fill(9));
+        assert_ne!(
+            Rng::from_seed(seed).next_u64(),
+            Rng::from_seed(other).next_u64()
+        );
+    }
+
+    #[test]
+    fn milliseconds_become_nanoseconds_without_going_negative() {
+        assert_eq!(ms_to_nanos(1.5), 1_500_000);
+        assert_eq!(ms_to_nanos(-3.0), 0);
+        assert_eq!(ms_to_nanos(f64::NAN), 0);
     }
 }

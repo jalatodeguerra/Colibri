@@ -86,6 +86,9 @@ pub enum Error {
     AlreadyLoaded,
     /// No program is loaded.
     NotLoaded,
+    /// [`crate::Vm::start_entry`] on a program that was not loaded with
+    /// [`crate::Vm::load_from_deferred`], or whose entry was started already.
+    EntryNotPending,
     /// The function handle belongs to another `Vm`, or to a program that has since been
     /// replaced.
     StaleHandle,
@@ -226,6 +229,9 @@ impl fmt::Display for Error {
             ),
             Error::AlreadyLoaded => f.write_str("a program is already loaded in this Vm"),
             Error::NotLoaded => f.write_str("no program is loaded"),
+            Error::EntryNotPending => f.write_str(
+                "the entry cannot be started: the program was not loaded with `load_from_deferred`, or it was started already",
+            ),
             Error::StaleHandle => {
                 f.write_str("this function handle belongs to another Vm or to a replaced program")
             }

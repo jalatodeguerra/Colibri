@@ -1,0 +1,10 @@
+// A web program is built for the system `web`: `@when(os == "web")` is true.
+@when(os == "web")
+fn where_am_i() -> str => "web"
+
+@when(os != "web")
+fn where_am_i() -> str => "somewhere else"
+
+print(where_am_i())
+
+// expect: web

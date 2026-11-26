@@ -226,11 +226,11 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     // the text is unchanged.
     plain(
         m.register_fn_named("from_native", ["path"], |path: String| {
+            #[cfg(not(target_family = "wasm"))]
             if cfg!(windows) {
-                crate::fs::windows_script_path(&path)
-            } else {
-                path
+                return crate::fs::windows_script_path(&path);
             }
+            path
         }),
     )?;
     plain(

@@ -1,0 +1,15 @@
+// A script's top-level statements wait too: they run as a coroutine, so the page goes on.
+// virtual-ms: 1000
+fn ticker() {
+    wait(0.5)
+    print("tick")
+}
+
+print("start")
+go ticker()
+wait(1.0)
+print("after the wait")
+
+// expect: start
+// expect: tick
+// expect: after the wait

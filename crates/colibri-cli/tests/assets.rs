@@ -480,7 +480,7 @@ fn a_damaged_program_with_assets_is_a_clean_error() {
 
 /// A pack whose check sum is right but whose content is not what a build makes.
 fn forged(dir: &Dir, name: &str, edit: impl FnOnce(&mut colibri_lang::pack::Pack)) -> Out {
-    use colibri_lang::pack::{AssetData, PackAsset};
+    use colibri_lang::pack::{AssetData, PackAsset, PackDisk};
     let mut bytes = common::plain(fs::read(dir.path(&exe("good"))).unwrap());
     let unsigned_len = bytes.len() as u64;
     let mut pack = colibri_lang::pack::read_from(&mut std::io::Cursor::new(bytes.clone()))

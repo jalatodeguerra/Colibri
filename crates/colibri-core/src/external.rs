@@ -709,4 +709,34 @@ mod tests {
             .expect("result");
         assert_eq!(done, 7);
     }
+
+    /// A blocked wait that may not block (the web's) takes a result that is there and fails
+    /// when there is none, instead of waiting for a completer that nothing will run.
+    #[test]
+    fn a_blocked_wait_that_may_not_block_fails_instead_of_hanging() {
+        let mut sched = crate::sched::Scheduler::new();
+        // The completer stays alive, so a blocking receive would never return.
+        let (completer, pending) = sched.begin_completion::<i32>();
+        match sched.collect_with(pending, super::Waited::Blocked, false) {
+            Err(super::ExternalError::Failed(message)) => {
+                assert!(message.contains("without blocking"), "{message}");
+            }
+            other => panic!("expected a failure, got {:?}", other.err()),
+        }
+        // A completer that ended with no result is the usual error, not "cannot block".
+        drop(completer);
+        let (completer, pending) = sched.begin_completion::<i32>();
+        drop(completer);
+        match sched.collect_with(pending, super::Waited::Blocked, false) {
+            Err(super::ExternalError::Failed(message)) => {
+                assert!(!message.contains("without blocking"), "{message}");
+            }
+            other => panic!("expected a failure, got {:?}", other.err()),
+        }
+        // With the result already there, it is taken.
+        let (completer, pending) = sched.begin_completion::<i32>();
+        completer.complete(5);
+        let done = sched.collect_with(pending, super::Waited::Blocked, false);
+        assert_eq!(done.expect("the result that was there"), 5);
+    }
 }

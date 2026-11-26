@@ -1,6 +1,6 @@
 //! Entry points: running the module, calling a function from the host, shutting down.
 
-use colibri_check::hir::FnId;
+use colibri_check::hir::{Callee, FnId};
 use colibri_core::ctl::{Ctl, Eval, PanicInfo, into_panic};
 use colibri_core::prelude::*;
 use colibri_core::stack_position;
@@ -9,6 +9,15 @@ use colibri_core::value::Value;
 use crate::engine::{bare_panic, budget_panic};
 use crate::fiber::VmFiber;
 use crate::machine::{Machine, Slot};
+
+/// What [`Machine::start_entry`] starts as a coroutine.
+#[derive(Clone, Copy, Debug)]
+pub enum EntryPart {
+    /// The top-level statements of a script.
+    Script,
+    /// `fn main` (the function's id).
+    Main(FnId),
+}
 
 impl Machine {
     /// Runs the module-level initialisers in dependency order, then the top-level statements,
@@ -31,13 +40,87 @@ impl Machine {
         result
     }
 
-    fn run_module_parts(&mut self, fiber: &mut VmFiber) -> Result<(), Box<PanicInfo>> {
+    /// The first half of [`Machine::run_module`] and nothing else: the module-level
+    /// initialisers of the program's modules, in dependency order. The script's top-level
+    /// statements do not run (a host that cannot block starts them with
+    /// [`Machine::start_entry`]).
+    pub fn run_module_inits(&mut self, fiber: &mut VmFiber) -> Result<(), Box<PanicInfo>> {
+        let outermost = self.core.begin_entry();
+        if outermost {
+            self.refused = false;
+            self.discard_pending_refusal();
+            self.drain_root_drops();
+            // A time profile starts here, as in `run_module`.
+            if let Some(profiler) = self.profiler.as_mut() {
+                profiler.restart_clock(self.core.sched.idle_nanos());
+            }
+        }
+        let result = self.run_inits_only(fiber);
+        self.core.end_entry(outermost, true);
+        result
+    }
+
+    fn run_inits_only(&mut self, fiber: &mut VmFiber) -> Result<(), Box<PanicInfo>> {
         let inits: Vec<_> = self.inits[..self.script_from.min(self.inits.len())].to_vec();
         for g in inits {
             let value = self.run_global_init(fiber, g.0 as usize)?;
             let old = std::mem::replace(&mut self.globals[g.0 as usize], value);
             self.release(old);
         }
+        Ok(())
+    }
+
+    /// Whether the program has top-level statements (it is a script).
+    pub fn has_script(&self) -> bool {
+        self.script.is_some()
+    }
+
+    /// Starts a part of the program's entry as a coroutine, and gives the handle of that
+    /// coroutine (the caller owns it). It runs until its first pause before this returns. For a
+    /// host that cannot block on a `wait` (the web): the top-level statements and `main` then
+    /// pause like any coroutine, and the host's ticks resume them. The coroutine's panic is
+    /// reported by the tick after it, like any coroutine's.
+    pub fn start_entry(
+        &mut self,
+        fiber: &mut VmFiber,
+        part: EntryPart,
+    ) -> Result<Value, Box<PanicInfo>> {
+        let (callee, name, script) = match part {
+            EntryPart::Script => {
+                let slot = self
+                    .script
+                    .as_ref()
+                    .ok_or_else(|| bare_panic("internal error: the program has no script"))?;
+                let chunk = slot
+                    .chunk(None, &self.env)
+                    .map_err(|m| bare_panic(&format!("internal error: {m}")))?;
+                (Callee::Value, "<script>".to_string(), Some(chunk))
+            }
+            EntryPart::Main(f) => {
+                let name = self
+                    .fns
+                    .get(f.0 as usize)
+                    .map_or_else(|| "main".to_string(), |s| s.body.name.clone());
+                (Callee::Fn(f), name, None)
+            }
+        };
+        let span = colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0);
+        self.enter_from_host(fiber, false, |this, fiber| {
+            this.start_coroutine(
+                fiber,
+                callee,
+                Vec::new(),
+                Vec::new(),
+                name,
+                None,
+                span,
+                script,
+            )
+        })
+    }
+
+    fn run_module_parts(&mut self, fiber: &mut VmFiber) -> Result<(), Box<PanicInfo>> {
+        self.run_inits_only(fiber)?;
         if let Some(chunk) = self.script.as_ref().map(|s| s.chunk(None, &self.env)) {
             let chunk = chunk.map_err(|m| bare_panic(&format!("internal error: {m}")))?;
             let value = self.enter_from_host(fiber, false, |this, fiber| {

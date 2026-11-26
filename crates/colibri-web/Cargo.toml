@@ -1,0 +1,20 @@
+[package]
+name = "colibri-web"
+description = "The web runner: a Colibri program from a pack, driven by the page's own timers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# `cdylib` is the `colibri.wasm` the page loads; `rlib` lets the same code be tested natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+colibri-runtime = { path = "../colibri-runtime", default-features = false }
+colibri-std = { path = "../colibri-std" }
+colibri-pack = { path = "../colibri-pack" }
+
+[dev-dependencies]
+# Reads the `// expect:` lines of a golden test, which are what the web goldens must print.
+colibri-lang = { path = "../colibri-cli" }

@@ -13,6 +13,10 @@ colibri-runtime = { path = "../colibri-runtime", default-features = false }
 libm = "0.2.16"
 # Pattern matching for `regex` (no unsafe, no C).
 regex = { version = "1.12", default-features = false, features = ["std", "unicode", "perf"] }
+toml = { version = "1.2.1", default-features = false, features = ["parse", "preserve_order"] }
+# The modules that reach the machine (`http`, `net`, `process`, `fs`, `os`) are not in the web
+# build (`target_family = "wasm"`), and neither are the crates only they use.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 # A small blocking HTTP client for `http`: rustls with the bundled webpki roots, so a build
 # needs no system TLS library.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
@@ -27,7 +31,7 @@ socket2 = { version = "0.6", features = ["all"] }
 polling = "3"
 # `memmem` for `net.Conn.read_until`: a linear search for a delimiter of several bytes.
 memchr = "2.8.3"
-toml = { version = "1.2.1", default-features = false, features = ["parse", "preserve_order"] }
+
 # The machine's time zone for `datetime.now_local` (`localtime_r`), on Unix only.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

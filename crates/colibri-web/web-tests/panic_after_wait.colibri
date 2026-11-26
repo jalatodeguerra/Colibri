@@ -1,0 +1,10 @@
+// A panic after a wait is the program's failure: the message goes to the error stream.
+// web-exit: 101
+// web-stderr: boom
+fn main() {
+    print("before")
+    wait(0.5)
+    panic("boom")
+}
+
+// expect: before

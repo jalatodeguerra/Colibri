@@ -1,0 +1,10 @@
+// `main` that returns `err` after a wait fails with exit code 1.
+// web-exit: 1
+// web-stderr: config is broken
+fn main() -> Result[()] {
+    print("starting")
+    wait(0.25)
+    return err("config is broken")
+}
+
+// expect: starting

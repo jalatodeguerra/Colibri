@@ -13,6 +13,7 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
 }
 
 /// Why `bytes` are not UTF-8 text, naming the byte where they stop being valid.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn utf8_problem(e: &std::str::Utf8Error) -> String {
     let at = e.valid_up_to();
     match e.error_len() {

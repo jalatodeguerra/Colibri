@@ -19,6 +19,10 @@ use crate::fiber::FiberState;
 use crate::heap::ClassObj;
 use crate::value::Value;
 
+/// Why a wait that cannot block fails (the web: the page's thread must never block).
+const NO_BLOCKING: &str =
+    "nothing can complete this background operation without blocking the thread";
+
 /// The default size of the native stack of one coroutine.
 pub(crate) const DEFAULT_COROUTINE_STACK: usize = 16 * 1024 * 1024;
 
@@ -399,15 +403,43 @@ impl Scheduler {
     }
 
     /// The result of `pending` once the engine's wait has ended with `waited`.
+    ///
+    /// A [`Waited::Blocked`] wait blocks this thread, except on the web, where the only thread
+    /// is the page's and nothing else could complete the operation: see
+    /// [`Scheduler::collect_with`].
     pub fn collect<R>(&mut self, pending: Pending<R>, waited: Waited) -> Result<R, ExternalError> {
+        self.collect_with(pending, waited, !cfg!(target_family = "wasm"))
+    }
+
+    /// [`Scheduler::collect`], where `may_block` says whether a blocked wait may block the
+    /// thread. When it may not, a result that is already there is taken, and otherwise the wait
+    /// fails with an error (it would never end).
+    pub fn collect_with<R>(
+        &mut self,
+        pending: Pending<R>,
+        waited: Waited,
+        may_block: bool,
+    ) -> Result<R, ExternalError> {
         match waited {
             Waited::Blocked => {
                 // Nothing could run meanwhile: block this thread until the result is there.
                 // Every end of a completer sends or drops the result's sender, so this does not
                 // hang.
-                let blocked = pending.rx.recv();
+                let blocked = if may_block {
+                    pending.rx.recv().map_err(|_| ())
+                } else {
+                    match pending.rx.try_recv() {
+                        Ok(outcome) => Ok(outcome),
+                        // The completer ended without a result: the usual "no result" error.
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(()),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            self.ext.forget(pending.op);
+                            return Err(ExternalError::Failed(NO_BLOCKING.to_string()));
+                        }
+                    }
+                };
                 self.ext.forget(pending.op);
-                unwrap_outcome(blocked.map_err(|_| ()))
+                unwrap_outcome(blocked)
             }
             Waited::Finished => unwrap_outcome(pending.rx.try_recv().map_err(|_| ())),
         }

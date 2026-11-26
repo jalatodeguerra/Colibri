@@ -1,0 +1,11 @@
+// Recursion that uses the engine's own stack must end in a panic, never in a trap of the module.
+// web-exit: 101
+// web-stderr: stack overflow
+fn down(n: int) -> int {
+    let r = [n].map(fn(x) => down(x + 1))
+    return r[0]
+}
+
+fn main() {
+    print(down(0))
+}

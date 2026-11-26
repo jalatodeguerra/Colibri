@@ -36,7 +36,34 @@ jobs:
       - run: >-
           cargo clippy --target wasm32-unknown-unknown --no-default-features
           -p colibri-syntax -p colibri-check -p colibri-core -p colibri-vm -p colibri-runtime
+          -p colibri-std -p colibri-pack -p colibri-web
           -- -D warnings
+
+  # The web runner (`colibri.wasm`, `colibri.js`): built for the web and run in node, on a fake
+  # `requestAnimationFrame` and `setTimeout` with a virtual clock, with golden programs from
+  # packs. `crates/colibri-web/js/test/run.mjs` says what it checks.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --release --target wasm32-unknown-unknown -p colibri-web
+      - name: Size of colibri.wasm
+        run: |
+          size=$(stat -c %s target/wasm32-unknown-unknown/release/colibri_web.wasm)
+          echo "colibri.wasm: $size bytes"
+      - name: Unit tests of colibri.js
+        run: node crates/colibri-web/js/test/unit.mjs
+      - name: Packs of the golden programs
+        run: cargo run -p colibri-web --example make_packs -- web-packs
+      - name: Run them with colibri.js in node
+        run: node crates/colibri-web/js/test/run.mjs target/wasm32-unknown-unknown/release/colibri_web.wasm web-packs
 
   test:
     strategy:

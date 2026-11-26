@@ -1,0 +1,11 @@
+// `main` waits for a signal that nobody can emit: on a page nothing else could, so it fails.
+// web-exit: 101
+// web-stderr: cannot happen
+fn main() {
+    let s = Signal()
+    print("waiting")
+    wait_for(s)
+    print("never")
+}
+
+// expect: waiting

@@ -236,6 +236,7 @@ impl Machine {
             name,
             group,
             span,
+            None,
         );
         if let Some(v) = group_value {
             self.release(v);
@@ -247,7 +248,7 @@ impl Machine {
     /// Makes the coroutine of a `go`: its handle, its fiber in the slab, its entry in the
     /// scheduler; the first run shares the starter's instruction budget.
     #[allow(clippy::too_many_arguments)]
-    fn start_coroutine(
+    pub(crate) fn start_coroutine(
         &mut self,
         fiber: &mut VmFiber,
         callee: Callee,
@@ -256,6 +257,7 @@ impl Machine {
         name: String,
         group: Option<u64>,
         span: Span,
+        script: Option<Rc<Chunk>>,
     ) -> Eval {
         let id = self.core.sched.alloc_id();
         let mut fields = vec![
@@ -288,6 +290,7 @@ impl Machine {
             type_args,
             values,
             span,
+            script,
         }));
         let slot = self.fibers.insert(co);
         self.core
@@ -437,7 +440,11 @@ impl Machine {
             type_args,
             mut values,
             span,
+            script,
         } = start;
+        if let Some(chunk) = script {
+            return self.begin_chunk(fiber, chunk, values, None, None);
+        }
         match callee {
             Callee::Fn(id) => self.begin_fn(fiber, id, values, None, None, span),
             Callee::Host(id) => {
