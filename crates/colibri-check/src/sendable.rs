@@ -231,7 +231,10 @@ impl Checker<'_> {
                 }
                 // A type that holds itself (a list of its own kind) is looked at once, and one
                 // that keeps growing is looked at up to a size.
-                if done.contains(ty) || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE {
+                if done.contains(ty)
+                    || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE
+                    || self.out_of_stack()
+                {
                     return Ok(());
                 }
                 done.push(ty.clone());
@@ -336,7 +339,10 @@ impl Checker<'_> {
                 let Some(def) = self.types.get(id.0 as usize) else {
                     return false;
                 };
-                if done.contains(ty) || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE {
+                if done.contains(ty)
+                    || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE
+                    || self.out_of_stack()
+                {
                     return false;
                 }
                 done.push(ty.clone());
