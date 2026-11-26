@@ -187,6 +187,7 @@ pub use colibri_core::external::CancelToken;
 #[doc(hidden)]
 pub use colibri_core::external::Completer;
 pub use colibri_core::leaks::Leak;
+pub use colibri_core::mem::CountingAlloc;
 pub use colibri_syntax::{Diagnostic, Severity, SourceMap, Span};
 #[doc(hidden)]
 pub use colibri_vm::{Profile, ProfileSample, ProfileWeight, RcLine, RcProfile};

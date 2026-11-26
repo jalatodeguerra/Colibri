@@ -253,6 +253,7 @@ impl Core {
         let outermost = self.budget.depth == 0;
         if outermost {
             self.budget.arm(self.safepoints.progress);
+            self.mem.enter();
         }
         self.budget.depth += 1;
         outermost
@@ -268,7 +269,25 @@ impl Core {
             }
             self.close_budget();
             self.budget.idle();
+            self.mem.leave();
         }
+    }
+
+    /// Bytes this engine's entries hold (allocated under its account and not freed), or `None`
+    /// when the counting allocator is not installed.
+    pub fn memory_used(&self) -> Option<u64> {
+        self.mem.used()
+    }
+
+    /// Sets the memory limit in bytes (`None` for none). The allocator only raises a flag past
+    /// it; the safepoint that acts on the flag is the enforcement of `memory_limit`.
+    pub fn set_memory_limit(&mut self, limit: Option<u64>) {
+        self.mem.set_limit(limit);
+    }
+
+    /// Whether the account went past its limit since the flag was last cleared.
+    pub fn memory_over(&self) -> bool {
+        self.mem.over()
     }
 }
 

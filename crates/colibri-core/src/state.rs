@@ -59,6 +59,9 @@ pub struct Core {
     /// The worklist of the last `release`, kept empty for the next one so that releasing a
     /// value with children does not allocate one every time.
     pub release_work: Vec<crate::value::Value>,
+    /// The memory account of this engine: what its entries allocate is charged to it, when the
+    /// counting allocator is installed (ARCHITECTURE §35).
+    pub mem: crate::mem::MemAccount,
 }
 
 impl Core {
@@ -91,6 +94,7 @@ impl Core {
             sched: Scheduler::new(),
             none: Value::option(None),
             release_work: Vec::new(),
+            mem: crate::mem::MemAccount::new(),
         }
     }
 

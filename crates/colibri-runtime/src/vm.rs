@@ -1393,6 +1393,26 @@ impl Vm {
         self.engine.core().steps_used()
     }
 
+    /// The bytes this `Vm`'s entries hold: what scripts and the host functions they call
+    /// allocated during an entry and has not been freed yet, with a 16-byte prefix for each
+    /// allocation. `None` unless the program installed [`crate::CountingAlloc`] as its global
+    /// allocator, which is what makes the count possible.
+    ///
+    /// A value counts against the `Vm` that made it, wherever and whenever it is dropped, so the
+    /// figure falls when the value dies even outside an entry. What the host allocated outside an
+    /// entry is not counted, and neither is the `Vm`'s own bookkeeping made before its first entry.
+    pub fn memory_used(&self) -> Option<u64> {
+        self.engine.core().memory_used()
+    }
+
+    /// Sets the byte limit of this `Vm`'s account. Only the flag the allocator raises is
+    /// reachable from here: enforcement and the public setters come with `memory_limit`.
+    #[allow(dead_code)] // The builder and `set_memory_limit` of the enforcement step call it.
+    pub(crate) fn set_memory_account_limit(&mut self, limit: Option<u64>) {
+        colibri_core::mem::require_installed("a memory limit");
+        self.engine.core_mut().set_memory_limit(limit);
+    }
+
     // ---- loading and running ----
 
     /// Reads, checks and runs a script file: module-level values are initialised, then its
@@ -2741,5 +2761,27 @@ impl HostModule<'_> {
     pub fn verify_interface(&self, path: impl AsRef<Path>) -> Result<(), Error> {
         self.vm
             .verify_text(path.as_ref(), &self.vm.rendered_module(&self.name))
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    /// This test binary does not install the counting allocator, which is what the check that
+    /// the memory-limit builder will make reports.
+    #[test]
+    fn the_limit_setter_refuses_without_the_allocator() {
+        let mut vm = Vm::builder().build();
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            vm.set_memory_account_limit(Some(1 << 20));
+        }))
+        .expect_err("no allocator, so the setter panics");
+        let text = err.downcast_ref::<String>().expect("a formatted message");
+        assert!(
+            text.starts_with("a memory limit needs the counting allocator"),
+            "{text}"
+        );
+        assert_eq!(vm.memory_used(), None);
     }
 }
