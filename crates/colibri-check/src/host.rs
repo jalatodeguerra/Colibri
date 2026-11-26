@@ -104,6 +104,9 @@ pub struct HostEnv {
     pub(crate) modules: Vec<HostModule>,
     granted: BTreeSet<String>,
     all_granted: bool,
+    /// The program is for a page (`os == "web"`): `task.run` and `task.tick` from `main` are
+    /// refused with their own messages.
+    web: bool,
 }
 
 impl HostEnv {
@@ -125,6 +128,18 @@ impl HostEnv {
         self.modules.extend(other.modules);
         self.granted.extend(other.granted);
         self.all_granted |= other.all_granted;
+        self.web |= other.web;
+    }
+
+    /// Says whether the program is for a web build, where a page has one thread and `main` is a
+    /// coroutine (`BuildCfg::os` is `"web"`).
+    pub fn set_web(&mut self, web: bool) {
+        self.web = web;
+    }
+
+    /// Whether the program is for a web build.
+    pub fn is_web(&self) -> bool {
+        self.web
     }
 
     /// Grants a capability by its interface name (`fs`, `os`, `net`, `ffi`).

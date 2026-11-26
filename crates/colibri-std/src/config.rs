@@ -117,6 +117,24 @@ fn default_seed(clock: &mut dyn Clock) -> u64 {
     clock.unix_seconds().to_bits() ^ clock.monotonic_nanos()
 }
 
+/// The offset of the page's time zone at `unix` (whole seconds), in seconds east of UTC, from what
+/// the host said: a number of seconds, or anything else (NaN, infinity, a day or more) for "UTC".
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+pub(crate) fn offset_from_host(seconds: f64) -> i64 {
+    // A time zone offset is under a day (the largest in use is 14 hours).
+    if seconds.is_finite() && seconds.abs() < 86_400.0 {
+        seconds.round() as i64
+    } else {
+        0
+    }
+}
+
+/// The local time zone's offset at `unix`, as the page says (`host_utc_offset`).
+#[cfg(target_family = "wasm")]
+pub(crate) fn host_offset(unix: i64) -> i64 {
+    offset_from_host(web::utc_offset_seconds(unix as f64))
+}
+
 /// The imports of the web build (the module `env`), defined by the host page. `colibri-web`
 /// documents them next to the others.
 #[cfg(target_family = "wasm")]
@@ -125,7 +143,13 @@ mod web {
     unsafe extern "C" {
         fn host_now_real() -> f64;
         fn host_now_unix() -> f64;
+        fn host_utc_offset(unix: f64) -> f64;
         fn host_random(ptr: *mut u8, len: usize);
+    }
+
+    pub(super) fn utc_offset_seconds(unix: f64) -> f64 {
+        // SAFETY: a number in, a number out; no preconditions.
+        unsafe { host_utc_offset(unix) }
     }
 
     pub(super) fn now_real_ms() -> f64 {
@@ -223,6 +247,10 @@ pub struct StdConfig {
     /// Where `assets.read` and friends find the program's assets; none if `None` (every read
     /// is `assets.Error.NotFound`).
     pub assets: Option<Box<dyn crate::AssetSource>>,
+    /// The library of a web build: the functions a page cannot have are not registered
+    /// (`time.sleep`). True by default on the web target (`target_family = "wasm"`), false
+    /// elsewhere; `colibri build --web` checks a program against the interface it gives.
+    pub web: bool,
 }
 
 impl Default for StdConfig {
@@ -236,6 +264,7 @@ impl Default for StdConfig {
             stdin: None,
             local_offset: None,
             assets: None,
+            web: cfg!(target_family = "wasm"),
         }
     }
 }
@@ -253,6 +282,7 @@ pub(crate) struct State {
     pub stdin: Option<Box<dyn BufRead>>,
     pub local_offset: Option<i32>,
     pub assets: Option<Box<dyn crate::AssetSource>>,
+    pub web: bool,
     /// The generator behind the free functions of `rand`.
     pub rng: Rng,
     /// The code of `os.exit`, once called.
@@ -272,6 +302,7 @@ impl State {
             stdin: config.stdin,
             local_offset: config.local_offset,
             assets: config.assets,
+            web: config.web,
             rng: Rng::from_seed(seed),
             exit: None,
         }
@@ -292,6 +323,16 @@ mod tests {
             Rng::from_seed(seed).next_u64(),
             Rng::from_seed(other).next_u64()
         );
+    }
+
+    #[test]
+    fn the_hosts_time_zone_offset_is_whole_seconds_within_a_day_or_utc() {
+        assert_eq!(offset_from_host(3600.0), 3600);
+        assert_eq!(offset_from_host(-19_800.0), -19_800);
+        assert_eq!(offset_from_host(12_345.6), 12_346);
+        for bad in [f64::NAN, f64::INFINITY, 86_400.0, -1e12] {
+            assert_eq!(offset_from_host(bad), 0, "{bad}");
+        }
     }
 
     #[test]

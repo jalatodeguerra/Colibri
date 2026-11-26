@@ -149,6 +149,15 @@ impl Loaded {
 /// a bare "no module". (`import test` cannot be written at all: `test` is a keyword.)
 pub const LATER_STD_MODULES: &[(&str, &str)] = &[("task", "does not exist yet")];
 
+/// The standard library modules a web build (`os == "web"`) does not have: they reach the
+/// machine, which a page cannot (files, the environment, processes, the network and standard
+/// input; `httpd` is a server on `net`). An import of one is the error "`fs` is not available in
+/// a web build", and the web runner does not register them.
+pub const WEB_UNAVAILABLE_STD: &[&str] = &["io", "fs", "os", "http", "process", "net", "httpd"];
+
+/// The `os` of a build for a page (`BuildCfg::os`).
+pub const WEB_OS: &str = "web";
+
 /// Names of modules people expect from other languages, with what to do instead. `import
 /// collections` is "no module", and the hint says why there is none.
 pub const MISSING_STD_HINTS: &[(&str, &str)] = &[(

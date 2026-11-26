@@ -1252,6 +1252,7 @@ impl Vm {
         for cap in self.caps.iter() {
             env.grant(cap.name());
         }
+        env.set_web(self.cfg.os == colibri_check::package::WEB_OS);
         Ok(env)
     }
 

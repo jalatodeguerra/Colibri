@@ -11,7 +11,8 @@
 //
 // Everything the loop touches can be injected, so that a test under node drives it with a fake
 // clock: `fetch`, `requestAnimationFrame`, `cancelAnimationFrame`, `setTimeout`, `clearTimeout`,
-// `now` (milliseconds, monotonic), `nowUnix` (seconds since 1970) and `random` (fills a Uint8Array).
+// `now` (milliseconds, monotonic), `nowUnix` (seconds since 1970), `utcOffset` (the time zone at a
+// unix time, in seconds east of UTC) and `random` (fills a Uint8Array).
 //
 // Exports: `run(options)`, `runInPage(options)`, `STATE` and `FRAME_MS`.
 
@@ -76,6 +77,13 @@ export function decoderFor(sink) {
 /** The longest delay `setTimeout` takes: a larger one is read as a 32-bit number and fires at once. */
 export const MAX_TIMER_MS = 2 ** 31 - 1;
 
+/** The default `utcOffset`: the page's time zone at that instant (it changes with daylight saving). */
+export function defaultUtcOffset(unixSeconds) {
+  const minutesWest = new Date(unixSeconds * 1000).getTimezoneOffset();
+  // An instant `Date` cannot represent gives NaN, which the module reads as UTC.
+  return 0 - minutesWest * 60;
+}
+
 /** The default `random`: `crypto.getRandomValues` in chunks (it takes at most 65536 bytes). */
 function defaultRandom(bytes) {
   for (let at = 0; at < bytes.length; at += 65536) {
@@ -92,7 +100,7 @@ function defaultRandom(bytes) {
  * - `stdout`, `stderr`: a function that takes text, or an element (its `textContent` grows). The
  *   error stream also goes to `console.error`, unless `console` is `null`.
  * - `fetch`, `requestAnimationFrame`, `cancelAnimationFrame`, `setTimeout`, `clearTimeout`, `now`,
- *   `nowUnix`, `random`, `console`: what the page has, replaced by a test.
+ *   `nowUnix`, `utcOffset`, `random`, `console`: what the page has, replaced by a test.
  * - `onState(name)`: called when the program starts and when it ends.
  *
  * Resolves, when the program is over, to `{ state: "done" | "failed", exitCode }`. Rejects when
@@ -114,6 +122,7 @@ export async function start(options) {
   const clearTimer = options.clearTimeout ?? g.clearTimeout.bind(g);
   const now = options.now ?? (() => g.performance.now());
   const nowUnix = options.nowUnix ?? (() => Date.now() / 1000);
+  const utcOffset = options.utcOffset ?? defaultUtcOffset;
   const random = options.random ?? defaultRandom;
   const con = options.console === undefined ? g.console : options.console;
   const outText = decoderFor(textSink(options.stdout));
@@ -135,6 +144,7 @@ export async function start(options) {
       host_write: (fd, ptr, len) => (fd === 2 ? errText : outText)(view(ptr, len)),
       host_now_real: () => now(),
       host_now_unix: () => nowUnix(),
+      host_utc_offset: (unix) => utcOffset(unix),
       host_random: (ptr, len) => random(view(ptr, len)),
     },
   };

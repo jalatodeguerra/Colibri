@@ -6,6 +6,7 @@ use crate::config::State;
 use crate::{needs, plain};
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
+    let web = vm.state_mut::<State>().is_some_and(|s| s.web);
     let mut m = vm.std_module("time");
     // Seconds since the program started, as a float: `dt = time.now() - last` is a frame time.
     plain(m.register_fn_named("now", [], |cx: &mut Ctx| {
@@ -26,18 +27,22 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
                 .map_or(0.0, |s| s.clock.unix_seconds())
         }),
     )?;
-    needs(
-        Cap::Os,
-        m.register_fn_named("sleep", ["seconds"], |cx: &mut Ctx, seconds: f64| {
-            if !seconds.is_finite() || seconds < 0.0 {
-                cx.raise(format!(
-                    "time.sleep: {seconds} is not a number of seconds to wait (it must be finite and not negative)"
-                ));
-            }
-            if let Some(state) = cx.state_mut::<State>() {
-                state.clock.sleep(seconds);
-            }
-        }),
-    )?;
+    // A page has one thread, and a sleep would hold up everything on it: a web build has no
+    // `time.sleep` (`wait(seconds)` pauses a coroutine without blocking the page).
+    if !web {
+        needs(
+            Cap::Os,
+            m.register_fn_named("sleep", ["seconds"], |cx: &mut Ctx, seconds: f64| {
+                if !seconds.is_finite() || seconds < 0.0 {
+                    cx.raise(format!(
+                        "time.sleep: {seconds} is not a number of seconds to wait (it must be finite and not negative)"
+                    ));
+                }
+                if let Some(state) = cx.state_mut::<State>() {
+                    state.clock.sleep(seconds);
+                }
+            }),
+        )?;
+    }
     Ok(())
 }

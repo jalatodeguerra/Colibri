@@ -16,7 +16,8 @@ use super::sync::inside;
 use super::toml;
 use super::{
     Dropped, DroppedKind, ImportTarget, LATER_STD_MODULES, LIB_FILE, Loaded, MAIN_FILE,
-    MISSING_STD_HINTS, ModuleMeta, PackageNode, SOURCE_EXT, std_module,
+    MISSING_STD_HINTS, ModuleMeta, PackageNode, SOURCE_EXT, WEB_OS, WEB_UNAVAILABLE_STD,
+    std_module,
 };
 
 /// The manifest's file name.
@@ -948,6 +949,7 @@ impl<'a> Loader<'a> {
             if let Some(name) = self.std_source_name(path) {
                 out.push(Candidate::StdSource(name));
             }
+            out.retain(|c| !self.left_out_of_web(c));
             return out;
         }
         // 1. A file of this tree.
@@ -987,7 +989,20 @@ impl<'a> Loader<'a> {
         if let Some(name) = self.std_source_name(path) {
             out.push(Candidate::StdSource(name));
         }
+        out.retain(|c| !self.left_out_of_web(c));
         out
+    }
+
+    /// Whether the candidate is a standard module that a web build does not have (and so is
+    /// not a candidate there).
+    fn left_out_of_web(&self, candidate: &Candidate) -> bool {
+        let (Candidate::Std(name) | Candidate::StdSource(name)) = candidate else {
+            return false;
+        };
+        self.cfg.os == WEB_OS
+            && name
+                .strip_prefix(crate::host::STD_PREFIX)
+                .is_some_and(|short| WEB_UNAVAILABLE_STD.contains(&short))
     }
 
     /// The full name of the standard module written in Colibri that `path` names (`vec` and
@@ -1132,6 +1147,18 @@ impl<'a> Loader<'a> {
             [name] => Some(*name),
             _ => None,
         };
+        if let Some(name) = std_name
+            && self.cfg.os == WEB_OS
+            && WEB_UNAVAILABLE_STD.contains(&name)
+            && self.candidates(tree, names).is_empty()
+        {
+            let diag = Diagnostic::error(format!("`{name}` is not available in a web build"), span)
+                .with_hint(
+                    "a page cannot reach the machine: there are no files, environment, processes, network or standard input (`print` writes to the page)",
+                );
+            self.diags.push(diag);
+            return;
+        }
         if let Some(name) = std_name
             && let Some((_, why)) = LATER_STD_MODULES.iter().find(|(n, _)| *n == name)
         {

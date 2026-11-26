@@ -276,6 +276,7 @@ dependencies = [
 name = "colibri-std"
 version = "0.1.0"
 dependencies = [
+ "colibri-pack",
  "colibri-runtime",
  "colibri-syntax",
  "libc",

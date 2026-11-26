@@ -683,8 +683,14 @@ fn system_offset(unix: i64) -> i64 {
     }
 }
 
+/// On the web the page knows the time zone (`host_utc_offset`, from `Date`).
+#[cfg(target_family = "wasm")]
+fn system_offset(unix: i64) -> i64 {
+    crate::config::host_offset(unix)
+}
+
 /// Without a way to ask the machine, local time is UTC.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, target_family = "wasm")))]
 fn system_offset(_unix: i64) -> i64 {
     0
 }

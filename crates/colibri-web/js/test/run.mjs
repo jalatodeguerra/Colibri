@@ -75,6 +75,8 @@ async function runOne(module, dir, name) {
     clearTimeout: page.clearTimeout,
     now: () => page.now,
     nowUnix: () => 1_700_000_000 + page.now / 1000,
+    // +05:30 until 1700000100 s, then -05:00 (the offset is asked for each instant).
+    utcOffset: (unix) => (unix < 1_700_000_100 ? 19_800 : -18_000),
     // What the programs that check the seams expect (`web-tests/host_seams.colibri`).
     random: (bytes) => bytes.fill(0xa5),
   });

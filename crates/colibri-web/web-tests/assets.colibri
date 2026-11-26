@@ -1,0 +1,27 @@
+// The assets of a pack are read from its bytes in memory, and answer as they do natively.
+// web-asset: greeting.txt = hello from the pack
+// web-asset: data/numbers.txt = 1 2 3
+// web-asset: data/more/deep.txt = deep
+import assets
+
+fn main() {
+    print(assets.read("greeting.txt").expect("asset"))
+    print(assets.list("").expect("asset"))
+    print(assets.list("data").expect("asset"))
+    print(assets.read_bytes("data/numbers.txt").expect("asset").len())
+    match assets.read("nothing.txt") {
+        ok(_) => print("found")
+        err(e) => print("missing: {e}")
+    }
+    match assets.read("../greeting.txt") {
+        ok(_) => print("found")
+        err(e) => print("refused: {e}")
+    }
+}
+
+// expect: hello from the pack
+// expect: ["data/", "greeting.txt"]
+// expect: ["more/", "numbers.txt"]
+// expect: 5
+// expect: missing: cannot read asset `nothing.txt`: not an asset of this program: `[build] assets` in `colibri.toml` lists the files a program can read
+// expect: refused: cannot read asset `../greeting.txt`: the path leaves the package folder with `..`
