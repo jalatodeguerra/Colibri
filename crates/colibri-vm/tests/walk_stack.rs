@@ -17,10 +17,10 @@ fn the_receiver_has_more_room_than_the_sender_and_both_fit_the_stack() {
         WalkRole::Receiver.budget(),
         SENDER_WALK_BUDGET + RECEIVER_EXTRA_BUDGET
     );
-    assert!(RECEIVER_EXTRA_BUDGET >= 64 * 1024);
+    assert!(WalkRole::Receiver.budget() - WalkRole::Sender.budget() >= 64 * 1024);
     // What is left of the stack under the walk is more than the extra, so the receiver's budget
     // is a real limit before the stack runs out.
-    assert!(WalkRole::Receiver.budget() + RECEIVER_EXTRA_BUDGET < WALK_STACK);
+    assert!(WalkRole::Receiver.budget() + WalkRole::Receiver.budget() / 8 < WALK_STACK);
 }
 
 #[test]

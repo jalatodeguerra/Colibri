@@ -88,7 +88,10 @@ impl WalkRole {
 }
 
 /// Runs `walk` on the caller's stack, measured from here against the budget of `role`.
-pub fn on_walk_stack<R>(role: WalkRole, walk: impl FnOnce(colibri_core::portable::StackGuard) -> R) -> R {
+pub fn on_walk_stack<R>(
+    role: WalkRole,
+    walk: impl FnOnce(colibri_core::portable::StackGuard) -> R,
+) -> R {
     walk(colibri_core::portable::StackGuard::here(role.budget()))
 }
 

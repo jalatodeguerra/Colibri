@@ -33,11 +33,7 @@ impl Write for Out {
     }
 }
 
-fn run(
-    vm: &mut colibri::Vm,
-    function: &str,
-    args: Vec<Portable>,
-) -> Result<TaskDone, TaskFailure> {
+fn run(vm: &mut colibri::Vm, function: &str, args: Vec<Portable>) -> Result<TaskDone, TaskFailure> {
     vm.submit_portable(function, args)
         .expect("the task is queued")
         .wait()
@@ -125,8 +121,11 @@ fn a_worker_may_not_register_more_than_the_main_vm_declares() {
         })
         .build();
     vm.register_fn("shared", || 7_i64).unwrap();
-    vm.load_source("calls.colibri", "fn use_shared() -> int {\n    return shared()\n}\n")
-        .unwrap();
+    vm.load_source(
+        "calls.colibri",
+        "fn use_shared() -> int {\n    return shared()\n}\n",
+    )
+    .unwrap();
     let why = internal(run(&mut vm, "use_shared", vec![]));
     assert!(
         why.contains("worker_setup registers") && why.contains("fn extra"),
@@ -139,12 +138,16 @@ fn a_worker_may_not_declare_a_function_differently() {
     let mut vm = colibri::Vm::builder()
         .worker_threads(1)
         .worker_setup(|vm| {
-            vm.register_fn("shared", |x: String| x.len() as i64).unwrap();
+            vm.register_fn("shared", |x: String| x.len() as i64)
+                .unwrap();
         })
         .build();
     vm.register_fn("shared", || 7_i64).unwrap();
-    vm.load_source("calls.colibri", "fn use_shared() -> int {\n    return shared()\n}\n")
-        .unwrap();
+    vm.load_source(
+        "calls.colibri",
+        "fn use_shared() -> int {\n    return shared()\n}\n",
+    )
+    .unwrap();
     let why = internal(run(&mut vm, "use_shared", vec![]));
     assert!(why.contains("worker_setup registers"), "{why}");
 }
@@ -158,10 +161,7 @@ fn a_program_image_with_another_hash_is_refused() {
     // The next task carries a hash that the worker's own check does not reproduce.
     vm.corrupt_image_hash();
     let why = internal(run(&mut vm, "one", vec![]));
-    assert!(
-        why.contains("does not match the main isolate's"),
-        "{why}"
-    );
+    assert!(why.contains("does not match the main isolate's"), "{why}");
 }
 
 #[test]
@@ -177,9 +177,18 @@ fn the_table_hash_changes_with_what_an_id_means() {
     assert_eq!(a, hash(&format!("{f}{g}")));
     // A body is not part of it, the tables are: the order of the functions, a signature, and
     // whether a module value is a `const`.
-    assert_eq!(a, hash(&format!("{}{g}", f.replace("return 1", "return 5"))));
+    assert_eq!(
+        a,
+        hash(&format!("{}{g}", f.replace("return 1", "return 5")))
+    );
     assert_ne!(a, hash(&format!("{g}{f}")));
-    assert_ne!(a, hash(&format!("{}{g}", f.replace("int", "float").replace("1", "1.0"))));
+    assert_ne!(
+        a,
+        hash(&format!(
+            "{}{g}",
+            f.replace("int", "float").replace("1", "1.0")
+        ))
+    );
     assert_ne!(
         hash("const K = 1\nfn main() {}\n"),
         hash("let K = 1\nfn main() {}\n")
@@ -346,7 +355,9 @@ fn each_task_gets_the_whole_instruction_budget() {
     // How many steps 200 iterations take (the count is the engine's, and stable).
     let mut probe = colibri::Vm::builder().worker_threads(1).build();
     probe.load_source("spin.colibri", SPIN).unwrap();
-    let one = run(&mut probe, "spin", vec![Portable::Int(200)]).unwrap().steps;
+    let one = run(&mut probe, "spin", vec![Portable::Int(200)])
+        .unwrap()
+        .steps;
     assert!(one > 200, "{one}");
     let budget = one + one / 2;
     let mut vm = colibri::Vm::builder()
@@ -363,24 +374,27 @@ fn each_task_gets_the_whole_instruction_budget() {
         run(&mut vm, "spin", vec![Portable::Int(2_000_000)]).unwrap_err(),
         TaskFailure::BudgetExhausted
     );
-    assert_eq!(
-        int(run(&mut vm, "spin", vec![Portable::Int(10)])),
-        45
-    );
+    assert_eq!(int(run(&mut vm, "spin", vec![Portable::Int(10)])), 45);
 }
 
 #[test]
 fn the_budget_can_change_between_tasks() {
     let mut vm = colibri::Vm::builder().worker_threads(1).build();
     vm.load_source("spin.colibri", SPIN).unwrap();
-    assert_eq!(int(run(&mut vm, "spin", vec![Portable::Int(1000)])), 499_500);
+    assert_eq!(
+        int(run(&mut vm, "spin", vec![Portable::Int(1000)])),
+        499_500
+    );
     vm.set_instruction_budget(Some(100));
     assert_eq!(
         run(&mut vm, "spin", vec![Portable::Int(1000)]).unwrap_err(),
         TaskFailure::BudgetExhausted
     );
     vm.set_instruction_budget(None);
-    assert_eq!(int(run(&mut vm, "spin", vec![Portable::Int(1000)])), 499_500);
+    assert_eq!(
+        int(run(&mut vm, "spin", vec![Portable::Int(1000)])),
+        499_500
+    );
 }
 
 // ---- the pool ----
@@ -457,13 +471,19 @@ fn a_new_program_gets_new_worker_vms() {
         .worker_setup(counting_setup(Arc::clone(&setups)))
         .build();
     vm.register_fn("bump", || 0_i64).unwrap();
-    vm.load_source("a.colibri", "fn count() -> int {\n    return bump() + 100\n}\n")
-        .unwrap();
+    vm.load_source(
+        "a.colibri",
+        "fn count() -> int {\n    return bump() + 100\n}\n",
+    )
+    .unwrap();
     assert_eq!(int(run(&mut vm, "count", vec![])), 101);
     assert_eq!(int(run(&mut vm, "count", vec![])), 102);
     vm.shutdown();
-    vm.load_source("b.colibri", "fn count() -> int {\n    return bump() + 200\n}\n")
-        .unwrap();
+    vm.load_source(
+        "b.colibri",
+        "fn count() -> int {\n    return bump() + 200\n}\n",
+    )
+    .unwrap();
     // The old isolate is gone: its state does not leak into the new program's.
     assert_eq!(int(run(&mut vm, "count", vec![])), 201);
     assert_eq!(setups.load(Ordering::SeqCst), 2);
@@ -705,5 +725,8 @@ fn a_value_nested_beyond_the_walk_budget_is_refused_not_crashed() {
         other => panic!("{other:?}"),
     }
     // The worker is fine.
-    assert_eq!(depth_of(&run(&mut vm, "echo", vec![nested(10)]).unwrap().value), 10);
+    assert_eq!(
+        depth_of(&run(&mut vm, "echo", vec![nested(10)]).unwrap().value),
+        10
+    );
 }

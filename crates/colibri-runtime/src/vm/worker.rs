@@ -305,9 +305,10 @@ impl Vm {
         match result {
             Err(info) => Err(failure_of(panic_error(self.engine.core(), *info))),
             Ok(value) => {
-                let copied: Result<Portable, NotSendable> = on_walk_stack(WalkRole::Sender, |guard| {
-                    self.engine.to_portable(&value, guard)
-                });
+                let copied: Result<Portable, NotSendable> =
+                    on_walk_stack(WalkRole::Sender, |guard| {
+                        self.engine.to_portable(&value, guard)
+                    });
                 self.engine.release_in_entry(value);
                 match copied {
                     Ok(value) => Ok(TaskDone { value, steps }),

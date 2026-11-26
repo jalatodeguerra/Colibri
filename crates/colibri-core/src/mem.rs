@@ -999,8 +999,28 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_view_charges_the_owner_and_closes_nothing() {
+        let _g = shared();
+        let owner = MemAccount::open();
+        let mut view = MemAccount::share(owner.tag());
+        let l = layout(100, 8);
+        let p = within(&mut view, || unsafe { A.alloc(l) });
+        let held = (100 + prefix_for(8)) as u64;
+        assert_eq!(unsafe { tag_slot(p).read() }, owner.tag());
+        assert_eq!(owner.used(), Some(held));
+        assert_eq!(view.used(), Some(held));
+        // Dropping the view does not retire the owner's slot: freeing what is left brings the
+        // count to zero, which is when a retired slot could be handed out again, and it is not.
+        drop(view);
+        unsafe { A.dealloc(p, l) };
+        assert_eq!(owner.used(), Some(0));
+        let other = MemAccount::open();
+        assert_ne!(other.tag() as u32, owner.tag() as u32);
+    }
+
+    #[test]
     fn an_inert_account_counts_nothing_and_leaves_the_thread_alone() {
-        let mut inert = MemAccount { tag: 0 };
+        let mut inert = MemAccount::share(0);
         let before = current();
         let guard = inert.enter();
         assert_eq!(current(), before);

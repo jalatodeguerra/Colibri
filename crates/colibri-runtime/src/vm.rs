@@ -281,7 +281,10 @@ impl VmBuilder {
     /// there, but calling it panics: `` `f` is not available in a thread task (the host did not
     /// register it for workers) ``. What `setup` registers must be declared identically on the
     /// main `Vm`, or the worker refuses to start. The capabilities of the main `Vm` apply.
-    pub fn worker_setup(mut self, setup: impl std::ops::Fn(&mut Vm) + Send + Sync + 'static) -> Self {
+    pub fn worker_setup(
+        mut self,
+        setup: impl std::ops::Fn(&mut Vm) + Send + Sync + 'static,
+    ) -> Self {
         self.worker_setup = Some(Arc::new(setup));
         self
     }

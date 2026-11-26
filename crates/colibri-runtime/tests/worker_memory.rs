@@ -74,10 +74,7 @@ fn a_limit_breach_in_a_worker_is_a_memory_limit_failure_and_the_worker_goes_on()
     let why = run(&mut vm, "hog", vec![Portable::Int(4_000_000)]).unwrap_err();
     assert_eq!(why, TaskFailure::MemoryLimit { limit: 8 * MIB });
     // What the failed task held was freed: the worker is usable, and the parent's count is down.
-    assert_eq!(
-        run(&mut vm, "small", vec![]).unwrap().value.clone_int(),
-        3
-    );
+    assert_eq!(run(&mut vm, "small", vec![]).unwrap().value.clone_int(), 3);
     assert!(vm.memory_used().unwrap() < 4 * MIB);
 }
 

@@ -9,6 +9,13 @@
 //! `Vm` on its first job and keeping it for the next. This step has no `task.run` yet; a test or
 //! the next step submits "call this function with these portable arguments" through
 //! [`Vm::submit_portable`].
+//!
+//! `Vm` stays `!Send`, and nothing here needs it to be otherwise:
+//!
+//! ```compile_fail
+//! fn needs_send<T: Send>() {}
+//! needs_send::<colibri_runtime::Vm>();
+//! ```
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -95,6 +102,20 @@ impl Drop for LineWriter {
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+// What crosses between threads is plain data. These fail to compile when something that is not
+// `Send` (an `Rc`, a `Value`) finds its way into one of the types that do.
+const _: () = {
+    const fn send<T: Send>() {}
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<ProgramImage>();
+    send_sync::<PoolStats>();
+    send::<Job>();
+    send::<Portable>();
+    send::<TaskDone>();
+    send::<TaskFailure>();
+    send::<PendingTask>();
+};
 
 // ---- the program image ----
 
@@ -196,7 +217,9 @@ impl std::fmt::Display for TaskFailure {
         match self {
             TaskFailure::Panic { message, .. } => f.write_str(message),
             TaskFailure::BudgetExhausted => f.write_str("the instruction budget ran out"),
-            TaskFailure::MemoryLimit { limit } => f.write_str(&colibri_core::mem::limit_message(*limit)),
+            TaskFailure::MemoryLimit { limit } => {
+                f.write_str(&colibri_core::mem::limit_message(*limit))
+            }
             TaskFailure::Copy(message) => f.write_str(message),
             TaskFailure::Internal(message) => write!(f, "internal error: {message}"),
             TaskFailure::CannotStart(message) => f.write_str(message),
