@@ -10,9 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use colibri_check::hir::{CaptureMode, FnId, LocalId, TypeDef, TypeDefKind};
-use colibri_check::types::{
-    COGROUP_TYPE, COROUTINE_TYPE, SIGNAL_TYPE, TypeId,
-};
+use colibri_check::types::{COGROUP_TYPE, COROUTINE_TYPE, SIGNAL_TYPE, TypeId};
 use colibri_syntax::{FileId, Span};
 
 use super::*;
@@ -62,7 +60,9 @@ fn field(name: &str) -> colibri_check::hir::FieldDef {
 fn named_core() -> Core {
     use colibri_check::hir::VariantDef;
     let mut c = core();
-    let mut table: Vec<TypeDef> = (0..30).map(|i| def(&format!("T{i}"), None, TypeDefKind::HostClass)).collect();
+    let mut table: Vec<TypeDef> = (0..30)
+        .map(|i| def(&format!("T{i}"), None, TypeDefKind::HostClass))
+        .collect();
     table.push(def(
         "Job",
         None,
@@ -168,7 +168,10 @@ fn dump_all(roots: &[&Value]) -> (String, Vec<usize>) {
     }
     // Which object each `weak` reference names, by the number its target got.
     for (ord, addr) in d.weak_targets.iter().enumerate() {
-        let id = d.ids.get(addr).expect("a weak target of the graph is in it");
+        let id = d
+            .ids
+            .get(addr)
+            .expect("a weak target of the graph is in it");
         d.out.push_str(&format!(" w{ord}->#{id}"));
     }
     (d.out, d.addrs)
@@ -562,8 +565,10 @@ fn a_dag_with_a_million_paths_is_copied_once_per_node() {
     let mut depth = 0;
     let mut cur = copy;
     while let Value::Tuple(t) = &cur {
-        assert!(matches!((&t[0], &t[1]), (Value::Tuple(a), Value::Tuple(b)) if Rc::ptr_eq(a, b))
-            || matches!((&t[0], &t[1]), (Value::Struct(a), Value::Struct(b)) if Rc::ptr_eq(a, b)));
+        assert!(
+            matches!((&t[0], &t[1]), (Value::Tuple(a), Value::Tuple(b)) if Rc::ptr_eq(a, b))
+                || matches!((&t[0], &t[1]), (Value::Struct(a), Value::Struct(b)) if Rc::ptr_eq(a, b))
+        );
         let next = t[0].clone();
         depth += 1;
         cur = next;
@@ -699,7 +704,11 @@ fn a_weak_reference_to_an_object_of_the_graph_is_remapped() {
     // The weak reference comes first, so the walk meets it before its target.
     let holder = obj(
         JOB,
-        vec![weak_to(&target), Value::Obj(Rc::clone(&target)), weak_to(&target)],
+        vec![
+            weak_to(&target),
+            Value::Obj(Rc::clone(&target)),
+            weak_to(&target),
+        ],
     );
     let root = Value::Obj(holder);
     let copy = round_trip(&mut core, &root);
@@ -710,7 +719,9 @@ fn a_weak_reference_to_an_object_of_the_graph_is_remapped() {
     else {
         panic!()
     };
-    let up = w0.upgrade().expect("the weak reference points into the copy");
+    let up = w0
+        .upgrade()
+        .expect("the weak reference points into the copy");
     assert!(Rc::ptr_eq(&up, &t));
     assert!(Rc::ptr_eq(&w2.upgrade().unwrap(), &t));
     assert!(!Rc::ptr_eq(&up, &target));
@@ -885,7 +896,14 @@ fn the_path_goes_through_lists_maps_tuples_enums_closures_and_cells() {
     let core = named_core();
     let conn = host(CONN);
 
-    let in_list = Value::Obj(obj(JOB, vec![Value::Int(1), Value::Unit, Value::list(vec![Value::Int(1), conn.clone()])]));
+    let in_list = Value::Obj(obj(
+        JOB,
+        vec![
+            Value::Int(1),
+            Value::Unit,
+            Value::list(vec![Value::Int(1), conn.clone()]),
+        ],
+    ));
     assert_eq!(sendable_path(&core, &in_list).path, "Job.items[1]");
 
     let in_tuple = Value::tuple(vec![Value::Int(1), Value::tuple(vec![conn.clone()])]);
@@ -924,7 +942,10 @@ fn the_path_goes_through_lists_maps_tuples_enums_closures_and_cells() {
     );
 
     // A field path continues through an object nested in another.
-    let nested = Value::list(vec![Value::Obj(obj(JOB, vec![Value::Int(1), conn, Value::Unit]))]);
+    let nested = Value::list(vec![Value::Obj(obj(
+        JOB,
+        vec![Value::Int(1), conn, Value::Unit],
+    ))]);
     assert_eq!(sendable_path(&core, &nested).path, "[0].conn");
     dispose(vec![in_list, nested]);
 }
@@ -1009,7 +1030,14 @@ fn a_task_handle_is_refused_through_the_environment() {
         }
     }
     let env = WithTask(named_core());
-    let job = Value::Obj(obj(JOB, vec![Value::Int(1), Value::Unit, Value::Obj(obj(TypeId(40), vec![]))]));
+    let job = Value::Obj(obj(
+        JOB,
+        vec![
+            Value::Int(1),
+            Value::Unit,
+            Value::Obj(obj(TypeId(40), vec![])),
+        ],
+    ));
     let err = to_portable(&job, &env, stack()).unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -1036,7 +1064,7 @@ fn a_registered_handle_crosses_as_it_is() {
     #[derive(Debug)]
     struct Pool(i64);
     impl CrossesAsIs for Pool {
-        fn into_value(&self, _core: &mut Core) -> Value {
+        fn materialise(&self, _core: &mut Core) -> Value {
             Value::Int(self.0)
         }
     }
@@ -1060,7 +1088,10 @@ fn a_registered_handle_crosses_as_it_is() {
     let Value::Tuple(out) = from_portable(p, &mut c, stack()).unwrap() else {
         panic!()
     };
-    assert!(matches!((&out[0], &out[1], &out[2]), (Value::Int(41), Value::Int(41), Value::Int(1))));
+    assert!(matches!(
+        (&out[0], &out[1], &out[2]),
+        (Value::Int(41), Value::Int(41), Value::Int(1))
+    ));
     assert_eq!(Arc::strong_count(&pool), 2);
     // A host type the registry does not know is still refused.
     let other = to_portable(&host(TypeId(35)), &env, stack()).unwrap_err();
@@ -1102,21 +1133,39 @@ fn a_deep_graph_within_the_budget_is_copied() {
 #[test]
 fn rebuilding_stops_at_the_receivers_budget_and_leaves_nothing_behind() {
     let mut core = core();
-    // An object cycle at the top, and a deep chain below it, so that the failure comes with
-    // reference objects already made.
+    core.set_track_leaks(true);
+    // An object cycle at the top, a list that holds itself, a cell and a deep chain below them, so
+    // that the failure comes with reference objects of every kind already made.
     let a = obj(NODE, vec![Value::Unit, Value::Unit]);
     a.set_field(0, Value::Obj(Rc::clone(&a))).unwrap();
     a.set_field(1, chain(100)).unwrap();
-    let list = Value::list(vec![Value::Obj(Rc::clone(&a)), Value::Cell(CellObj::new(Value::Int(1)))]);
-    let root = Value::tuple(vec![list, Value::Obj(Rc::clone(&a))]);
+    let list = ListObj::new(vec![
+        Value::Obj(Rc::clone(&a)),
+        Value::Cell(CellObj::new(Value::Int(1))),
+    ]);
+    list.push(Value::List(Rc::clone(&list))).ok().unwrap();
+    let mut keys = OrderedMap::new();
+    keys.insert(
+        Value::Int(1),
+        Value::Obj(obj(NODE, vec![Value::Unit, Value::Unit])),
+    );
+    let root = Value::tuple(vec![
+        Value::List(Rc::clone(&list)),
+        Value::Obj(Rc::clone(&a)),
+        Value::Map(MapObj::new(keys)),
+        Value::Set(SetObj::new(OrderedMap::new())),
+    ]);
     let p = to_portable(&root, &Unnamed, StackGuard::here(1 << 20)).expect("the sender has room");
-    let err = from_portable(p, &mut core, StackGuard::here(2048)).unwrap_err();
+    let err = from_portable(p, &mut core, StackGuard::here(64 * 1024)).unwrap_err();
     assert_eq!(err, RebuildError::TooDeep);
+    // What the failed copy made is gone: no cycle of it is left for the leak detector to find, and
+    // none of its class objects was dropped without being released (which asserts).
+    assert!(core.find_leaks(&|_| None).is_empty());
     // The same graph rebuilds where there is room.
     let p = to_portable(&root, &Unnamed, StackGuard::here(1 << 20)).unwrap();
     let ok = from_portable(p, &mut core, StackGuard::here(1 << 20)).unwrap();
     assert_eq!(dump(&ok), dump(&root));
-    dispose(vec![root, ok]);
+    dispose(vec![root, ok, Value::List(list)]);
 }
 
 #[test]
@@ -1224,7 +1273,9 @@ fn a_portable_value_crosses_to_another_thread_and_is_rebuilt_there() {
     let (text, back) = handle.join().unwrap();
     assert_eq!(text, expected);
     let again = from_portable(back, &mut sender, stack()).unwrap();
-    let Value::Tuple(items) = &again else { panic!() };
+    let Value::Tuple(items) = &again else {
+        panic!()
+    };
     assert!(matches!(cell_of(&items[1]).get(), Value::Int(6)));
     assert!(Rc::ptr_eq(&cell_of(&items[1]), &cell_of(&items[2])));
     // The sender's own cell never saw the other thread's write.
@@ -1329,7 +1380,13 @@ fn random_graph(rng: &mut Rng) -> Vec<Value> {
         let a = rng.pick(&pool).clone();
         let b = rng.pick(&pool).clone();
         // A cell is never a value of the language: only a closure holds one.
-        let plain = |v: Value| if matches!(v, Value::Cell(_)) { Value::Unit } else { v };
+        let plain = |v: Value| {
+            if matches!(v, Value::Cell(_)) {
+                Value::Unit
+            } else {
+                v
+            }
+        };
         let made = match rng.below(8) {
             0 => Value::strukt(POINT, vec![plain(a), plain(b)]),
             1 => Value::tuple(vec![plain(a), plain(b)]),

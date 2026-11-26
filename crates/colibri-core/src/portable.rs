@@ -61,13 +61,11 @@ use colibri_check::types::{
     COGROUP_TYPE, COROUTINE_TYPE, OPTION_TYPE, SIGNAL_TYPE, TypeId, VARIANT_NONE, VARIANT_SOME,
 };
 
-use crate::closure::{CellObj, Captured, ClosureObj};
+use crate::closure::{Captured, CellObj, ClosureObj};
 use crate::heap::{ClassObj, ListObj, MapObj, SetObj};
 use crate::ordered::OrderedMap;
 use crate::state::Core;
-use crate::value::{
-    DynVal, EnumVal, ObjFields, Payload, RangeVal, StructFields, StructVal, Value,
-};
+use crate::value::{DynVal, EnumVal, ObjFields, Payload, RangeVal, StructFields, StructVal, Value};
 
 // ---- the portable form ----
 
@@ -176,7 +174,7 @@ pub struct WeakRef {
 /// synchronisation, and the receiver turns it back into a `Value` of its own isolate.
 pub trait CrossesAsIs: Send + Sync + fmt::Debug {
     /// The value this handle stands for on the receiving thread.
-    fn into_value(&self, core: &mut Core) -> Value;
+    fn materialise(&self, core: &mut Core) -> Value;
 }
 
 // A `Portable` is `Send`. This is the whole point of the type, so it is a compile-time fact, and no
@@ -231,8 +229,7 @@ impl Portable {
                     }
                 }
             }
-            Portable::Dyn { val, .. }
-            | Portable::Cell { value: val, .. } => {
+            Portable::Dyn { val, .. } | Portable::Cell { value: val, .. } => {
                 if !val.is_leaf() {
                     work.push(std::mem::replace(&mut **val, Portable::Unit));
                 }
@@ -481,7 +478,10 @@ fn render(env: &dyn SendEnv, path: &[Seg]) -> String {
             Seg::Item(i) => out.push_str(&format!(".{i}")),
             Seg::Index(i) => out.push_str(&format!("[{i}]")),
             Seg::Entry(i, key) => {
-                out.push_str(&format!("[entry {i}].{}", if key { "key" } else { "value" }));
+                out.push_str(&format!(
+                    "[entry {i}].{}",
+                    if key { "key" } else { "value" }
+                ));
             }
             Seg::Capture(f, i) => {
                 if n == 0 {
@@ -708,7 +708,12 @@ impl ToPortable<'_> {
     #[inline(never)]
     fn some_obj(&mut self, o: &Rc<ClassObj>) -> Result<Portable, NotSendable> {
         let inner = Value::Obj(Rc::clone(o));
-        self.enum_value(None, OPTION_TYPE, VARIANT_SOME, std::slice::from_ref(&inner))
+        self.enum_value(
+            None,
+            OPTION_TYPE,
+            VARIANT_SOME,
+            std::slice::from_ref(&inner),
+        )
     }
 
     #[inline(never)]
@@ -1114,7 +1119,7 @@ impl Rebuild<'_> {
                 Some(v) => v.clone(),
                 None => return Err(RebuildError::Malformed),
             },
-            Portable::Handle(h) => h.into_value(self.core),
+            Portable::Handle(h) => h.materialise(self.core),
         })
     }
 
