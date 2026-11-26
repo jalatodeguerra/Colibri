@@ -27,6 +27,13 @@ impl Vm {
         Arc::clone(&self.stats)
     }
 
+    /// How many `Task` handles of this `Vm` are alive (a task whose handle was dropped is
+    /// detached and no longer counts).
+    #[doc(hidden)]
+    pub fn task_handles(&self) -> usize {
+        self.engine.core().task_count()
+    }
+
     /// The image a worker builds its isolate from, once a program is loaded.
     #[doc(hidden)]
     pub fn program_image(&self) -> Option<Arc<ProgramImage>> {

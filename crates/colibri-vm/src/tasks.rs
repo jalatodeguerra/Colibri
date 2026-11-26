@@ -173,8 +173,11 @@ impl Machine {
                 return Ok(());
             }
         };
+        // The task nests inside this join on the same native stack: the budget of that stack is
+        // counted from where this fiber started, so a chain of tasks that each join the next
+        // one ends in a panic of the innermost, not in a stack overflow.
         let mut inner = VmFiber::new();
-        inner.stack_base = colibri_core::stack_position();
+        inner.stack_base = fiber.stack_base;
         // The task sees the world it would see on a thread of its own.
         let restore = self.core.enter_task_scope(serial);
         let called = self.call_value(&mut inner, &f, Vec::new(), span);
@@ -199,7 +202,6 @@ impl Machine {
             Err(Ctl::Panic(info)) => Err(failure_of_panic(&self.core, *info)),
             Err(Ctl::Cancel) => Err(TaskFailure::Cancelled),
         };
-        let _ = fiber;
         completer.complete(outcome);
         Ok(())
     }

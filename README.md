@@ -1230,7 +1230,8 @@ they have.
 
 **Later:**
 
-- Thread tasks with channels, a debugger (DAP) and a profiler.
+- Channels, `Shared` and `Mutex` between thread tasks (`task.run` and `join` work already, see the
+  [guide](guide/tour.md#thread-tasks)), a debugger (DAP) and a profiler.
 - TLS for `net` and `httpd` (https), HTTP/2, WebSockets, response compression, and UDP and Unix
   domain sockets in `net`: none of them is built yet.
 - Using Rust crates from Colibri through generated bindings.

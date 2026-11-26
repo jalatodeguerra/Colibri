@@ -58,7 +58,8 @@ use std::sync::Arc;
 
 use colibri_check::hir::{CaptureMode, FnId, LocalId};
 use colibri_check::types::{
-    COGROUP_TYPE, COROUTINE_TYPE, OPTION_TYPE, SIGNAL_TYPE, TypeId, VARIANT_NONE, VARIANT_SOME,
+    COGROUP_TYPE, COROUTINE_TYPE, OPTION_TYPE, SIGNAL_TYPE, TASK_TYPE, TypeId, VARIANT_NONE,
+    VARIANT_SOME,
 };
 
 use crate::closure::{Captured, CellObj, ClosureObj};
@@ -957,6 +958,7 @@ impl ToPortable<'_> {
             COROUTINE_TYPE => Some(Refused::Coroutine),
             COGROUP_TYPE => Some(Refused::CoGroup),
             SIGNAL_TYPE => Some(Refused::Signal),
+            TASK_TYPE => Some(Refused::Task),
             _ => self.env.refuses(ty),
         };
         if let Some(refused) = refused {

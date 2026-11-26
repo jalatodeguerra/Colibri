@@ -36,6 +36,7 @@ instead of `async`. It is early and pre-release, and what is planned but not bui
 - [Visibility](#visibility)
 - [Conditional code and deprecation](#conditional-code-and-deprecation)
 - [Coroutines](#coroutines)
+- [Thread tasks](#thread-tasks)
 - [Bytes and JSON](#bytes-and-json)
 - [Tests](#tests)
 - [Tools](#tools)
@@ -1075,7 +1076,100 @@ when called outside a coroutine started with `go`, `main` included.
 Coroutines never run at the same time, so they share objects without locks, and a coroutine runs
 until it waits. `net`, `http`, `process` and `fs.File` calls pause only the calling coroutine. The
 whole-file functions (`fs.read`, `fs.write`, ...) and `time.sleep` hold the thread until they
-finish. Thread tasks and channels are **planned**.
+finish. Thread tasks are in the next section; channels, `Shared` and `Mutex` are **planned**.
+
+## Thread tasks
+
+`task.run(f)` runs a closure on a worker thread and gives a `Task[T]`, where `T` is what the
+closure returns. The workers are a pool with one thread for each core, so tasks run in parallel with
+the program and with each other. `join()` waits for the result as a `Result[T]`, `done()` says
+whether the task ended, and `try_join()` gives the result if it is there (`Result[T]?`) and does
+not wait.
+
+```colibri
+fn sum_to(n: int) -> int {
+    let mut total = 0
+    for i in 1..=n {
+        total += i
+    }
+    return total
+}
+
+fn divide(a: int, b: int) -> int {
+    return a / b
+}
+
+fn main() -> Result[()] {
+    let a = task.run(fn() => sum_to(1000))
+    let b = task.run(fn() => sum_to(2000))
+    print("{a.join()?} {b.join()?}")
+
+    // A panic in a task is an `err` for whoever joins it; the program goes on.
+    let bad = task.run(fn() => divide(1, 0))
+    match bad.join() {
+        ok(v)  => print("value {v}")
+        err(e) => print("failed: {e.message()}")
+    }
+    return ok(())
+}
+```
+
+```output
+500500 2001000
+failed: the task `<closure in main>` panicked: division by zero
+```
+
+The error says which task panicked and why, and `e.cause()` is the stack of the task. A task that
+runs out of the instruction budget or the memory limit of its `Vm` gives an `err` as well, and does
+not stop the program.
+
+A task is an **isolate**: it has its own objects. Everything the closure captures is copied to the
+task when it starts, and the result is copied back by `join`. So a task cannot change what the
+program holds, and the program cannot change what the task holds, and no locks are needed. The
+price is that **a write to a captured `let mut` inside the closure is lost**, because the closure
+runs on a copy:
+
+```colibri
+fn main() -> Result[()] {
+    let mut n = 0
+    task.run(fn() { n += 1 }).join()?
+    print(n)
+    return ok(())
+}
+```
+
+```output
+0
+```
+
+To get a value out of a task, return it. A copy is a structural one: shared parts and cycles inside
+what is copied stay shared and cyclic in the copy, a `weak` reference to something outside it is
+`none`, and `Drop` runs for the copy as for any other object. What cannot be copied is refused,
+with the way to the part: a host handle such as a `net.Conn`, an iterator, a `Coroutine`,
+`CoGroup`, `Signal` or `Task`. The checker says so at the `task.run` where it can see the type
+(`` `closure.conn` is a `net.Conn`, which cannot be sent to another thread ``) and the run time
+says it where it cannot (inside a generic function).
+
+Module-level state belongs to the main thread. A task may read a `const`, which every thread
+builds for itself, and call the functions that use only those; a `let` or `let mut` of the module,
+read or written from a task, is a compile error where the checker follows the calls and a panic
+that names the variable where it cannot (a `Drop` that runs implicitly, say). Host functions work
+only if the host registered them for workers.
+
+`join` waits in the way that fits where it is called. In a coroutine it pauses that coroutine and
+the others go on; on the main fiber it runs the event loop until the task is done; where neither is
+possible (a `Drop` hook, a callback of the host) it blocks the thread. Its result can be taken
+once: a second `join` or `try_join` of the same task gives an `err` that says it was joined
+already. A task may start tasks and join them. When the pool's threads are all busy, a worker that
+joins a task that has not started runs it itself, so nested tasks cannot deadlock a pool of any
+size.
+
+Dropping the `Task` without joining it **detaches** it: the task goes on, and its result is thrown
+away. There is no `cancel()`. A task that has not ended when the program does is stopped (at its
+next safepoint, with its `defer`s run), so `join` what the program needs. The random numbers of a
+task (`rand`) come from a generator of its own, seeded from the program's seed and the task, so a
+run repeats whichever thread runs the task. Thread tasks do not exist in the web build: `task.run`
+is a compile error there.
 
 ## Bytes and JSON
 
