@@ -208,6 +208,18 @@ pub use vm::{
     DEFAULT_MAX_CALL_DEPTH, HostModule, SessionCheck, SessionError, TestInfo, Vm, VmBuilder,
 };
 
+/// The debugger interface (L10), hidden until it has settled: what `colibri debug` builds on,
+/// and what an embedder will use to debug scripts inside its own process. See
+/// [`Vm::set_debugger`].
+#[doc(hidden)]
+pub mod debug {
+    pub use colibri_syntax::FileId;
+    pub use colibri_vm::debug::{
+        BreakpointInfo, BreakpointSpec, DEBUG_SLICE, DebugFiber, DebugFrame, DebugScope, DebugVar,
+        DebugView, Debugger, HitCondition, PauseHandle, Resume, StepKind, Stop,
+    };
+}
+
 /// The type descriptors of the loaded program, for host functions that work on any type
 /// (serializers, DESIGN §7.5): what [`Ctx::type_args`] and [`Ctx::type_defs`] return.
 pub mod reflect {
