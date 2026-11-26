@@ -760,22 +760,36 @@ fn main() {
     assert!(stderr.contains("from the child"), "{stderr}");
 }
 
-/// Windows: a child that outlives the program must not hold the protocol pipe open (the client
-/// would never see the end of the stream). The child lives longer than the test's hang guard,
-/// so only a pipe the child does not inherit lets the stream end.
+/// Windows: a grandchild that outlives the program must not hold the protocol pipe open (the
+/// client would never see the end of the stream). `cmd /C start /b` leaves `ping` running after
+/// `cmd` and the program have ended (a child that `process.spawn` makes is killed when its
+/// handle drops, so it would prove nothing). `ping` runs longer than the harness guard, so only
+/// a pipe it does not inherit lets the stream end. It is killed when the test ends, so that it
+/// cannot hold a CI log pipe open (nothing else in these tests runs `ping`).
 #[cfg(windows)]
 #[test]
 fn a_child_that_outlives_the_session_does_not_keep_the_stream_open() {
+    struct KillPing;
+    impl Drop for KillPing {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", "ping.exe"])
+                .output();
+        }
+    }
+    let _kill = KillPing;
     let src = r#"import process
 fn main() {
-    let child = process.spawn("ping", ["-n", "150", "127.0.0.1"])
-    print(child.is_ok())
+    let r = process.status("cmd", ["/C", "start", "/b", "ping", "-n", "150", "127.0.0.1"])
+    print(r.is_ok())
 }
 "#;
     let mut dap = Dap::start("child-outlives");
     dap.launch(src, json!({}));
     dap.configuration_done();
     assert_eq!(dap.finish(), Some(0));
+    // The spawn worked: the program saw `cmd` succeed.
+    assert_eq!(dap.output("stdout"), "true\n");
     dap.request("disconnect", json!({}));
     dap.close_input();
     dap.drain();

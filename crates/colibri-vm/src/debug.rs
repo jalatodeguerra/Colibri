@@ -336,6 +336,10 @@ impl DebugShared {
 
     /// The program has other file numbers: each breakpoint follows its file by name.
     fn rebind(&self, locator: &dyn Locator) {
+        // Once per reload: chunks that are gone no longer keep their epoch's sources alive.
+        self.chunks
+            .borrow_mut()
+            .retain(|(w, _)| w.strong_count() > 0);
         for bp in self.bps.borrow_mut().iter_mut() {
             if let Some(name) = bp.file_name.as_deref() {
                 // A file the new program does not have: a number that no file has, so the

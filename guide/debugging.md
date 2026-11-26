@@ -268,7 +268,9 @@ function bodies is patched in, and the next call of each function runs the new b
 else (a new field, a changed signature) restarts the program, and `main` runs again.
 
 Breakpoints stay where you put them. A breakpoint finds its file again by name after a reload,
-so a restart that renumbers the files keeps it, and it stops in the new body. If you move the
+so a restart that renumbers the files keeps it, and it stops in the new body. A frame that still
+runs code from before an edit (a coroutine's loop) takes breakpoints by the line numbers of that
+old code. If you move the
 code, move the breakpoint: it stays on its line number.
 
 ```colibri no-run
