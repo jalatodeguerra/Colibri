@@ -32,6 +32,7 @@ pub mod mem;
 pub mod num;
 pub mod ops;
 pub mod ordered;
+pub mod portable;
 pub mod pattern;
 pub(crate) mod protocol;
 pub mod release;
