@@ -2210,6 +2210,7 @@ impl<'a> Checker<'a> {
                 name: g.name.clone(),
                 ty: g.ty.clone()?,
                 mutable: g.mutable,
+                constant: g.kind == BindKind::Const,
                 span: g.span,
                 init: g.body.clone()?,
             });

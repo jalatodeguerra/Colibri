@@ -438,6 +438,9 @@ fn close_slot(tag: u64) {
 pub struct MemAccount {
     /// 0 for an inert account.
     tag: u64,
+    /// Whether this value owns the table slot (and closes it when dropped). A thread task's worker
+    /// holds a view of its parent's account instead ([`MemAccount::share`]).
+    owned: bool,
 }
 
 /// What an outermost entry must undo: the account that was current before it. Dropping it
@@ -477,13 +480,27 @@ impl MemAccount {
         if installed() {
             MemAccount::open()
         } else {
-            MemAccount { tag: 0 }
+            MemAccount {
+                tag: 0,
+                owned: true,
+            }
         }
     }
 
     /// A live account whether or not the allocator is installed (tests of the accounting).
     pub fn open() -> MemAccount {
-        MemAccount { tag: open_slot() }
+        MemAccount {
+            tag: open_slot(),
+            owned: true,
+        }
+    }
+
+    /// A view of the account that `tag` names (see [`MemAccount::tag`]), for a worker thread that
+    /// runs on behalf of another `Vm`: what it allocates is charged to that `Vm`, wherever it is
+    /// freed. Dropping the view closes nothing, and a tag whose owner is gone resolves to nothing,
+    /// so the view is inert then.
+    pub fn share(tag: u64) -> MemAccount {
+        MemAccount { tag, owned: false }
     }
 
     /// Whether this account counts anything.
@@ -577,7 +594,7 @@ impl Default for MemAccount {
 
 impl Drop for MemAccount {
     fn drop(&mut self) {
-        if self.tag != 0 {
+        if self.tag != 0 && self.owned {
             close_slot(self.tag);
         }
     }

@@ -167,6 +167,18 @@ impl RuntimeEngine for VmEngine {
         self.machine.load(program);
     }
 
+    fn load_worker(&mut self, program: &Program) {
+        self.machine.load_worker(program);
+    }
+
+    fn to_portable(
+        &self,
+        value: &CoreValue,
+        stack: colibri_core::portable::StackGuard,
+    ) -> Result<colibri_core::portable::Portable, colibri_core::portable::NotSendable> {
+        self.machine.to_portable(value, stack)
+    }
+
     fn patch(&mut self, program: &Program) -> Result<(), String> {
         self.machine.patch(program)
     }

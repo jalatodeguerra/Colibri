@@ -82,6 +82,8 @@ mod host;
 mod iface;
 mod reload;
 mod render;
+#[doc(hidden)]
+pub mod tasks;
 mod types;
 mod vm;
 

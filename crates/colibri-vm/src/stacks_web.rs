@@ -62,3 +62,37 @@ pub(crate) fn resume(_: &mut Machine, _: &mut VmFiber, parked: Parked, _: bool) 
 pub(crate) fn park(_: &mut Machine, _: &mut VmFiber) -> bool {
     unreachable!("a host function cannot park on the web")
 }
+
+// ---- the stack of the portable walks ----
+
+/// The size of the stack a portable walk runs on (there is no separate stack here: the walk runs
+/// on the caller's).
+pub const WALK_STACK: usize = 64 * 1024 * 1024;
+pub const SENDER_WALK_BUDGET: usize = 48 * 1024 * 1024;
+pub const RECEIVER_EXTRA_BUDGET: usize = 64 * 1024;
+
+/// Which end of a thread crossing a walk is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WalkRole {
+    Sender,
+    Receiver,
+}
+
+impl WalkRole {
+    pub const fn budget(self) -> usize {
+        match self {
+            WalkRole::Sender => SENDER_WALK_BUDGET,
+            WalkRole::Receiver => SENDER_WALK_BUDGET + RECEIVER_EXTRA_BUDGET,
+        }
+    }
+}
+
+/// Runs `walk` on the caller's stack, measured from here against the budget of `role`.
+pub fn on_walk_stack<R>(role: WalkRole, walk: impl FnOnce(colibri_core::portable::StackGuard) -> R) -> R {
+    walk(colibri_core::portable::StackGuard::here(role.budget()))
+}
+
+#[doc(hidden)]
+pub fn walk_stacks_pooled() -> usize {
+    0
+}

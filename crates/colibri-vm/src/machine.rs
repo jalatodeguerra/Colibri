@@ -71,6 +71,9 @@ pub struct Machine {
     pub(crate) script: Option<Slot>,
     /// By global id, the name of each script value whose line has not run yet.
     pub(crate) uninit: Vec<Option<Rc<str>>>,
+    /// This machine is a thread task's isolate (`Machine::load_worker`): the entries of `uninit`
+    /// are the module values of the main thread, not script values whose line has not run.
+    pub(crate) worker: bool,
     pub(crate) global_names: Vec<Rc<str>>,
     pub(crate) released: bool,
     /// A feature the VM lacks stopped a run: no program code (a `Drop` hook) runs after it.
@@ -136,6 +139,7 @@ impl Machine {
             script_from: 0,
             script: None,
             uninit: Vec::new(),
+            worker: false,
             global_names: Vec::new(),
             released: false,
             refused: false,
@@ -220,6 +224,18 @@ impl Machine {
     /// Installs a checked program, replacing any earlier one and resetting module state (the
     /// old module-level values die first).
     pub fn load(&mut self, program: &Program) {
+        self.load_as(program, false);
+    }
+
+    /// Installs a checked program as a thread task's isolate (DESIGN §4.2, §14.1): only the
+    /// `const`s are module state here. Their initialisers are the only ones
+    /// [`Machine::run_module_inits`] runs, and a read or write of any other module value panics
+    /// because it belongs to the main thread. The script does not run.
+    pub fn load_worker(&mut self, program: &Program) {
+        self.load_as(program, true);
+    }
+
+    fn load_as(&mut self, program: &Program, worker: bool) {
         self.shutdown();
         self.epoch = self.epoch.wrapping_add(1);
         self.core.closure_maps.clear();
@@ -248,10 +264,27 @@ impl Machine {
             .map(|g| Rc::from(g.name.as_str()))
             .collect();
         self.uninit = Vec::new();
+        self.worker = worker;
         self.env = CompileEnv::for_program(program);
         self.env.count_rc = self.rc.is_some();
         self.env.debug = self.debug.as_ref().map(|d| Rc::clone(&d.shared));
-        if program.script_from < program.init_order.len() {
+        if worker {
+            // Only the constants are initialised; every other value is checked on each use.
+            self.inits = program
+                .init_order
+                .iter()
+                .copied()
+                .filter(|g| program.globals[g.0 as usize].constant)
+                .collect();
+            self.script_from = self.inits.len();
+            self.uninit = vec![None; program.globals.len()];
+            for (i, g) in program.globals.iter().enumerate() {
+                if !g.constant {
+                    self.uninit[i] = Some(Rc::from(g.name.as_str()));
+                    self.env.checked_globals[i] = true;
+                }
+            }
+        } else if program.script_from < program.init_order.len() {
             self.uninit = vec![None; program.globals.len()];
             for g in &program.init_order[program.script_from..] {
                 let i = g.0 as usize;

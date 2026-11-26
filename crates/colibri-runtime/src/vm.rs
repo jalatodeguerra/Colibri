@@ -5,6 +5,7 @@ use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use colibri_check::HostEnv;
@@ -27,6 +28,10 @@ use crate::func::Fn;
 use crate::host::{HostFn, Registration, payload_message};
 use crate::iface::{self, ConstEntry, ConstValue, HostFnEntry, Rendered};
 use crate::reload::{Fingerprint, OwnedEntry, ReloadOptions, ReloadOutcome, ReloadState, reads_of};
+use crate::tasks::{
+    LineWriter, PendingTask, PoolStats, ProgramImage, SharedOut, Submission, TaskDone, TaskFailure,
+    TaskPool, WorkerCfg, WorkerOut, WorkerSetup, program_hash,
+};
 use crate::types::{TypeDesc, TypeRegistry};
 use colibri_core::leaks::Leak;
 
@@ -51,6 +56,7 @@ enum LoadMode {
 }
 
 mod session;
+mod worker;
 pub use session::{SessionCheck, SessionError};
 
 /// See [`Vm::on_warnings`].
@@ -63,6 +69,10 @@ struct Checked {
     sources: SourceMap,
     program: Program,
     warnings: Vec<Diagnostic>,
+    /// The interface text of each host module the program was checked against.
+    iface: Vec<(String, String)>,
+    /// What a thread task's worker builds its isolate from (not for sessions and test loads).
+    image: Option<ProgramImage>,
 }
 
 /// A `test` block of the loaded program ([`Vm::tests`]).
@@ -112,6 +122,9 @@ pub struct VmBuilder {
     cfg: BuildCfg,
     compile_all: bool,
     safepoint_slice: Option<u32>,
+    worker_threads: Option<usize>,
+    worker_setup: Option<WorkerSetup>,
+    shared_out: Option<SharedOut>,
 }
 
 impl VmBuilder {
@@ -251,8 +264,46 @@ impl VmBuilder {
         self
     }
 
+    /// How many threads run thread tasks (DESIGN §14.1): the default is the number of cores
+    /// (`std::thread::available_parallelism`). The threads are not started until the first task
+    /// runs, and each builds its own `Vm` of the program on its first task and keeps it.
+    /// There are no thread tasks on the web.
+    pub fn worker_threads(mut self, threads: usize) -> Self {
+        self.worker_threads = Some(threads.max(1));
+        self
+    }
+
+    /// Registers what thread tasks may call. `setup` runs on the fresh `Vm` of every worker, on
+    /// the worker's thread, before the program is loaded into it: it registers host functions,
+    /// types and state like the host does for its main `Vm` (the CLI passes
+    /// `colibri_std::install` with every capability). A host function that the main `Vm` has and
+    /// `setup` does not register is still declared in a worker, so programs check the same
+    /// there, but calling it panics: `` `f` is not available in a thread task (the host did not
+    /// register it for workers) ``. What `setup` registers must be declared identically on the
+    /// main `Vm`, or the worker refuses to start. The capabilities of the main `Vm` apply.
+    pub fn worker_setup(mut self, setup: impl std::ops::Fn(&mut Vm) + Send + Sync + 'static) -> Self {
+        self.worker_setup = Some(Arc::new(setup));
+        self
+    }
+
+    /// Like [`VmBuilder::stdout`] for a writer that threads may share: `print` in thread tasks
+    /// writes to it too, whole lines at a time under a lock. [`VmBuilder::stdout`] takes any
+    /// writer, but a writer that is not `Send` cannot be reached from a worker, so thread
+    /// tasks write to the process's standard output instead.
+    pub fn stdout_shared(mut self, writer: Box<dyn Write + Send>) -> Self {
+        self.shared_out = Some(Arc::new(std::sync::Mutex::new(writer)));
+        self
+    }
+
     pub fn build(self) -> Vm {
-        let out = self.stdout.unwrap_or_else(|| Box::new(std::io::stdout()));
+        let (out, worker_out): (Box<dyn Write>, WorkerOut) = match (self.shared_out, self.stdout) {
+            (Some(shared), _) => (
+                Box::new(LineWriter::new(Arc::clone(&shared))),
+                WorkerOut::Shared(shared),
+            ),
+            (None, Some(writer)) => (writer, WorkerOut::Process),
+            (None, None) => (Box::new(std::io::stdout()), WorkerOut::Process),
+        };
         let mut engine = engine_vm::new_engine(out, self.max_call_depth, self.native_stack_budget);
         engine.set_compile_all(self.compile_all);
         engine.core_mut().set_trace_drops(self.trace_drops);
@@ -278,6 +329,14 @@ impl VmBuilder {
         }
         let id = NEXT_VM_ID.fetch_add(1, Ordering::Relaxed);
         engine.core_mut().set_vm_id(id);
+        let stats = Arc::new(PoolStats::default());
+        let workers = WorkerCfg {
+            threads: self.worker_threads,
+            setup: self.worker_setup,
+            out: worker_out,
+            caps: self.caps,
+            max_call_depth: self.max_call_depth,
+        };
         Vm {
             sources: Rc::new(SourceMap::new()),
             engine,
@@ -303,6 +362,10 @@ impl VmBuilder {
             entry: None,
             entry_pending: false,
             cfg: self.cfg,
+            image: None,
+            image_hash: None,
+            stats: Arc::clone(&stats),
+            pool: TaskPool::new(workers, stats),
         }
     }
 }
@@ -358,6 +421,15 @@ pub struct Vm {
     entry: Option<EntryRun>,
     /// A program was loaded by [`Vm::load_from_deferred`] and its entry is not started yet.
     entry_pending: bool,
+    /// What the workers build their isolates from, once a program is loaded.
+    image: Option<Arc<ProgramImage>>,
+    /// The hash of the loaded program's tables: made when the first task is submitted.
+    image_hash: Option<u64>,
+    /// What the pool counts. Kept here as well so that it can be read after the pool is gone.
+    stats: Arc<PoolStats>,
+    /// The worker threads, which start with the first task. Last, so that it drops last: the
+    /// threads are joined after everything else of the `Vm` is gone (see `Drop for Vm`).
+    pool: TaskPool,
 }
 
 /// Where the entry of a program started by [`Vm::start_entry`] is.
@@ -420,6 +492,9 @@ impl Drop for Vm {
         // The engine goes after this, and shuts the program down: the handle must be let go
         // of before.
         self.release_entry();
+        // Tasks that have not started never will. The pool, the last field, joins the threads
+        // once the rest of the `Vm` is gone.
+        self.pool.close();
     }
 }
 
@@ -451,6 +526,9 @@ impl Vm {
             cfg: BuildCfg::default(),
             compile_all: false,
             safepoint_slice: None,
+            worker_threads: None,
+            worker_setup: None,
+            shared_out: None,
         }
     }
 
@@ -1256,12 +1334,22 @@ impl Vm {
         })
     }
 
+    /// The text of the interface of each host module, as the checker reads it.
+    fn iface_texts(&self) -> Vec<(String, String)> {
+        self.module_names()
+            .into_iter()
+            .map(|module| {
+                let text = self.rendered_module(&module).text;
+                (module, text)
+            })
+            .collect()
+    }
+
     /// The interface as the checker reads it, with the host's grants.
-    fn host_env(&self) -> Result<HostEnv, Error> {
+    fn host_env_from(&self, iface: &[(String, String)]) -> Result<HostEnv, Error> {
         let mut env = HostEnv::new();
-        for module in self.module_names() {
-            let one =
-                HostEnv::from_text(&self.rendered_module(&module).text).map_err(Error::Internal)?;
+        for (_, text) in iface {
+            let one = HostEnv::from_text(text).map_err(Error::Internal)?;
             env.merge(one);
         }
         for cap in self.caps.iter() {
@@ -1597,9 +1685,27 @@ impl Vm {
         entry: Entry<'_>,
         mode: LoadMode,
     ) -> Result<Checked, Error> {
-        let (sources, loaded) = self.read_program(fs, entry, mode)?;
+        // Whatever the load reads is what a thread task's worker will read.
+        let recorder = RecordingFs::new(fs);
+        let (sources, loaded) = self.read_program(&recorder, entry, mode)?;
         self.materialize_imports(&loaded)?;
-        self.check_loaded(sources, loaded, mode)
+        let mut checked = self.check_loaded(sources, loaded, mode)?;
+        if matches!(mode, LoadMode::Run | LoadMode::Deferred) {
+            let mut files = MemoryFs::new();
+            for read in recorder.into_files() {
+                files.insert_named(&read.path, read.name, read.text);
+            }
+            checked.image = Some(ProgramImage {
+                files,
+                entry: match entry {
+                    Entry::File(p) => OwnedEntry::File(p.to_path_buf()),
+                    Entry::Package(p) => OwnedEntry::Package(p.to_path_buf()),
+                },
+                cfg: self.cfg.clone(),
+                iface: checked.iface.clone(),
+            });
+        }
+        Ok(checked)
     }
 
     /// Reads the files of a program: the syntax trees and what each `import` names.
@@ -1631,15 +1737,28 @@ impl Vm {
         loaded: colibri_check::package::Loaded,
         mode: LoadMode,
     ) -> Result<Checked, Error> {
+        let iface = self.iface_texts();
+        let env = self.host_env_from(&iface)?;
+        self.check_loaded_in(&env, iface, sources, loaded, mode)
+    }
+
+    /// [`Vm::check_loaded`] against the host interface `env` (the text `iface`).
+    fn check_loaded_in(
+        &self,
+        env: &HostEnv,
+        iface: Vec<(String, String)>,
+        sources: SourceMap,
+        loaded: colibri_check::package::Loaded,
+        mode: LoadMode,
+    ) -> Result<Checked, Error> {
         let mut diagnostics = loaded.diagnostics.clone();
         let mut program = None;
         // A tree with syntax errors would only produce follow-on errors.
         if !loaded.has_errors() {
-            let env = self.host_env()?;
             let checked = colibri_check::check_modules_with(
                 &loaded.inputs(),
                 &loaded.packages,
-                &env,
+                env,
                 self.native_stack_budget,
                 colibri_check::CheckOptions {
                     dependency_order: mode == LoadMode::Session,
@@ -1654,6 +1773,8 @@ impl Vm {
                 sources,
                 program,
                 warnings: diagnostics,
+                iface,
+                image: None,
             }),
             None => Err(Error::Compile(Report {
                 sources,
@@ -1669,7 +1790,11 @@ impl Vm {
             sources,
             program,
             warnings,
+            image,
+            ..
         } = checked;
+        self.image = image.map(Arc::new);
+        self.image_hash = None;
         self.sources = Rc::new(sources);
         self.sync_debug_locator();
         self.warnings = warnings;
@@ -1810,6 +1935,8 @@ impl Vm {
             .core_mut()
             .set_owner((self.id, self.epoch), true, Rc::clone(&self.sources));
         self.program = Some(Rc::new(checked.program));
+        self.image = checked.image.map(Arc::new);
+        self.image_hash = None;
         if let Some(r) = self.reload.as_mut() {
             r.fingerprint = Some(fingerprint);
         }
@@ -2390,6 +2517,8 @@ impl Vm {
     /// is gone afterwards, and function handles with it.
     pub fn shutdown(&mut self) {
         self.reload = None;
+        self.image = None;
+        self.image_hash = None;
         self.teardown();
     }
 

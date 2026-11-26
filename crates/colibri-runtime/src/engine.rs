@@ -124,6 +124,18 @@ pub(crate) trait RuntimeEngine: HostCx {
     /// initialisers do not run yet.
     fn load(&mut self, program: &Program);
 
+    /// [`RuntimeEngine::load`] for a thread task's isolate: only the `const`s are module state
+    /// (`run_module_inits` initialises just those), and any other module value belongs to the
+    /// main thread.
+    fn load_worker(&mut self, program: &Program);
+
+    /// Copies a value into its portable form on this thread.
+    fn to_portable(
+        &self,
+        value: &CoreValue,
+        stack: colibri_core::portable::StackGuard,
+    ) -> Result<colibri_core::portable::Portable, colibri_core::portable::NotSendable>;
+
     /// Replaces the bodies of the functions of the loaded program with those of `program`
     /// (hot reload; the declarations are unchanged). An engine that cannot swap them without
     /// harming what runs (a coroutine parked in a host function whose declaration changed)

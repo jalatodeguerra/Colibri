@@ -104,6 +104,16 @@ impl Core {
         }
     }
 
+    /// Makes this engine charge what it allocates to the account `tag` names (another `Vm`'s, see
+    /// [`crate::mem::MemAccount::share`]) under that `Vm`'s limit. A thread task's worker calls it
+    /// before each task, between entries.
+    pub fn adopt_memory_account(&mut self, tag: u64, limit: Option<u64>) {
+        if self.mem.tag() != tag {
+            self.mem = crate::mem::MemAccount::share(tag);
+        }
+        self.set_memory_limit(limit);
+    }
+
     /// `none`, without an allocation.
     #[inline]
     pub fn none(&self) -> Value {

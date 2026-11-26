@@ -393,6 +393,8 @@ pub struct GlobalDef {
     pub name: String,
     pub ty: Ty,
     pub mutable: bool,
+    /// Declared with `const`: a thread task's isolate has it too (DESIGN §4.2).
+    pub constant: bool,
     pub span: Span,
     /// Computes the initial value; runs once, before the script's first statement.
     pub init: Rc<Body>,

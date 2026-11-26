@@ -37,7 +37,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use colibri_core::value::Value;
 use corosensei::stack::{DefaultStack, Stack};
-use corosensei::{Coroutine, CoroutineResult, Yielder};
+use corosensei::{Coroutine, CoroutineResult, ScopedCoroutine, Yielder};
 
 use crate::fiber::VmFiber;
 use crate::host::{HostFault, HostImpl};
@@ -383,4 +383,97 @@ pub(crate) fn park(machine: &mut Machine, fiber: &mut VmFiber) -> bool {
         std::process::abort();
     }
     input.cancel
+}
+
+// ---- the stack of the portable walks ----
+
+/// The size of the stack a portable walk runs on, mapped lazily like a host stack.
+pub const WALK_STACK: usize = 64 * 1024 * 1024;
+
+/// How much native stack a copy to the portable form (the sender) may use below the top of its
+/// walk stack: what is left is for the frames under the walk (the allocator, the entry point).
+pub const SENDER_WALK_BUDGET: usize = 48 * 1024 * 1024;
+
+/// How much more the receiver's walk may use than the sender's. A graph the sender accepted
+/// must be accepted by whoever rebuilds it, whatever the two walks' frame sizes do not share
+/// (a rebuilt value is dropped by a loop, but a walk that is slightly deeper per level must
+/// still fit), so the receiver is given room (carry-forward item of the L15 review).
+pub const RECEIVER_EXTRA_BUDGET: usize = 64 * 1024;
+
+/// Which end of a thread crossing a walk is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WalkRole {
+    /// Copying a value into its portable form ([`SENDER_WALK_BUDGET`]).
+    Sender,
+    /// Rebuilding a value from its portable form (the sender's budget and
+    /// [`RECEIVER_EXTRA_BUDGET`] more).
+    Receiver,
+}
+
+impl WalkRole {
+    /// The native stack a walk in this role may use.
+    pub const fn budget(self) -> usize {
+        match self {
+            WalkRole::Sender => SENDER_WALK_BUDGET,
+            WalkRole::Receiver => SENDER_WALK_BUDGET + RECEIVER_EXTRA_BUDGET,
+        }
+    }
+}
+
+/// How many stacks a thread keeps for walks.
+const WALK_POOL_CAP: usize = 2;
+
+thread_local! {
+    /// The walk stacks of this thread: a thread task's worker walks twice per task, so the
+    /// mapping is reused. The pages a deep walk touched are given back when it ends
+    /// (`trim_stack`), as for host stacks.
+    static WALK_POOL: std::cell::RefCell<Vec<DefaultStack>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Runs `walk` on a pooled stack of [`WALK_STACK`] bytes and gives it the guard of the stack: a
+/// copy that measures its recursion against it fails with a "too deep" error before it can pass
+/// the budget of `role`, whatever stack the calling thread has. Both ends of a crossing use the
+/// same size, so the receiver's extra budget decides what each accepts and not the luck of the
+/// thread it runs on. If no stack can be mapped the walk runs on the caller's stack, measured from
+/// here against the same budget.
+pub fn on_walk_stack<R>(
+    role: WalkRole,
+    walk: impl FnOnce(colibri_core::portable::StackGuard) -> R,
+) -> R {
+    let pooled = WALK_POOL.with(|p| p.borrow_mut().pop());
+    let mut stack = match pooled {
+        Some(stack) => stack,
+        None => match DefaultStack::new(WALK_STACK) {
+            Ok(stack) => stack,
+            Err(_) => return walk(colibri_core::portable::StackGuard::here(role.budget())),
+        },
+    };
+    let guard = colibri_core::portable::StackGuard::new(stack.base().get(), role.budget());
+    type Outcome<R> = Result<R, Box<dyn std::any::Any + Send>>;
+    let co = ScopedCoroutine::<(), (), Outcome<R>, &mut DefaultStack>::with_stack(
+        &mut stack,
+        move |_: &Yielder<(), ()>, ()| catch_unwind(AssertUnwindSafe(|| walk(guard))),
+    );
+    let outcome = co.scope(|mut co| match co.resume(()) {
+        CoroutineResult::Return(outcome) => outcome,
+        CoroutineResult::Yield(()) => unreachable!("a walk never yields"),
+    });
+    if trim_stack(&stack) {
+        WALK_POOL.with(|p| {
+            let mut pool = p.borrow_mut();
+            if pool.len() < WALK_POOL_CAP {
+                pool.push(stack);
+            }
+        });
+    }
+    match outcome {
+        Ok(result) => result,
+        Err(payload) => resume_unwind(payload),
+    }
+}
+
+/// How many walk stacks this thread holds in its pool (for tests).
+#[doc(hidden)]
+pub fn walk_stacks_pooled() -> usize {
+    WALK_POOL.with(|p| p.borrow().len())
 }
