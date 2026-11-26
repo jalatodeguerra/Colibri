@@ -301,7 +301,7 @@ impl DebugShared {
             return false;
         }
         let on_line: Vec<(u32, Span)> = chunk
-            .stmts
+            .stmts()
             .iter()
             .copied()
             .filter(|(_, s)| s.file == bp.file && loc.line(*s) == Some(bp.line))
@@ -329,7 +329,10 @@ impl DebugShared {
 impl Chunk {
     /// Makes the statement at `pc` (a `Step` or a `Mark`) a breakpoint of `bp`.
     pub(crate) fn add_breakpoint(&self, pc: u32, bp: u32) {
-        let mut patches = self.patches.borrow_mut();
+        let Some(info) = self.debug.as_ref() else {
+            return;
+        };
+        let mut patches = info.patches.borrow_mut();
         if let Some((id, patch)) = patches.iter_mut().enumerate().find(|(_, p)| p.pc == pc) {
             if patch.bps.is_empty() {
                 self.code[pc as usize].set(Op::Breakpoint { id: id as u32 });
@@ -359,7 +362,10 @@ impl Chunk {
     /// Takes the breakpoints for which `gone` holds out of the chunk, restoring the
     /// instruction of each statement that has none left.
     pub(crate) fn remove_breakpoints(&self, gone: impl Fn(u32) -> bool) {
-        for patch in self.patches.borrow_mut().iter_mut() {
+        let Some(info) = self.debug.as_ref() else {
+            return;
+        };
+        for patch in info.patches.borrow_mut().iter_mut() {
             let had = !patch.bps.is_empty();
             patch.bps.retain(|b| !gone(*b));
             if had && patch.bps.is_empty() {
@@ -370,7 +376,7 @@ impl Chunk {
 
     /// What the patch `id` replaced, and the breakpoints that want it.
     pub(crate) fn patch(&self, id: u32) -> Option<(Op, Vec<u32>)> {
-        let patches = self.patches.borrow();
+        let patches = self.debug.as_ref()?.patches.borrow();
         let p = patches.get(id as usize)?;
         Some((p.original, p.bps.clone()))
     }
@@ -790,7 +796,7 @@ impl Machine {
         let depth = fiber.frames.iter().filter(|f| steppable(f)).count();
         let boundary = top
             .chunk
-            .stmts
+            .stmts()
             .binary_search_by_key(&top.pc.saturating_sub(1), |s| s.0)
             .is_ok();
         let line = self.line_of(top.span());
@@ -808,10 +814,51 @@ impl Machine {
     }
 
     /// Whether `Op::Mark` has anything to do: a step is in progress.
-    pub(crate) fn stepping(&self) -> bool {
+    fn stepping(&self) -> bool {
         self.debug
             .as_ref()
             .is_some_and(|d| matches!(d.mode, Mode::Step(_)))
+    }
+
+    /// `Op::Mark`: the start of a block's tail. A step in progress may stop here.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn debug_mark(&mut self, fiber: &mut VmFiber) -> Result<(), Ctl> {
+        if self.stepping() {
+            self.step_check(fiber)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// `Op::Breakpoint { id }` at `pc - 1` of `chunk`: the debugger is called, then the
+    /// instruction the breakpoint stands for runs, once. Out of the dispatch loop's body so
+    /// that the loop (the hottest code there is) is what it was without a debugger.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn debug_breakpoint(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: &Chunk,
+        id: u32,
+        pc: usize,
+    ) -> Result<(), Ctl> {
+        self.breakpoint_hit(fiber, chunk, id)?;
+        match chunk.patch(id) {
+            Some((Op::Step { n }, _)) => {
+                self.core.budget.left -= i64::from(n);
+                if self.core.budget.left < 0 {
+                    self.step_over(fiber, chunk.spans[pc - 1])?;
+                }
+                Ok(())
+            }
+            Some((Op::Mark, _)) => self.debug_mark(fiber),
+            _ => Err(self.internal(
+                fiber,
+                chunk.spans[pc - 1],
+                "a breakpoint without its instruction",
+            )),
+        }
     }
 
     /// The hook of `Machine::catch`: a panic is about to unwind, and nothing has run yet.
@@ -1027,7 +1074,7 @@ impl Machine {
         let mut ids: Vec<LocalId> = (0..body.param_count).map(LocalId).collect();
         ids.extend(body.captures.iter().copied());
         let mut scopes: Vec<&crate::bytecode::ScopeInfo> = chunk
-            .scopes
+            .scopes()
             .iter()
             .filter(|s| s.start <= at && at < s.end)
             .collect();

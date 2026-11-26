@@ -534,24 +534,12 @@ impl Machine {
                 Op::Step { n } => charge!(n),
                 // Debug mode only (see `crate::debug`).
                 Op::Mark => {
-                    if self.stepping() {
-                        sync!();
-                        tri!(self.step_check(fiber));
-                    }
+                    sync!();
+                    tri!(self.debug_mark(fiber));
                 }
                 Op::Breakpoint { id } => {
                     sync!();
-                    tri!(self.breakpoint_hit(fiber, &chunk, id));
-                    // The instruction the breakpoint stands for runs now, once.
-                    match chunk.patch(id) {
-                        Some((Op::Step { n }, _)) => charge!(n),
-                        Some((Op::Mark, _)) => {
-                            if self.stepping() {
-                                tri!(self.step_check(fiber));
-                            }
-                        }
-                        _ => internal!("a breakpoint without its instruction"),
-                    }
+                    tri!(self.debug_breakpoint(fiber, &chunk, id, pc));
                 }
                 Op::JmpNotLtI { a, b, off } => jmp_not!(a, b, off, <),
                 Op::JmpNotLeI { a, b, off } => jmp_not!(a, b, off, <=),

@@ -1105,16 +1105,36 @@ pub struct Chunk {
     /// The body is the prelude's own code (a closure built-in written in Colibri): a stack trace
     /// leaves its frame out, and a panic in it is reported at the call of the built-in.
     pub hidden: bool,
-    /// Debug mode: the first instruction of each statement (a `Step`, or a `Mark` for a block's
-    /// tail), in code order, with the span of the statement. Empty otherwise.
-    pub stmts: Box<[(u32, Span)]>,
-    /// Debug mode: the braced scopes, for the locals a debugger shows. Empty otherwise.
-    pub scopes: Box<[ScopeInfo]>,
-    /// The breakpoints put into `code` (see `crate::debug`). Empty unless a debugger is on.
-    pub(crate) patches: std::cell::RefCell<Vec<Patch>>,
+    /// What a debugger needs of the chunk: only in debug mode (`Machine::set_debug`), one
+    /// pointer's worth of every other chunk.
+    pub debug: Option<Box<DebugInfo>>,
     /// The typed form of the body when it is a leaf (see `crate::leaf`), built once with the
     /// chunk.
     pub(crate) leaf: Option<crate::leaf::Leaf>,
+}
+
+/// What debug mode keeps in a chunk.
+#[derive(Debug)]
+pub struct DebugInfo {
+    /// The first instruction of each statement (a `Step`, or a `Mark` for a block's tail), in
+    /// code order, with the span of the statement.
+    pub stmts: Box<[(u32, Span)]>,
+    /// The braced scopes, for the locals a debugger shows.
+    pub scopes: Box<[ScopeInfo]>,
+    /// The breakpoints put into `code` (see `crate::debug`).
+    pub(crate) patches: std::cell::RefCell<Vec<Patch>>,
+}
+
+impl Chunk {
+    /// The statement table (empty unless compiled in debug mode).
+    pub fn stmts(&self) -> &[(u32, Span)] {
+        self.debug.as_ref().map_or(&[], |d| &d.stmts)
+    }
+
+    /// The scopes (empty unless compiled in debug mode).
+    pub fn scopes(&self) -> &[ScopeInfo] {
+        self.debug.as_ref().map_or(&[], |d| &d.scopes)
+    }
 }
 
 /// A braced scope of a body (debug mode): its locals are in scope for the instructions in

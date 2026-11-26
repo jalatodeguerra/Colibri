@@ -539,9 +539,13 @@ impl<'a> FnCompiler<'a> {
             nregs: nregs as u16,
             nparams: body.param_count as u16,
             hidden: colibri_check::is_prelude_span(body.span),
-            stmts: c.stmts.into_boxed_slice(),
-            scopes: c.scopes.into_boxed_slice(),
-            patches: Default::default(),
+            debug: env.debug.is_some().then(|| {
+                Box::new(crate::bytecode::DebugInfo {
+                    stmts: c.stmts.into_boxed_slice(),
+                    scopes: c.scopes.into_boxed_slice(),
+                    patches: Default::default(),
+                })
+            }),
             leaf: None,
         };
         let mut chunk = chunk;

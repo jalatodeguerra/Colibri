@@ -55,10 +55,14 @@ pub(crate) struct Seen {
     pub out: String,
 }
 
+type Poll = Box<dyn FnMut(&mut DebugView<'_>)>;
+type OnMachine = Box<dyn FnOnce(&mut Machine)>;
+type SeenFiber = (Option<u64>, String, Vec<(String, u32)>, Vec<String>);
+
 type React = Box<dyn FnMut(&mut DebugView<'_>, &Stop, usize) -> Resume>;
 
 struct Recorder {
-    poll: Option<Box<dyn FnMut(&mut DebugView<'_>)>>,
+    poll: Option<Poll>,
     out: Out,
     seen: Rc<RefCell<Vec<Seen>>>,
     logs: Rc<RefCell<Vec<String>>>,
@@ -110,7 +114,6 @@ pub(crate) struct Run {
     pub seen: Vec<Seen>,
     pub logs: Vec<String>,
     pub panic: Option<String>,
-    pub steps: u64,
     pub infos: Vec<BreakpointInfo>,
 }
 
@@ -120,9 +123,9 @@ pub(crate) struct Setup {
     pub before_load: bool,
     pub break_on_panic: bool,
     /// Runs at each poll of the debugger (every 1,024 steps while the program runs).
-    pub poll: Option<Box<dyn FnMut(&mut DebugView<'_>)>>,
+    pub poll: Option<Poll>,
     /// Runs on the machine before the program does.
-    pub on_machine: Option<Box<dyn FnOnce(&mut Machine)>>,
+    pub on_machine: Option<OnMachine>,
 }
 
 impl Setup {
@@ -192,7 +195,6 @@ pub(crate) fn run_debug(
         }
     }
     m.core_mut().flush();
-    let steps = m.core().steps_used();
     m.shutdown();
     let out = String::from_utf8_lossy(&out.0.borrow()).into_owned();
     let seen = seen.borrow().clone();
@@ -202,7 +204,6 @@ pub(crate) fn run_debug(
         seen,
         logs,
         panic: failure.map(|f| f.message),
-        steps,
         infos,
     }
 }
@@ -610,8 +611,7 @@ fn main() {
     print(\"started\")
 }
 ";
-    let seen_fibers: Rc<RefCell<Vec<(Option<u64>, String, Vec<(String, u32)>, Vec<String>)>>> =
-        Rc::default();
+    let seen_fibers: Rc<RefCell<Vec<SeenFiber>>> = Rc::default();
     let sink = Rc::clone(&seen_fibers);
     let run = run_debug(src, Setup::lines(&[9]), move |view, _, _| {
         for fiber in view.fibers() {
