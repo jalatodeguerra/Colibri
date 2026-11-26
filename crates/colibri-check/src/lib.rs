@@ -45,6 +45,7 @@ mod pat;
 mod place;
 mod prelude;
 mod range;
+mod sendable;
 mod suggest;
 pub mod traits;
 mod tryop;

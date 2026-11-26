@@ -1,0 +1,9 @@
+// allow: unused
+// The prelude declares `Task`, `Channel`, `Shared` and `Mutex`, so a program cannot declare its
+// own type with one of those names. `Mutex` has no constructor yet, and cannot be built.
+struct Task { id: int } // error: `Task` is a built-in type and cannot be redefined
+class Channel { id: int } // error: `Channel` is a built-in type and cannot be redefined
+enum Shared { A } // error: `Shared` is a built-in type and cannot be redefined
+struct Mutex { id: int } // error: `Mutex` is a built-in type and cannot be redefined
+
+fn main() {}

@@ -506,10 +506,34 @@ fn thread_tasks_are_a_compile_error_on_the_web() {
         "{}",
         out.stderr
     );
-    // Natively `task` has no `run` (yet): another message, and not the web's.
+    // Natively the checker accepts it (the unused `t` is a warning).
     let out = dir.colibri(&["check", "prog.colibri"]);
-    assert_eq!(out.code, 1);
+    assert_eq!(out.code, 0, "{}", out.stderr);
     assert!(!out.stderr.contains("web build"), "{}", out.stderr);
+    // Wherever it is written, and whatever it is given, the web refuses it, and the channel and
+    // `Shared` that go with it are checked as usual.
+    let programs = [
+        "fn main() {\n    let t = task.run(fn() => 1)\n    print(t.done())\n}\n",
+        "let t = task.run(fn() => 1)\n",
+        "fn go_on() {\n    let step = fn() {\n        let t = task.run(fn() { print(1) })\n        print(t.done())\n    }\n    step()\n}\n\nfn main() {\n    go_on()\n}\n",
+    ];
+    for (n, text) in programs.iter().enumerate() {
+        let file = format!("p{n}.colibri");
+        dir.write(&file, text);
+        let out = dir.check_web(&file);
+        assert_eq!(out.code, 1, "{file}: {}", out.stderr);
+        assert!(
+            out.stderr
+                .contains("thread tasks are not available in a web build"),
+            "{file}: {}",
+            out.stderr
+        );
+        assert_eq!(
+            dir.colibri(&["check", &file]).code,
+            0,
+            "{file} is fine natively"
+        );
+    }
 }
 
 #[test]

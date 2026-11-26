@@ -74,6 +74,10 @@ interface Div[R = Self, O = Self] {
 interface Neg {
     fn neg(self) -> Self
 }
+class Task[T] {}
+class Channel[T] {}
+class Shared[T] {}
+class Mutex[T] {}
 "#;
 
 /// The built-ins that take a closure, written in Colibri (vm-plan §2.9): the bytecode VM calls

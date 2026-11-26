@@ -57,6 +57,17 @@ pub const SUB: TypeId = TypeId(18);
 pub const MUL: TypeId = TypeId(19);
 pub const DIV: TypeId = TypeId(20);
 pub const NEG: TypeId = TypeId(21);
+/// The built-in `Task[T]` (DESIGN §14.1): the handle of a thread task, a reference type declared in
+/// the prelude as an empty generic `class`, like `Coroutine`. `T` is what the task's function
+/// returns (what `join()` gives back, inside a `Result`).
+pub const TASK_TYPE: TypeId = TypeId(22);
+/// The built-in `Channel[T]` (DESIGN §14.1): a queue between threads. `T` is the element type.
+pub const CHANNEL_TYPE: TypeId = TypeId(23);
+/// The built-in `Shared[T]` (DESIGN §14.1): a frozen value that every thread can read.
+pub const SHARED_TYPE: TypeId = TypeId(24);
+/// The built-in `Mutex[T]`. Only the id and the name are reserved; the type has no constructor and
+/// no methods until its own step.
+pub const MUTEX_TYPE: TypeId = TypeId(25);
 
 /// Whether `id` is `Add`, `Sub`, `Mul` or `Div`: an operator interface with a right-hand type
 /// (`R`), which a type may implement once for each right-hand type.
@@ -75,6 +86,10 @@ pub fn prelude_class_maker(id: TypeId) -> Option<&'static str> {
         COROUTINE_TYPE => Some("`go f(..)`"),
         COGROUP_TYPE => Some("`CoGroup()`"),
         SIGNAL_TYPE => Some("`Signal()`"),
+        TASK_TYPE => Some("`task.run(f)`"),
+        CHANNEL_TYPE => Some("`Channel[T]()`"),
+        SHARED_TYPE => Some("`Shared(x)`"),
+        MUTEX_TYPE => Some("`Mutex(x)` (not built yet)"),
         STR_BUILDER_TYPE => Some("`StrBuilder()`"),
         BYTES_BUILDER_TYPE => Some("`BytesBuilder()`"),
         _ => None,
@@ -82,7 +97,7 @@ pub fn prelude_class_maker(id: TypeId) -> Option<&'static str> {
 }
 
 /// The first id a user-defined type can have.
-pub const FIRST_USER_TYPE: u32 = 22;
+pub const FIRST_USER_TYPE: u32 = 26;
 /// The index of `ok` in the prelude `Result`.
 pub const VARIANT_OK: u32 = 0;
 /// The index of `err` in the prelude `Result`.

@@ -1,0 +1,24 @@
+// allow: unused
+// A thread task has no module-level state except `const`s (DESIGN §4.2): a worker that reads a
+// value of the main thread, directly or through the functions it calls, is a compile error.
+let mut counter = 0
+let label = "jobs"
+
+fn bump() {
+    counter += 1
+}
+
+fn name() -> str {
+    return label
+}
+
+fn direct() {
+    task.run(bump) // error: `bump -> counter` writes `counter`, which belongs to the main thread
+    task.run(name) // error: `name -> label` reads `label`, which belongs to the main thread
+}
+
+fn in_a_closure() {
+    task.run(fn() { counter += 1 }) // error: `closure -> counter` writes `counter`, which belongs to the main thread
+}
+
+fn main() {}

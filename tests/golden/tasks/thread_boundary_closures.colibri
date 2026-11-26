@@ -1,0 +1,33 @@
+// caps: net
+// allow: unused
+// A closure written in `send` or in `Shared(..)` may cross to another thread: its captures are
+// copied wherever it goes, so they must be sendable. What it reaches is not checked here (see
+// `coroutine_callback_queue`): a callback that reaches module state on a worker is the run
+// time's to refuse.
+import net
+
+let mut counter = 0
+
+fn bump() {
+    counter += 1
+}
+
+fn mk[T]() -> Channel[T] {
+    return Channel[T]()
+}
+
+fn senders(conn: net.Conn, jobs: Channel[fn()], n: int) {
+    jobs.send(fn() { bump() })
+    jobs.send(fn() { conn.close() }) // error: `closure.conn` is a `net.Conn`, which cannot be sent to another thread
+    jobs.send(fn() { print(n) })
+    jobs.send(bump)
+    let kept = Shared(fn() { counter += 1 })
+    let fine = Shared(fn() => n)
+}
+
+fn nothing_to_clone(conn: net.Conn) {
+    let ch: Channel[net.Conn] = mk()
+    ch.send(conn) // error: the value sent is a `net.Conn`, which cannot be sent to another thread
+}
+
+fn main() {}

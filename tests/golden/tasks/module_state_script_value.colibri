@@ -1,0 +1,16 @@
+// allow: unused
+// In a script, a top-level `let` is module state even when a task seems to capture it. Copying it
+// into a local inside a block or a function first is fine.
+let data = [1, 2, 3]
+
+let bad = task.run(fn() => data.len()) // error: `closure -> data` reads `data`, which belongs to the main thread
+
+{
+    let mine = data.clone()
+    let good = task.run(fn() => mine.len())
+}
+
+fn copy_first() -> Task[int] {
+    let mine = data.clone()
+    return task.run(fn() => mine.len())
+}

@@ -1,0 +1,42 @@
+// allow: unused
+// A generic type whose arguments grow at each level never repeats a type, so the walks that look
+// into types for a send stop at a size instead (what is deeper is left to the copy at run time).
+// Checking these must finish.
+struct Nest[T] {
+    v: T
+    inner: List[Nest[List[T]]]
+}
+
+struct Chain[T] {
+    v: T
+    next: Chain[(T, T)]?
+}
+
+// Two fields that grow differently: the number of types doubles at each level while the size
+// stays small for about a hundred levels.
+struct Br[X] {
+    v: X
+    a: Br[(X, int)]?
+    b: Br[(X, str)]?
+}
+
+fn branching(x: Br[int]) {
+    let ch = Channel[Br[int]]()
+    let t = task.run(fn() => x.v)
+    ch.send(x)
+    let s = Shared(x)
+}
+
+fn channels(n: Nest[int], c: Chain[int]) {
+    let a = Channel[Nest[int]]()
+    let b = Channel[Chain[int]]()
+    let t = task.run(fn() => n.v)
+    let u = task.run(fn() => c.v)
+    a.send(n.clone())
+    b.send(c.clone())
+    b.send(c)
+    a.send(n) // error: sending a `Nest[int]` copies it
+    let s = Shared(c)
+}
+
+fn main() {}

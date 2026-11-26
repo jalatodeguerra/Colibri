@@ -45,7 +45,7 @@ pub(crate) mod strfn;
 pub mod value;
 
 #[doc(hidden)]
-pub use builtin::work_of;
+pub use builtin::{THREADS_NOT_BUILT, work_of};
 #[doc(hidden)]
 pub use iter::item_of;
 pub use state::Core;

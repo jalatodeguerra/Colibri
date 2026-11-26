@@ -31,7 +31,16 @@ const PRELUDE_CLASSES: &[&str] = &[
     "Signal",
     "StrBuilder",
     "BytesBuilder",
+    "Task",
+    "Channel",
+    "Shared",
+    "Mutex",
 ];
+
+/// The prelude classes of thread tasks.
+pub(crate) fn is_thread_type_name(name: &str) -> bool {
+    matches!(name, "Task" | "Channel" | "Shared" | "Mutex")
+}
 
 /// What HIR does not keep about a user type.
 #[derive(Clone, Default)]
@@ -233,10 +242,18 @@ impl<'a> Checker<'a> {
                 && !crate::prelude::in_prelude(name.span)
                 && PRELUDE_CLASSES.contains(&name.name.as_str()))
         {
-            self.report(Diagnostic::error(
+            let mut diag = Diagnostic::error(
                 format!("`{}` is a built-in type and cannot be redefined", name.name),
                 name.span,
-            ));
+            );
+            if is_thread_type_name(&name.name) {
+                diag = diag.with_hint(
+                    "`Task`, `Channel`, `Shared` and `Mutex` are the names of the types of thread tasks; pick another name, such as `Job` or `Queue`",
+                );
+            }
+            self.report(diag);
+            // Uses of the name later in this scope are not a second mistake.
+            self.poisoned_types.insert(name.name.clone());
             return false;
         }
         let previous = self

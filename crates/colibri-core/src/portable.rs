@@ -508,7 +508,7 @@ fn render(env: &dyn SendEnv, path: &[Seg]) -> String {
         }
         match *seg {
             Seg::Field(ty, i) => {
-                if n == 0 {
+                if out.is_empty() {
                     out.push_str(&env.type_name(ty));
                 }
                 out.push('.');
@@ -520,13 +520,13 @@ fn render(env: &dyn SendEnv, path: &[Seg]) -> String {
             // The `some` of an optional field is not a step the program writes.
             Seg::Payload(OPTION_TYPE, _, _) => {}
             Seg::Payload(ty, v, i) => {
-                if n == 0 {
+                if out.is_empty() {
                     out.push_str(&env.type_name(ty));
-                    out.push('.');
-                    match env.variant_name(ty, v) {
-                        Some(name) => out.push_str(&name),
-                        None => out.push_str(&format!("variant{v}")),
-                    }
+                }
+                out.push('.');
+                match env.variant_name(ty, v) {
+                    Some(name) => out.push_str(&name),
+                    None => out.push_str(&format!("variant{v}")),
                 }
                 out.push('.');
                 match env.payload_name(ty, v, i) {
@@ -543,7 +543,7 @@ fn render(env: &dyn SendEnv, path: &[Seg]) -> String {
                 ));
             }
             Seg::Capture(f, generation, i) => {
-                if n == 0 {
+                if out.is_empty() {
                     out.push_str("closure");
                 }
                 out.push('.');

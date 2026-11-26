@@ -1747,6 +1747,9 @@ impl Machine {
             Intrinsic::NewSignal => {
                 Ok(self.new_scheduler_object(colibri_check::types::SIGNAL_TYPE))
             }
+            Intrinsic::TaskRun | Intrinsic::NewChannel | Intrinsic::NewShared => {
+                Err(self.panic(fiber, span, colibri_core::THREADS_NOT_BUILT))
+            }
             Intrinsic::HostAlive => Ok(Value::Bool(match &fiber.regs[args.start] {
                 Value::Host(r) => self.core.host_alive(r.index, r.generation),
                 _ => false,

@@ -18,6 +18,9 @@ use crate::prelude::*;
 use crate::show::show;
 use crate::value::Value;
 
+/// What a call of a thread task, a channel or a `Shared` panics with until the worker pool is built.
+pub const THREADS_NOT_BUILT: &str = "thread tasks are not built yet: the program checks, but this build has no worker pool to run `task.run`, `Channel` or `Shared`";
+
 /// The receiver of a list method.
 fn list_of(v: &Value) -> Option<Rc<ListObj>> {
     match v {
@@ -233,6 +236,20 @@ pub trait Builtins: Engine {
                 return self.cogroup_builtin(fiber, op, &recv, span);
             }
             Builtin::SignalEmit => return self.signal_builtin(fiber, &recv, span),
+            // The checker accepts thread tasks, channels and `Shared` (DESIGN §14.1); the worker
+            // pool that runs them is a later step, so a call that gets here stops the program
+            // with a panic instead of doing something else.
+            Builtin::TaskJoin
+            | Builtin::TaskDone
+            | Builtin::TaskTryJoin
+            | Builtin::ChannelSend
+            | Builtin::ChannelRecv
+            | Builtin::ChannelTryRecv
+            | Builtin::ChannelClose
+            | Builtin::ChannelIter
+            | Builtin::SharedGet => {
+                return Err(self.panic(fiber, span, THREADS_NOT_BUILT));
+            }
             // These pause the running coroutine: the VM compiles them to `Join`.
             Builtin::CoroutineJoin | Builtin::CoroutineJoinResult | Builtin::CoGroupJoinAll => {
                 return Err(self.internal(

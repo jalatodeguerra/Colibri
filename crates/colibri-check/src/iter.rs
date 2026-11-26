@@ -15,7 +15,7 @@ use crate::body::FnCtx;
 use crate::builtins::iter_of;
 use crate::hir::{self, Builtin, Callee, Expr};
 use crate::traits::{key_of, match_ty};
-use crate::types::{ITER, ITERABLE, ParamId, Ty};
+use crate::types::{CHANNEL_TYPE, ITER, ITERABLE, ParamId, Ty};
 
 impl FnCtx<'_, '_> {
     /// The item type of a user type, type parameter or interface value that implements `Iter`
@@ -26,6 +26,7 @@ impl FnCtx<'_, '_> {
             Ty::List(t) | Ty::Set(t) => Some((**t).clone()),
             Ty::Map(k, v) => Some(Ty::Tuple(vec![(**k).clone(), (**v).clone()])),
             Ty::Range(_) => Some(Ty::INT),
+            Ty::Adt(CHANNEL_TYPE, args) if args.len() == 1 => Some(args[0].clone()),
             Ty::Bytes => Some(crate::builtins::BYTE),
             Ty::Dyn(id, args) if *id == ITER || *id == ITERABLE => args.first().cloned(),
             Ty::Param(p, _) => self
@@ -86,6 +87,12 @@ impl FnCtx<'_, '_> {
             Ty::List(_) | Ty::Set(_) | Ty::Map(..) | Ty::Range(_) | Ty::Bytes => {
                 self.builtin_call(Builtin::Iter, vec![value], iter_of(item.clone()), span)
             }
+            Ty::Adt(CHANNEL_TYPE, _) => self.builtin_call(
+                Builtin::ChannelIter,
+                vec![value],
+                iter_of(item.clone()),
+                span,
+            ),
             Ty::Dyn(id, _) if *id == ITER => value,
             Ty::Dyn(id, _) if *id == ITERABLE => self.mk(
                 hir::ExprKind::Call(Box::new(hir::Call {

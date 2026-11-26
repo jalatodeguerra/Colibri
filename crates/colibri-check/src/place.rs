@@ -410,6 +410,7 @@ impl FnCtx<'_, '_> {
             Some(ValueRef::Global(g)) => {
                 let ty = self.ck.global_ty(g);
                 self.add_dep(Dep::Global(g), id.span);
+                self.ck.global_writes.insert(id.span);
                 self.ck.note_deprecated_use(DeprKey::Global(g), id.span);
                 Some(Place {
                     anchor: Anchor::Global(g),

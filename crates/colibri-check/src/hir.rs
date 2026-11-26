@@ -904,6 +904,13 @@ pub enum Intrinsic {
     TaskTick,
     /// `wait_for(signal: Signal)`: pauses until the signal is next emitted.
     WaitFor,
+    /// `task.run(f: fn() -> T) -> Task[T]`: starts a thread task (DESIGN §14.1).
+    TaskRun,
+    /// `Channel[T]()` and `Channel[T](capacity: n)`: the argument, when there is one, is the
+    /// capacity.
+    NewChannel,
+    /// `Shared(x)`
+    NewShared,
     /// `CoGroup()`
     NewCoGroup,
     /// `Signal()`
@@ -1151,6 +1158,26 @@ pub enum Builtin {
     CoGroupJoinAll,
     /// `s.emit()`
     SignalEmit,
+    // ---- Task, Channel and Shared (DESIGN §14.1) ----
+    /// `t.join() -> Result[T]`
+    TaskJoin,
+    /// `t.done() -> bool`
+    TaskDone,
+    /// `t.try_join() -> Result[T]?`
+    TaskTryJoin,
+    /// `ch.send(v)`
+    ChannelSend,
+    /// `ch.recv() -> T?`
+    ChannelRecv,
+    /// `ch.try_recv() -> T?`
+    ChannelTryRecv,
+    /// `ch.close()`
+    ChannelClose,
+    /// `ch.iter()`, and what `for x in ch` loops over: an iterator that ends when the channel is
+    /// closed and empty.
+    ChannelIter,
+    /// `s.get() -> T`
+    SharedGet,
 }
 
 #[derive(Debug)]

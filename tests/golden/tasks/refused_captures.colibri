@@ -1,0 +1,65 @@
+// caps: net
+// allow: unused
+// What a `task.run` closure captures is copied to the worker thread, so a capture that cannot be
+// copied is a compile error that names the path to it, starting at the captured variable.
+import net
+
+struct Job {
+    id: int
+    conn: net.Conn
+}
+
+struct Pair {
+    left: int
+    right: Job
+}
+
+fn host_handle(conn: net.Conn) {
+    let t = task.run(fn() { conn.close() }) // error: `closure.conn` is a `net.Conn`, which cannot be sent to another thread
+}
+
+fn inside_a_struct(job: Job) {
+    let t = task.run(fn() { print(job.id) }) // error: `closure.job.conn` is a `net.Conn`, which cannot be sent to another thread
+}
+
+fn two_levels_down(pair: Pair) {
+    let t = task.run(fn() { print(pair.left) }) // error: `closure.pair.right.conn` is a `net.Conn`
+}
+
+fn in_a_list(jobs: List[Job]) {
+    let t = task.run(fn() { print(jobs.len()) }) // error: `closure.jobs[_].conn` is a `net.Conn`
+}
+
+fn in_a_map(jobs: Map[str, Job]) {
+    let t = task.run(fn() { print(jobs.len()) }) // error: `closure.jobs[entry _].value.conn` is a `net.Conn`
+}
+
+fn in_a_tuple(pair: (int, Job)) {
+    let t = task.run(fn() { print(pair.0) }) // error: `closure.pair.1.conn` is a `net.Conn`
+}
+
+fn under_an_option(job: Job?) {
+    let t = task.run(fn() { print(job.is_some()) }) // error: `closure.job.conn` is a `net.Conn`
+}
+
+fn an_iterator(it: Iter[int]) {
+    let t = task.run(fn() { let keep = it }) // error: `closure.it` is an iterator, which cannot be sent to another thread
+}
+
+fn a_task(other: Task[int]) {
+    let t = task.run(fn() { print(other.done()) }) // error: `closure.other` is a `Task`, which cannot be sent to another thread
+}
+
+fn a_coroutine(c: Coroutine[int]) {
+    let t = task.run(fn() { print(c.done()) }) // error: `closure.c` is a `Coroutine`, which cannot be sent to another thread
+}
+
+fn a_group(g: CoGroup) {
+    let t = task.run(fn() { print(g.count()) }) // error: `closure.g` is a `CoGroup`, which cannot be sent to another thread
+}
+
+fn a_signal(s: Signal) {
+    let t = task.run(fn() { s.emit() }) // error: `closure.s` is a `Signal`, which cannot be sent to another thread
+}
+
+fn main() {}

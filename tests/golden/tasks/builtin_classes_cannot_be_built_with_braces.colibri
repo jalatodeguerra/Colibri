@@ -1,0 +1,8 @@
+// allow: unused
+// A `Task`, `Channel`, `Shared` or `Mutex` is made by its own call, not with braces.
+fn main() {
+    let a = Task[int] {} // error: `Task` cannot be built with `{ ... }`
+    let b = Channel[int] {} // error: `Channel` cannot be built with `{ ... }`
+    let c = Shared[int] {} // error: `Shared` cannot be built with `{ ... }`
+    let d = Mutex[int] {} // error: `Mutex` cannot be built with `{ ... }`
+}

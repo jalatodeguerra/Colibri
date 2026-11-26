@@ -52,6 +52,16 @@ pub(crate) enum ScriptStep<'a> {
     Global(GlobalId),
 }
 
+/// A `task.run(f)` call: what `f` refers to, which the worker thread runs.
+pub(crate) struct TaskSite {
+    /// The module-level items the argument refers to: the function it names, or what its closure
+    /// body uses.
+    pub deps: Vec<(Dep, Span)>,
+    /// The argument is a closure written in place, which starts the chain of names.
+    pub closure: bool,
+    pub span: Span,
+}
+
 /// A reference from one body to a module-level item, used to order initialisers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Dep {
@@ -270,6 +280,10 @@ pub(crate) struct Checker<'a> {
     /// For each step of the script, the module-level items it refers to (see
     /// [`FnCtx::check_script`]).
     script_deps: Vec<Vec<(Dep, Span)>>,
+    /// The `task.run` calls, for the module-state rule (see [`Checker::check_task_state`]).
+    pub(crate) task_sites: Vec<TaskSite>,
+    /// The places where a module-level value is named as the target of a change, not read.
+    pub(crate) global_writes: HashSet<Span>,
     /// Initialise the entry file's values in dependency order even when it has no `fn main`
     /// (see [`crate::CheckOptions`]).
     dependency_order: bool,
@@ -509,6 +523,8 @@ impl<'a> Checker<'a> {
             inert_mods: HashSet::new(),
             script_body: None,
             script_deps: Vec::new(),
+            task_sites: Vec::new(),
+            global_writes: HashSet::new(),
             dependency_order: false,
             tests: Vec::new(),
             stack_base: 0,
@@ -583,6 +599,7 @@ impl<'a> Checker<'a> {
         if script_mode {
             self.check_script_order();
         }
+        self.check_task_state();
         let script_from = init_order.len();
         init_order.extend(script_globals);
         let main = self.check_main();
@@ -1191,6 +1208,14 @@ impl<'a> Checker<'a> {
                 return self.resolve_cstr(args, span);
             }
             _ => {}
+        }
+        // A declaration of one of the prelude's thread types was refused (and said so): its uses
+        // do not mean the prelude's type, and are not reported again.
+        if crate::decls::is_thread_type_name(name) && self.poisoned_types.contains(name) {
+            for a in args {
+                self.resolve_type(a);
+            }
+            return Ty::Error;
         }
         if let Some(&id) = self.type_ids.get(name) {
             self.note_deprecated_use(DeprKey::Type(id), span);
@@ -1930,6 +1955,110 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// The module-state rule (DESIGN §4.2): module-level values belong to the main thread, and a
+    /// worker does not run their initialisers, so a `task.run` whose function (or closure, or the
+    /// functions they call) uses a value that is not a `const` is an error that shows the chain.
+    ///
+    /// Followed: the functions, methods and operator impls that a body names or calls, directly
+    /// or through other bodies, and what a closure written in the call uses. Not followed: a call
+    /// through a function value, an interface value or a type parameter (the checker does not know
+    /// the callee); the worker's own read of the value panics at run time instead.
+    fn check_task_state(&mut self) {
+        let sites = std::mem::take(&mut self.task_sites);
+        for site in &sites {
+            let mut parent: HashMap<Dep, Option<usize>> = HashMap::new();
+            let mut queue: Vec<(Dep, Span, Option<usize>)> = Vec::new();
+            for &(dep, span) in &site.deps {
+                if let std::collections::hash_map::Entry::Vacant(e) = parent.entry(dep) {
+                    e.insert(None);
+                    queue.push((dep, span, None));
+                }
+            }
+            let mut head = 0;
+            while head < queue.len() {
+                let (node, _, _) = queue[head];
+                match node {
+                    Dep::Global(g) => {
+                        let info = &self.globals[g.0 as usize];
+                        if info.kind != BindKind::Const {
+                            let mut path = Vec::new();
+                            let mut at = Some(head);
+                            while let Some(k) = at {
+                                path.push((queue[k].0, queue[k].1));
+                                at = queue[k].2;
+                            }
+                            path.reverse();
+                            self.report_main_thread_use(site, &path);
+                        }
+                    }
+                    Dep::Fn(f) => {
+                        for &(next, use_span) in &self.fns[f.0 as usize].deps {
+                            if let std::collections::hash_map::Entry::Vacant(e) = parent.entry(next)
+                            {
+                                e.insert(Some(head));
+                                queue.push((next, use_span, Some(head)));
+                            }
+                        }
+                    }
+                }
+                head += 1;
+            }
+        }
+    }
+
+    /// Reports that a thread task reaches a value of the main thread; `path` leads from what the
+    /// task refers to (each item with the span where the one before it uses it) to the value.
+    fn report_main_thread_use(&mut self, site: &TaskSite, path: &[(Dep, Span)]) {
+        let Some(&(Dep::Global(g), last_use)) = path.last() else {
+            return;
+        };
+        let info = &self.globals[g.0 as usize];
+        let (name, decl) = (info.name.clone(), info.name_span);
+        let mut chain: Vec<String> = Vec::new();
+        if site.closure {
+            chain.push("closure".to_string());
+        }
+        for &(d, _) in path {
+            chain.push(match d {
+                Dep::Fn(f) => self.fns[f.0 as usize].name.clone(),
+                Dep::Global(g) => self.globals[g.0 as usize].name.clone(),
+            });
+        }
+        let (verb, past) = if self.global_writes.contains(&last_use) {
+            ("writes", "written")
+        } else {
+            ("reads", "read")
+        };
+        let in_script = self
+            .script
+            .iter()
+            .any(|s| matches!(s, ScriptStep::Global(x) if *x == g));
+        let hint = if verb == "writes" {
+            format!(
+                "a thread task cannot change the main thread's values: `{name}` stays as it is. Return what the task computed (`t.join()`) or send it on a `Channel`, and let the main thread store it"
+            )
+        } else if in_script {
+            format!(
+                "`{name}` is a value of the script, so it belongs to the main thread even when the task seems to capture it; copy it into a local inside a block or a function first (`{{ let mine = {name}.clone(); task.run(fn() => mine.len()) }}`), or make it a `const`"
+            )
+        } else {
+            format!(
+                "a thread task has its own copy of the program and no module-level state except `const`s; make `{name}` a `const`, or pass what the task needs through a captured variable, a `Channel` or a `Shared`"
+            )
+        };
+        let diag = Diagnostic::error(
+            format!(
+                "`{}` {verb} `{name}`, which belongs to the main thread",
+                chain.join(" -> ")
+            ),
+            site.span,
+        )
+        .with_label(decl, format!("`{name}` is declared here"))
+        .with_label(last_use, format!("`{name}` is {past} here"))
+        .with_hint(hint);
+        self.report(diag);
     }
 
     /// The shortest path from `start` (used at `span`) through functions to a value for which

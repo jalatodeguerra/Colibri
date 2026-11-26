@@ -1,0 +1,64 @@
+// allow: unused
+// `task.run` copies its captures and result implicitly: the closure is the visible boundary. A
+// `send` has no such boundary, so a value that is more than plain data has to be written as a
+// visible copy (a `.clone()`, a literal, a constructor or a call result).
+struct Report {
+    title: str
+    rows: List[int]
+}
+
+struct Point {
+    x: int
+    y: int
+}
+
+struct Wrapper {
+    r: Report
+    n: int
+}
+
+class Node {
+    value: int
+}
+
+fn make() -> Report {
+    return Report { title: "t", rows: [] }
+}
+
+fn sends(report: Report, rows: List[int], node: Node, point: Point, name: str, n: int) {
+    let reports = Channel[Report]()
+    let lists = Channel[List[int]]()
+    let nodes = Channel[Node]()
+    let points = Channel[Point]()
+    let words = Channel[str]()
+    let numbers = Channel[int]()
+    let maybe = Channel[Report?]()
+    let shared = Channel[Shared[Report]]()
+    let nested = Channel[List[List[int]]]()
+    let wrapped = Channel[Wrapper]()
+    let pairs = Channel[(Report, int)]()
+    let fns = Channel[fn() -> int]()
+    reports.send(report) // error: sending a `Report` copies it, so the copy must be visible
+    lists.send(rows) // error: sending a `List[int]` copies it, so the copy must be visible
+    nodes.send(node) // error: sending a `Node` copies it, so the copy must be visible
+    maybe.send(some(report)) // error: sending a `Report` copies it, so the copy must be visible
+    nested.send([rows]) // error: sending a `List[int]` copies it
+    wrapped.send(Wrapper { r: report, n: n }) // error: sending a `Report` copies it
+    pairs.send((report, n)) // error: sending a `Report` copies it
+    maybe.send(some(report.clone()))
+    wrapped.send(Wrapper { r: make(), n: n })
+    pairs.send((make(), n))
+    fns.send(fn() => n + 1)
+    reports.send(report.clone())
+    reports.send(make())
+    reports.send(Report { title: name, rows: [n] })
+    lists.send(rows.clone())
+    lists.send([1, 2, 3])
+    nodes.send(Node { value: 1 })
+    points.send(point)
+    words.send(name)
+    numbers.send(n)
+    shared.send(Shared(report.clone()))
+}
+
+fn main() {}

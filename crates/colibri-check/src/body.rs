@@ -178,6 +178,13 @@ pub(crate) struct FnCtx<'c, 'a> {
     pub obligations: Vec<Obligation>,
     /// Calls of generic functions, whose type arguments must all be known by the end.
     pub generic_calls: Vec<GenericCall>,
+    /// Types that must be sendable to another thread, decided with the bounds.
+    pub(crate) send_checks: Vec<crate::sendable::SendCheck>,
+    /// `ch.send(v)` calls whose value must be a visible copy if it is not plain data.
+    pub(crate) fresh_sends: Vec<crate::sendable::FreshSend>,
+    /// The thread boundaries met so far, each with the range of bound obligations its argument
+    /// made, until their bound impls can be resolved (see `FnCtx::flush_task_sites`).
+    pub(crate) pending_sites: Vec<(crate::checker::TaskSite, std::ops::Range<usize>)>,
     /// How many `unsafe` blocks enclose the code being checked (a closure starts again at 0).
     pub(crate) unsafe_depth: u32,
     /// The target of a plain `x = value` is being resolved: naming `x` there is not a read.
@@ -253,6 +260,9 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             done: Vec::new(),
             obligations: Vec::new(),
             generic_calls: Vec::new(),
+            send_checks: Vec::new(),
+            fresh_sends: Vec::new(),
+            pending_sites: Vec::new(),
             unsafe_depth: 0,
             whole_assign_target: false,
         }
@@ -279,8 +289,18 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     /// function reaches are not recorded, and listing them all would report initialisation
     /// cycles that cannot happen.
     fn add_bound_impl_deps(&mut self) {
+        let all = 0..self.obligations.len();
+        for (f, span) in self.bound_impl_fns(all) {
+            self.add_dep(Dep::Fn(f), span);
+        }
+    }
+
+    /// The methods of the impls that the bounds among `self.obligations[range]` pick, each with
+    /// the span of the call that needs it.
+    fn bound_impl_fns(&mut self, range: std::ops::Range<usize>) -> Vec<(FnId, Span)> {
+        let mut out = Vec::new();
         let pending = std::mem::take(&mut self.obligations);
-        for ob in &pending {
+        for ob in pending.get(range).unwrap_or_default() {
             if !matches!(ob.origin, crate::obligations::Origin::Bound { .. }) {
                 continue;
             }
@@ -300,11 +320,27 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 &mut Vec::new(),
                 &mut methods,
             );
-            for f in methods {
-                self.add_dep(Dep::Fn(f), ob.span);
-            }
+            out.extend(methods.into_iter().map(|f| (f, ob.span)));
         }
         self.obligations = pending;
+        out
+    }
+
+    /// Hands the thread boundaries of this body to the checker, with the impl methods that the
+    /// bounds in their arguments pick: those run on the worker too. Done before the bounds are
+    /// decided, while they are still there.
+    fn flush_task_sites(&mut self) {
+        for (mut site, range) in std::mem::take(&mut self.pending_sites) {
+            for (f, span) in self.bound_impl_fns(range) {
+                site.deps.push((Dep::Fn(f), span));
+            }
+            self.ck.task_sites.push(site);
+        }
+    }
+
+    /// How many uses of module-level items are recorded so far, for [`FnCtx::deps_since`].
+    pub(crate) fn deps_mark(&self) -> usize {
+        self.deps.len()
     }
 
     /// Records a use of a module-level item at `span`.
@@ -313,7 +349,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     }
 
     /// The items referred to since `mark` (a length of the list), each once with its first use.
-    fn deps_since(&self, mark: usize) -> Vec<(Dep, Span)> {
+    pub(crate) fn deps_since(&self, mark: usize) -> Vec<(Dep, Span)> {
         let mut seen = std::collections::HashSet::new();
         self.deps[mark..]
             .iter()
@@ -568,6 +604,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
     fn finish(mut self, block: Block, ret: Ty, span: Span, param_count: u32) -> Body {
         let mut block = block;
         let mut diags = Vec::new();
+        self.flush_task_sites();
         self.settle();
         self.settle_storage();
         // Types left open by an earlier mistake in this body are not worth a second error.
@@ -622,6 +659,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 }
             }
         }
+        self.settle_sends();
         let obligations = std::mem::take(&mut self.obligations);
         let mut seen: Vec<(Ty, crate::types::TypeId, Span)> = Vec::new();
         for ob in obligations {
