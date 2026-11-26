@@ -12,6 +12,11 @@ struct Point {
     y: int
 }
 
+struct Wrapper {
+    r: Report
+    n: int
+}
+
 class Node {
     value: int
 }
@@ -29,10 +34,21 @@ fn sends(report: Report, rows: List[int], node: Node, point: Point, name: str, n
     let numbers = Channel[int]()
     let maybe = Channel[Report?]()
     let shared = Channel[Shared[Report]]()
+    let nested = Channel[List[List[int]]]()
+    let wrapped = Channel[Wrapper]()
+    let pairs = Channel[(Report, int)]()
+    let fns = Channel[fn() -> int]()
     reports.send(report) // error: sending a `Report` copies it, so the copy must be visible
     lists.send(rows) // error: sending a `List[int]` copies it, so the copy must be visible
     nodes.send(node) // error: sending a `Node` copies it, so the copy must be visible
-    maybe.send(some(report)) // fine: built here
+    maybe.send(some(report)) // error: sending a `Report` copies it, so the copy must be visible
+    nested.send([rows]) // error: sending a `List[int]` copies it
+    wrapped.send(Wrapper { r: report, n: n }) // error: sending a `Report` copies it
+    pairs.send((report, n)) // error: sending a `Report` copies it
+    maybe.send(some(report.clone()))
+    wrapped.send(Wrapper { r: make(), n: n })
+    pairs.send((make(), n))
+    fns.send(fn() => n + 1)
     reports.send(report.clone())
     reports.send(make())
     reports.send(Report { title: name, rows: [n] })

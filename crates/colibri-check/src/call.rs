@@ -453,6 +453,7 @@ impl FnCtx<'_, '_> {
         let ret = self.infer.fresh(crate::infer::VarKind::General);
         let want = Ty::Fn(Vec::new(), Box::new(ret.clone()));
         let mark = self.deps_mark();
+        let ob_mark = self.obligations.len();
         let arg = self.check_expr(&args[0].value, Some(&want));
         let reason = Some((
             args[0].value.span,
@@ -461,31 +462,14 @@ impl FnCtx<'_, '_> {
         if !self.expect(&arg, &want, reason) {
             return self.error_expr(span);
         }
-        let closure = match &arg.kind {
-            hir::ExprKind::Closure(c) => Some(c.f),
-            _ => None,
-        };
-        if let Some(f) = closure
-            && let Some(done) = self.done.iter().find(|d| d.f == f)
-        {
-            let captured: Vec<(String, Ty)> = done
-                .frame
-                .captures
-                .iter()
-                .filter_map(|c| done.frame.locals.get(c.inner.0 as usize))
-                .map(|l| (l.name.clone(), l.ty.clone()))
-                .collect();
-            for (name, ty) in captured {
-                self.require_sendable(&ty, crate::sendable::SendOrigin::Capture(name), arg.span);
+        // A function value held in a variable is not seen here; the run time catches it.
+        match &arg.kind {
+            hir::ExprKind::Closure(_) | hir::ExprKind::FnRef { .. } => {
+                self.note_thread_boundary(&arg, mark, ob_mark);
             }
+            _ => self.note_task_site(false, mark, ob_mark, span),
         }
         self.require_sendable(&ret, crate::sendable::SendOrigin::Result, arg.span);
-        let deps = self.deps_since(mark);
-        self.ck.task_sites.push(crate::checker::TaskSite {
-            deps,
-            closure: closure.is_some(),
-            span,
-        });
         self.mk(
             hir::ExprKind::Call(Box::new(hir::Call {
                 callee: Callee::Intrinsic(Intrinsic::TaskRun),

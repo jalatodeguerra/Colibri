@@ -522,11 +522,11 @@ fn render(env: &dyn SendEnv, path: &[Seg]) -> String {
             Seg::Payload(ty, v, i) => {
                 if out.is_empty() {
                     out.push_str(&env.type_name(ty));
-                    out.push('.');
-                    match env.variant_name(ty, v) {
-                        Some(name) => out.push_str(&name),
-                        None => out.push_str(&format!("variant{v}")),
-                    }
+                }
+                out.push('.');
+                match env.variant_name(ty, v) {
+                    Some(name) => out.push_str(&name),
+                    None => out.push_str(&format!("variant{v}")),
                 }
                 out.push('.');
                 match env.payload_name(ty, v, i) {

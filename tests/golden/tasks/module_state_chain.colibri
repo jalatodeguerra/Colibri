@@ -27,16 +27,16 @@ impl Logger {
 }
 
 fn through_calls() {
-    task.run(worker) // error: `worker -> step -> log_line -> counter` reads `counter`, which belongs to the main thread
+    task.run(worker) // error: `worker -> step -> log_line -> counter` writes `counter`, which belongs to the main thread
 }
 
 fn through_a_closure() {
-    task.run(fn() { step() }) // error: `closure -> step -> log_line -> counter` reads `counter`
+    task.run(fn() { step() }) // error: `closure -> step -> log_line -> counter` writes `counter`
 }
 
 fn through_a_method() {
     let logger = Logger { prefix: "p" }
-    task.run(fn() { logger.write("x") }) // error: `closure -> Logger.write -> log_line -> counter` reads `counter`
+    task.run(fn() { logger.write("x") }) // error: `closure -> Logger.write -> log_line -> counter` writes `counter`
 }
 
 fn main() {}

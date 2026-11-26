@@ -1,0 +1,25 @@
+// allow: unused
+// A generic type whose arguments grow at each level never repeats a type, so the walks that look
+// into types for a send stop at a depth instead (what is deeper is left to the copy at run time).
+// Checking these must finish.
+struct Nest[T] {
+    v: T
+    inner: List[Nest[List[T]]]
+}
+
+struct Chain[T] {
+    v: T
+    next: Chain[(T, T)]?
+}
+
+fn channels(n: Nest[int], c: Chain[int]) {
+    let a = Channel[Nest[int]]()
+    let b = Channel[Chain[int]]()
+    let t = task.run(fn() => n.v)
+    let u = task.run(fn() => c.v)
+    a.send(n.clone())
+    b.send(c.clone())
+    let s = Shared(c)
+}
+
+fn main() {}

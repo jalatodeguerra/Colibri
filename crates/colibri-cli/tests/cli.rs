@@ -1099,3 +1099,46 @@ fn a_panic_inside_vec_names_the_library_in_the_trace() {
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }
+
+/// A host class that takes one of the names of thread tasks.
+struct TaskHandle;
+impl colibri_runtime::HostType for TaskHandle {
+    const NAME: &'static str = "Task";
+    fn describe(d: &mut colibri_runtime::TypeBuilder<'_, Self>) {
+        d.method("id", [], |_: &TaskHandle| 1i64);
+    }
+}
+
+#[test]
+fn a_host_interface_that_declares_a_thread_type_name_gets_one_clear_error() {
+    let mut vm = colibri_runtime::Vm::builder().build();
+    let mut jobs = vm.module("jobs");
+    jobs.register_type::<TaskHandle>().unwrap();
+    jobs.register_fn_named("current", [], || TaskHandle)
+        .unwrap();
+    let cbi = temp_file("jobs_task.cbi", &jobs.interface_text());
+    let src = temp_file(
+        "uses_jobs_task.colibri",
+        "import jobs\nfn main() {\n    let t = jobs.current()\n    print(t.id())\n}\n",
+    );
+    let out = colibri(&[
+        "check",
+        "--interface",
+        cbi.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        err.contains("`Task` is a built-in type and cannot be redefined"),
+        "{err}"
+    );
+    assert!(err.contains("pick another name"), "{err}");
+    // Nothing else is said about the same declaration.
+    assert!(!err.contains("takes 1 type argument"), "{err}");
+    assert_eq!(
+        err.lines().filter(|l| l.starts_with("Error:")).count(),
+        1,
+        "{err}"
+    );
+}

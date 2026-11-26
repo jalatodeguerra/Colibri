@@ -34,12 +34,11 @@
 //! `ch.send(v)` has a second rule (Q2): a value that is more than plain data must be written as a
 //! visible copy, see [`FnCtx::note_channel_send`].
 
-use colibri_syntax::ast::{self, ExprKind};
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::FnCtx;
 use crate::checker::Checker;
-use crate::hir::TypeDefKind;
+use crate::hir::{self, TypeDefKind};
 use crate::types::{
     CHANNEL_TYPE, COGROUP_TYPE, COROUTINE_TYPE, ERROR_TYPE, ITER, MUTEX_TYPE, OPTION_TYPE,
     SHARED_TYPE, SIGNAL_TYPE, TASK_TYPE, Ty, TypeId,
@@ -98,6 +97,40 @@ enum Seg {
 /// The most steps of a path that an error shows, as at run time.
 const SHOWN_STEPS: usize = 12;
 
+/// How many steps down a walk follows. A generic type whose arguments grow at each level
+/// (`struct Nest[T] { inner: List[Nest[List[T]]] }`) never repeats a type, so only a depth stops
+/// it. What lies deeper is left to the copy at run time, like a type parameter.
+const MAX_TYPE_DEPTH: usize = 64;
+
+/// How big a type a walk follows into, counted in type constructors. A type whose arguments double
+/// at each level (`struct Chain[T] { next: Chain[(T, T)]? }`) is out of reach long before the
+/// depth is.
+const MAX_TYPE_SIZE: usize = 1024;
+
+/// The number of constructors in `ty`, counting no further than `limit`.
+fn type_size(ty: &Ty, limit: usize) -> usize {
+    let mut n = 1;
+    let add = |t: &Ty, n: &mut usize| {
+        if *n <= limit {
+            *n += type_size(t, limit - *n + 1);
+        }
+    };
+    match ty {
+        Ty::Tuple(ts) | Ty::Adt(_, ts) | Ty::Dyn(_, ts) => ts.iter().for_each(|t| add(t, &mut n)),
+        Ty::List(t) | Ty::Set(t) | Ty::Option(t) | Ty::Ptr(t) | Ty::Range(t) => add(t, &mut n),
+        Ty::Map(a, b) => {
+            add(a, &mut n);
+            add(b, &mut n);
+        }
+        Ty::Fn(ps, r) => {
+            ps.iter().for_each(|t| add(t, &mut n));
+            add(r, &mut n);
+        }
+        _ => {}
+    }
+    n
+}
+
 /// Why a type is looked at, which is where the message points and what it says.
 #[derive(Clone, Debug)]
 pub(crate) enum SendOrigin {
@@ -109,6 +142,8 @@ pub(crate) enum SendOrigin {
     ChannelElem,
     /// The value a `Shared` holds.
     SharedValue,
+    /// A value passed to `send` whose type cannot be sent.
+    SentValue,
 }
 
 /// A type that has to be sendable once the body's types are known.
@@ -119,7 +154,8 @@ pub(crate) struct SendCheck {
     pub span: Span,
 }
 
-/// A `ch.send(v)` whose value, if it is more than plain data, must be a visible copy.
+/// A part of a sent value that is read from a variable: if it is more than plain data, the send
+/// must write the copy.
 #[derive(Clone, Debug)]
 pub(crate) struct FreshSend {
     pub ty: Ty,
@@ -197,8 +233,12 @@ impl Checker<'_> {
                 if matches!(def.kind, TypeDefKind::HostClass) {
                     return refuse(self, path, Refusal::Host(def.display_name().into_owned()));
                 }
-                // A type that holds itself (a list of its own kind) is looked at once.
-                if done.contains(ty) {
+                // A type that holds itself (a list of its own kind) is looked at once, and one
+                // that keeps growing is looked at to a depth.
+                if done.contains(ty)
+                    || path.len() >= MAX_TYPE_DEPTH
+                    || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE
+                {
                     return Ok(());
                 }
                 done.push(ty.clone());
@@ -268,9 +308,9 @@ impl Checker<'_> {
                 Seg::Payload(id, variant, field) => {
                     if out.is_empty() {
                         out.push_str(&name(id));
-                        out.push('.');
-                        out.push_str(variant);
                     }
+                    out.push('.');
+                    out.push_str(variant);
                     out.push('.');
                     out.push_str(field);
                 }
@@ -288,14 +328,16 @@ impl Checker<'_> {
     /// through a second name (a list, a map, a set, an object, a closure, an interface value), or
     /// that holds one. Handles and plain values are not.
     pub(crate) fn holds_reference(&self, ty: &Ty) -> bool {
-        self.holds_ref_walk(ty, &mut Vec::new())
+        self.holds_ref_walk(ty, &mut Vec::new(), 0)
     }
 
-    fn holds_ref_walk(&self, ty: &Ty, done: &mut Vec<Ty>) -> bool {
+    fn holds_ref_walk(&self, ty: &Ty, done: &mut Vec<Ty>, depth: usize) -> bool {
         match ty {
             Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Fn(..) | Ty::Dyn(..) => true,
-            Ty::Tuple(items) => items.iter().any(|t| self.holds_ref_walk(t, done)),
-            Ty::Option(t) | Ty::Range(t) => self.holds_ref_walk(t, done),
+            Ty::Tuple(items) => items
+                .iter()
+                .any(|t| self.holds_ref_walk(t, done, depth + 1)),
+            Ty::Option(t) | Ty::Range(t) => self.holds_ref_walk(t, done, depth + 1),
             Ty::Adt(id, args) => {
                 if matches!(*id, CHANNEL_TYPE | SHARED_TYPE | MUTEX_TYPE | ERROR_TYPE) {
                     return false;
@@ -303,7 +345,10 @@ impl Checker<'_> {
                 let Some(def) = self.types.get(id.0 as usize) else {
                     return false;
                 };
-                if done.contains(ty) {
+                if done.contains(ty)
+                    || depth >= MAX_TYPE_DEPTH
+                    || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE
+                {
                     return false;
                 }
                 done.push(ty.clone());
@@ -317,11 +362,11 @@ impl Checker<'_> {
                     TypeDefKind::Class { .. } | TypeDefKind::HostClass => true,
                     TypeDefKind::Struct { fields } => fields
                         .iter()
-                        .any(|f| self.holds_ref_walk(&f.ty.subst(&map), done)),
+                        .any(|f| self.holds_ref_walk(&f.ty.subst(&map), done, depth + 1)),
                     TypeDefKind::Enum { variants } => variants.iter().any(|v| {
                         v.fields
                             .iter()
-                            .any(|f| self.holds_ref_walk(&f.ty.subst(&map), done))
+                            .any(|f| self.holds_ref_walk(&f.ty.subst(&map), done, depth + 1))
                     }),
                     TypeDefKind::Interface { .. } => true,
                 }
@@ -331,20 +376,25 @@ impl Checker<'_> {
     }
 }
 
-/// Whether an expression visibly makes a new value: a call (a `.clone()`, a constructor, a
-/// function's result), a literal of a collection, a tuple, a struct or a variant.
-fn visibly_fresh(e: &ast::Expr) -> bool {
+/// The parts of a sent value that are not visibly fresh: a variable, field or element read. A
+/// call, a closure, a literal and the like make a new value; a variant, struct, tuple or
+/// collection literal is only as fresh as its parts, since wrapping `report` in `some(..)` copies
+/// it as invisibly as sending `report` does.
+fn unfresh_parts(e: &hir::Expr, out: &mut Vec<(Ty, Span, String)>) {
+    use hir::ExprKind as K;
     match &e.kind {
-        ExprKind::Call { .. }
-        | ExprKind::List(_)
-        | ExprKind::Map(_)
-        | ExprKind::Tuple(_)
-        | ExprKind::StructLit { .. }
-        | ExprKind::DotVariant { .. }
-        | ExprKind::Str(_)
-        | ExprKind::None => true,
-        ExprKind::Paren(inner) | ExprKind::Try(inner) => visibly_fresh(inner),
-        _ => false,
+        K::Read(place) => out.push((e.ty.clone(), e.span, place.display.clone())),
+        K::Coerce(inner, _) => unfresh_parts(inner, out),
+        K::Struct { fields: parts, .. }
+        | K::Object { fields: parts, .. }
+        | K::Variant { args: parts, .. }
+        | K::Tuple(parts)
+        | K::ListLit(parts) => parts.iter().for_each(|p| unfresh_parts(p, out)),
+        K::MapLit(entries) => entries.iter().for_each(|(k, v)| {
+            unfresh_parts(k, out);
+            unfresh_parts(v, out);
+        }),
+        _ => {}
     }
 }
 
@@ -358,21 +408,61 @@ impl FnCtx<'_, '_> {
         });
     }
 
-    /// `ch.send(value)` (Q2): a value that is more than plain data must be written as a visible
-    /// copy. The type may not be known yet, so the rule is decided at the end of the body.
-    pub(crate) fn note_channel_send(&mut self, elem: &Ty, value: &ast::Expr) {
-        if visibly_fresh(value) {
-            return;
+    /// `ch.send(value)` (Q2): a part of the value that is more than plain data must be written as
+    /// a visible copy. The types may not be known yet, so the rule is decided at the end of the
+    /// body.
+    pub(crate) fn note_channel_send(&mut self, value: &hir::Expr) {
+        let mut parts = Vec::new();
+        unfresh_parts(value, &mut parts);
+        for (ty, span, shown) in parts {
+            self.fresh_sends.push(FreshSend { ty, span, shown });
         }
-        let shown = match &value.kind {
-            ExprKind::Ident(id) => id.name.clone(),
-            _ => "value".to_string(),
+    }
+
+    /// A closure written where it crosses to another thread (`task.run(..)`, `ch.send(..)`,
+    /// `Shared(..)`): what it captures is copied, and what it reaches runs on the worker. `mark`
+    /// and `ob_mark` are where the argument's uses and bounds started. A function name counts for
+    /// the module-state rule too. Returns whether `arg` was one of the two.
+    pub(crate) fn note_thread_boundary(&mut self, arg: &hir::Expr, mark: usize, ob_mark: usize) {
+        let closure = match &arg.kind {
+            hir::ExprKind::Closure(c) => Some(c.f),
+            hir::ExprKind::FnRef { .. } => None,
+            _ => return,
         };
-        self.fresh_sends.push(FreshSend {
-            ty: elem.clone(),
-            span: value.span,
-            shown,
-        });
+        if let Some(f) = closure
+            && let Some(done) = self.done.iter().find(|d| d.f == f)
+        {
+            let captured: Vec<(String, Ty)> = done
+                .frame
+                .captures
+                .iter()
+                .filter_map(|c| done.frame.locals.get(c.inner.0 as usize))
+                .map(|l| (l.name.clone(), l.ty.clone()))
+                .collect();
+            for (name, ty) in captured {
+                self.require_sendable(&ty, SendOrigin::Capture(name), arg.span);
+            }
+        }
+        self.note_task_site(closure.is_some(), mark, ob_mark, arg.span);
+    }
+
+    /// Keeps what the argument of a thread boundary refers to for the module-state rule.
+    pub(crate) fn note_task_site(
+        &mut self,
+        closure: bool,
+        mark: usize,
+        ob_mark: usize,
+        span: Span,
+    ) {
+        let deps = self.deps_since(mark);
+        self.pending_sites.push((
+            crate::checker::TaskSite {
+                deps,
+                closure,
+                span,
+            },
+            ob_mark..self.obligations.len(),
+        ));
     }
 
     /// Decides the sendability checks and the visible-copy rule recorded in this body.
@@ -384,39 +474,19 @@ impl FnCtx<'_, '_> {
                 SendOrigin::Capture(name) => Some(format!("closure.{name}")),
                 _ => None,
             };
-            let Err(bad) = self.ck.sendable(&ty, root.as_deref()) else {
-                continue;
-            };
-            let (subject, why) = match &c.origin {
-                SendOrigin::Capture(_) => (
-                    format!("`{}`", bad.path),
-                    "`task.run` copies what its closure captures to the worker thread",
-                ),
-                SendOrigin::Result => (
-                    subject_of(&bad, "the result of the task"),
-                    "`join` copies the task's result back to the thread that joins it",
-                ),
-                SendOrigin::ChannelElem => (
-                    subject_of(&bad, "the element type of the channel"),
-                    "`send` copies each value to the thread that receives it",
-                ),
-                SendOrigin::SharedValue => (
-                    subject_of(&bad, "the value of a `Shared`"),
-                    "`Shared` keeps a frozen copy that every thread can read",
-                ),
-            };
-            self.ck.report(
-                Diagnostic::error(format!("{subject} {}", bad.predicate()), c.span).with_hint(
-                    format!(
-                        "{why}, and this part cannot be copied: pass plain data (numbers, strings, lists and structs of them), a `Shared`, or a `Channel`, and open handles inside the task"
-                    ),
-                ),
-            );
+            if let Err(bad) = self.ck.sendable(&ty, root.as_deref()) {
+                self.report_not_sendable(&bad, &c.origin, c.span);
+            }
         }
         let sends = std::mem::take(&mut self.fresh_sends);
         for s in sends {
             let ty = self.infer.finalize(&s.ty).0;
             if !self.ck.holds_reference(&ty) {
+                continue;
+            }
+            // What cannot be sent at all gets that error: a copy would not help.
+            if let Err(bad) = self.ck.sendable(&ty, None) {
+                self.report_not_sendable(&bad, &SendOrigin::SentValue, s.span);
                 continue;
             }
             let shown_ty = self.show(&ty);
@@ -432,12 +502,45 @@ impl FnCtx<'_, '_> {
             );
         }
     }
+
+    fn report_not_sendable(&mut self, bad: &NotSend, origin: &SendOrigin, span: Span) {
+        let (subject, why) = match origin {
+            SendOrigin::Capture(_) => (
+                format!("`{}`", bad.path),
+                "a closure that crosses to another thread copies what it captures",
+            ),
+            SendOrigin::Result => (
+                subject_of(bad, "the result of the task"),
+                "`join` copies the task's result back to the thread that joins it",
+            ),
+            SendOrigin::ChannelElem => (
+                subject_of(bad, "the element type of the channel"),
+                "`send` copies each value to the thread that receives it",
+            ),
+            SendOrigin::SharedValue => (
+                subject_of(bad, "the value of a `Shared`"),
+                "`Shared` keeps a frozen copy that every thread can read",
+            ),
+            SendOrigin::SentValue => (
+                subject_of(bad, "the value sent"),
+                "`send` copies each value to the thread that receives it",
+            ),
+        };
+        self.ck.report(
+            Diagnostic::error(format!("{subject} {}", bad.predicate()), span).with_hint(format!(
+                "{why}, and this part cannot be copied: pass plain data (numbers, strings, lists and structs of them), a `Shared`, or a `Channel`, and open handles inside the task"
+            )),
+        );
+    }
 }
 
 /// The subject of a message when the offender is a part (`` `Job.conn` ``), or the whole thing.
 fn subject_of(bad: &NotSend, whole: &str) -> String {
     if bad.path.is_empty() {
         whole.to_string()
+    } else if bad.path.starts_with(['.', '[']) {
+        // A path that starts with a step has no type name to say what it is a part of.
+        format!("`{}` of {whole}", bad.path)
     } else {
         format!("`{}`", bad.path)
     }

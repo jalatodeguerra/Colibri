@@ -1,0 +1,32 @@
+// allow: unused
+// A call through a bound that is written directly in the closure runs the impl the bound picks,
+// so what that impl reads counts, as it does for a named function.
+let mut seen = 0
+
+interface Job {
+    fn run(self) -> int
+}
+
+struct A {}
+
+impl Job for A {
+    fn run(self) -> int {
+        seen += 1
+        return 1
+    }
+}
+
+fn via_bound[J: Job](j: J) -> int {
+    return j.run()
+}
+
+fn worker() -> int {
+    return via_bound(A {})
+}
+
+fn tasks() {
+    let t1 = task.run(worker) // error: `worker -> A.run -> seen` writes `seen`
+    let t2 = task.run(fn() => via_bound(A {})) // error: `closure -> A.run -> seen` writes `seen`
+}
+
+fn main() {}

@@ -146,13 +146,14 @@ fn static_rows() {{
     m.release_globals();
 }
 
-/// `[12]` becomes `[_]`.
+/// `[12]` becomes `[_]` and `[entry 3]` becomes `[entry _]`.
 fn positions_as_blanks(text: &str) -> String {
     let mut out = String::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         out.push(c);
-        if c == '[' && chars.peek().is_some_and(|d| d.is_ascii_digit()) {
+        let entry = out.ends_with("[entry ");
+        if (c == '[' || entry) && chars.peek().is_some_and(|d| d.is_ascii_digit()) {
             while chars.peek().is_some_and(|d| d.is_ascii_digit()) {
                 chars.next();
             }
@@ -160,4 +161,91 @@ fn positions_as_blanks(text: &str) -> String {
         }
     }
     out
+}
+
+const SHAPES: &str = "
+fn work() -> int { return 1 }
+class Job { id: int, runner: Coroutine[int] }
+enum Msg { Quit, Send(Job), Named(job: Job) }
+class Node { id: int, job: Job? }
+
+fn job() -> Job { return Job { id: 1, runner: go work() } }
+fn s_enum() -> Msg { return Msg.Send(job()) }
+fn s_tuple() -> (int, Job) { return (1, job()) }
+fn s_map() -> Map[str, Job] { return {\"a\": job()} }
+fn s_list() -> List[Job] { return [job()] }
+fn s_node() -> Node { return Node { id: 1, job: some(job()) } }
+fn s_msgs() -> List[Msg?] { return [some(Msg.Send(job()))] }
+fn s_named() -> Msg { return Msg.Named(job: job()) }
+";
+
+/// The checker and the run time give the same message for seven shapes, up to three differences
+/// that cannot be removed (the first is a trailer the checker adds to a path that starts with a
+/// step, "of the result of the task"): a position in a list or a map is a number at run time and `_` in the
+/// checker, and for an enum the checker names the first variant whose payload cannot be sent,
+/// where the run time names the variant the value holds.
+#[test]
+fn seven_shapes_have_the_same_path_in_the_checker_and_at_run_time() {
+    let (ast, _) = parse_file(FileId(0), SHAPES);
+    let checked = colibri_check::check(&ast);
+    let program = checked
+        .program
+        .unwrap_or_else(|| panic!("{:?}", checked.diagnostics));
+    let mut m = Machine::new(Box::new(std::io::sink()), 200);
+    m.load(&program);
+    let mut fiber = VmFiber::new();
+    m.run_module(&mut fiber).expect("module");
+    let stack = StackGuard::here(1 << 20);
+
+    let names = [
+        "s_enum", "s_tuple", "s_map", "s_list", "s_node", "s_msgs", "s_named",
+    ];
+    let statics: String = names
+        .iter()
+        .map(|n| format!("fn t_{n}() {{\n    let t = task.run({n})\n}}\n"))
+        .collect();
+    let (ast, _) = parse_file(FileId(0), &format!("{SHAPES}{statics}"));
+    let checked = colibri_check::check(&ast);
+    let found: Vec<String> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message.clone())
+        .collect();
+    assert_eq!(found.len(), names.len(), "{found:?}");
+
+    let mut differing = Vec::new();
+    for (name, static_message) in names.iter().zip(&found) {
+        // A path that starts with a step says whose part it is.
+        let static_message = static_message.replace(" of the result of the task", "");
+        let id = program.fns.iter().position(|f| f.name == *name).unwrap();
+        let value = m.call(&mut fiber, FnId(id as u32), Vec::new()).unwrap();
+        let run_time = positions_as_blanks(&m.to_portable(&value, stack).unwrap_err().to_string());
+        if run_time != static_message {
+            differing.push((*name, run_time, static_message));
+        }
+        m.release(value);
+    }
+    m.release_globals();
+    let want = "`Msg.Send.0.runner` is a `Coroutine`, which cannot be sent to another thread";
+    let named = "`Msg.Named.job.runner` is a `Coroutine`, which cannot be sent to another thread";
+    assert_eq!(
+        differing,
+        vec![("s_named", named.to_string(), want.to_string())]
+    );
+    // And the shapes that agree read as expected, with the variant named inside a path.
+    assert!(
+        found.iter().any(|f| f.starts_with("`.1.runner`")),
+        "{found:?}"
+    );
+    assert!(
+        found.iter().any(|f| f.starts_with("`[_].Send.0.runner`")),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|f| f.starts_with("`[entry _].value.runner`")),
+        "{found:?}"
+    );
 }

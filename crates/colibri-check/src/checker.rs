@@ -282,6 +282,8 @@ pub(crate) struct Checker<'a> {
     script_deps: Vec<Vec<(Dep, Span)>>,
     /// The `task.run` calls, for the module-state rule (see [`Checker::check_task_state`]).
     pub(crate) task_sites: Vec<TaskSite>,
+    /// The places where a module-level value is named as the target of a change, not read.
+    pub(crate) global_writes: HashSet<Span>,
     /// Initialise the entry file's values in dependency order even when it has no `fn main`
     /// (see [`crate::CheckOptions`]).
     dependency_order: bool,
@@ -522,6 +524,7 @@ impl<'a> Checker<'a> {
             script_body: None,
             script_deps: Vec::new(),
             task_sites: Vec::new(),
+            global_writes: HashSet::new(),
             dependency_order: false,
             tests: Vec::new(),
             stack_base: 0,
@@ -1205,6 +1208,14 @@ impl<'a> Checker<'a> {
                 return self.resolve_cstr(args, span);
             }
             _ => {}
+        }
+        // A declaration of one of the prelude's thread types was refused (and said so): its uses
+        // do not mean the prelude's type, and are not reported again.
+        if crate::decls::is_thread_type_name(name) && self.poisoned_types.contains(name) {
+            for a in args {
+                self.resolve_type(a);
+            }
+            return Ty::Error;
         }
         if let Some(&id) = self.type_ids.get(name) {
             self.note_deprecated_use(DeprKey::Type(id), span);
@@ -2015,18 +2026,34 @@ impl<'a> Checker<'a> {
                 Dep::Global(g) => self.globals[g.0 as usize].name.clone(),
             });
         }
+        let (verb, past) = if self.global_writes.contains(&last_use) {
+            ("writes", "written")
+        } else {
+            ("reads", "read")
+        };
+        let in_script = self
+            .script
+            .iter()
+            .any(|s| matches!(s, ScriptStep::Global(x) if *x == g));
+        let hint = if in_script {
+            format!(
+                "`{name}` is a value of the script, so it belongs to the main thread even when the task seems to capture it; copy it into a local inside a block or a function first (`{{ let mine = {name}.clone(); task.run(fn() => mine.len()) }}`), or make it a `const`"
+            )
+        } else {
+            format!(
+                "a thread task has its own copy of the program and no module-level state except `const`s; make `{name}` a `const`, or pass what the task needs through a captured variable, a `Channel` or a `Shared`"
+            )
+        };
         let diag = Diagnostic::error(
             format!(
-                "`{}` reads `{name}`, which belongs to the main thread",
+                "`{}` {verb} `{name}`, which belongs to the main thread",
                 chain.join(" -> ")
             ),
             site.span,
         )
         .with_label(decl, format!("`{name}` is declared here"))
-        .with_label(last_use, format!("`{name}` is read here"))
-        .with_hint(format!(
-            "a thread task has its own copy of the program and no module-level state except `const`s; make `{name}` a `const`, or pass what the task needs through a captured variable, a `Channel` or a `Shared`"
-        ));
+        .with_label(last_use, format!("`{name}` is {past} here"))
+        .with_hint(hint);
         self.report(diag);
     }
 
