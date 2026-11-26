@@ -549,7 +549,7 @@ const WATCH_INTERVAL: f64 = 0.15;
 /// `main`, then the event loop; with `watch`, the sources are looked at before every tick.
 /// A patch (only function bodies changed) leaves the program running with the new bodies; a
 /// restart runs `main` again, as `colibri run --watch` does. The breakpoints are the machine's
-/// and follow their files (§34.8), so what the adapter has to refresh is its own list of files.
+/// and follow their files (§34.7), so what the adapter has to refresh is its own list of files.
 fn run_program(
     state: &Rc<RefCell<State>>,
     vm: &mut colibri::Vm,
