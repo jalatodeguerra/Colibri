@@ -13,12 +13,17 @@ const MAX_BODY: usize = 64 * 1024 * 1024;
 pub enum ReadError {
     /// The input ended between messages.
     Eof,
-    /// The message is unusable but the stream is still in step: the next read starts at the
-    /// next message.
+    /// The body is not usable but the stream is still in step: the next read starts at the next
+    /// message.
     Malformed(String),
-    /// The stream cannot be followed any more (it ended inside a message, or failed).
+    /// The stream cannot be followed any more: a header with no usable length (the body that
+    /// follows could not be told from the next header), a line that never ends, a message that
+    /// is too long, or input that ended inside a message.
     Fatal(String),
 }
+
+/// The longest header line read.
+const MAX_LINE: usize = 4096;
 
 /// Reads one message.
 pub fn read_message(input: &mut impl BufRead) -> Result<Value, ReadError> {
@@ -26,9 +31,8 @@ pub fn read_message(input: &mut impl BufRead) -> Result<Value, ReadError> {
     let mut bad_length = false;
     let mut seen_header = false;
     loop {
-        let mut line = String::new();
         let mut raw = Vec::new();
-        match input.read_until(b'\n', &mut raw) {
+        match std::io::Read::take(&mut *input, MAX_LINE as u64 + 1).read_until(b'\n', &mut raw) {
             Ok(0) if seen_header => {
                 return Err(ReadError::Fatal("input ended inside a header".into()));
             }
@@ -36,7 +40,12 @@ pub fn read_message(input: &mut impl BufRead) -> Result<Value, ReadError> {
             Ok(_) => {}
             Err(e) => return Err(ReadError::Fatal(format!("cannot read input: {e}"))),
         }
-        line.push_str(&String::from_utf8_lossy(&raw));
+        if raw.len() > MAX_LINE {
+            return Err(ReadError::Fatal(format!(
+                "a header line is longer than {MAX_LINE} bytes"
+            )));
+        }
+        let line = String::from_utf8_lossy(&raw);
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             break;
@@ -52,8 +61,9 @@ pub fn read_message(input: &mut impl BufRead) -> Result<Value, ReadError> {
         }
     }
     let Some(length) = length.filter(|_| !bad_length) else {
-        return Err(ReadError::Malformed(
-            "the header has no valid Content-Length".into(),
+        return Err(ReadError::Fatal(
+            "the header has no valid Content-Length, so where the next message starts is not known"
+                .into(),
         ));
     };
     if length > MAX_BODY {
@@ -109,17 +119,40 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_body_or_header_is_reported_and_the_next_message_reads() {
+    fn a_bad_body_is_reported_and_the_next_message_reads() {
         let mut bytes = b"Content-Length: 5\r\n\r\n{nope".to_vec();
-        bytes.extend(b"Content-Length: abc\r\n\r\n");
-        bytes.extend(b"X-Other: 1\r\n\r\n");
         write_message(&mut bytes, &json!({"ok": true})).unwrap();
         let read = read_all(&bytes);
-        assert_eq!(read.len(), 4);
+        assert_eq!(read.len(), 2);
         assert!(read[0].as_ref().unwrap_err().contains("not JSON"));
-        assert!(read[1].as_ref().unwrap_err().contains("Content-Length"));
-        assert!(read[2].as_ref().unwrap_err().contains("Content-Length"));
-        assert_eq!(read[3], Ok(json!({"ok": true})));
+        assert_eq!(read[1], Ok(json!({"ok": true})));
+    }
+
+    #[test]
+    fn a_header_without_a_usable_length_ends_the_stream_even_with_a_body_after_it() {
+        // The body cannot be told from the next header, so nothing after it is read.
+        for header in [
+            "Content-Length: 99999999999999999999999",
+            "Content-Length: abc",
+            "Content-Length:",
+            "X-Other: 1",
+        ] {
+            let mut bytes = format!("{header}\r\n\r\n{{\"seq\":1}}").into_bytes();
+            write_message(&mut bytes, &json!({"ok": true})).unwrap();
+            let read = read_all(&bytes);
+            assert_eq!(read.len(), 1, "{header}");
+            assert!(
+                read[0].as_ref().unwrap_err().starts_with("fatal"),
+                "{header}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_that_never_ends_is_cut() {
+        let bytes = vec![b'a'; 100_000];
+        let read = read_all(&bytes);
+        assert!(read[0].as_ref().unwrap_err().contains("longer than"));
     }
 
     #[test]

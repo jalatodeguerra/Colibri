@@ -802,7 +802,12 @@ as output events, so nothing but protocol goes to standard output. Inspecting a 
 runs your code (a `Show` you wrote is not called). Debug mode compiles a step for every
 statement, so a debugged program is slower than a normal run, with the same output. The VS Code
 extension will get the launch configuration next; for now any DAP client can run
-`colibri debug`.
+`colibri debug`. `noDebug` runs the program with no debugger. A program that is blocked in a
+call (`time.sleep`) or idle in the event loop cannot be paused; `disconnect`, `terminate` and
+a closed input end it after a moment all the same. A breakpoint in a function that has not run
+yet shows as unverified until it does. On Unix a child process started with `process.status`
+writes to the adapter's standard error; on Windows its output is not yet kept out of the
+protocol stream.
 
 ### Hot reload
 

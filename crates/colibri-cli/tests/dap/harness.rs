@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
-use colibri_dap::{ReadError, read_message};
 use serde_json::{Value, json};
 
 /// How long a wait for one message may take before the test is called hung.
@@ -46,6 +45,38 @@ impl Drop for Temp {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// Reads one frame of the adapter's output. Strict, unlike the adapter's own reader: a header
+/// line that is not `Content-Length: n` is an error, so anything but protocol on the stream
+/// fails the test. `None` at the end of the stream.
+fn read_frame(input: &mut impl std::io::BufRead) -> Result<Option<Value>, String> {
+    let mut length = None;
+    let mut first = true;
+    loop {
+        let mut line = String::new();
+        let n = input.read_line(&mut line).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return if first {
+                Ok(None)
+            } else {
+                Err("the stream ended inside a header".into())
+            };
+        }
+        first = false;
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+        match line.strip_prefix("Content-Length: ") {
+            Some(n) => length = Some(n.parse::<usize>().map_err(|e| format!("{line:?}: {e}"))?),
+            None => return Err(format!("not a header line: {line:?}")),
+        }
+    }
+    let length = length.ok_or("a frame without Content-Length")?;
+    let mut body = vec![0u8; length];
+    std::io::Read::read_exact(input, &mut body).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&body).map_err(|e| format!("the body is not JSON: {e}"))
 }
 
 /// The 1-based line that carries `// @name` in `source`.
@@ -94,14 +125,14 @@ impl Dap {
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             loop {
-                match read_message(&mut out) {
-                    Ok(v) => {
+                match read_frame(&mut out) {
+                    Ok(Some(v)) => {
                         if tx.send(Ok(v)).is_err() {
                             return;
                         }
                     }
-                    Err(ReadError::Eof) => return,
-                    Err(ReadError::Malformed(m) | ReadError::Fatal(m)) => {
+                    Ok(None) => return,
+                    Err(m) => {
                         let _ = tx.send(Err(m));
                         return;
                     }
@@ -357,6 +388,24 @@ impl Dap {
 }
 
 impl Dap {
+    /// The adapter must end by itself, successfully.
+    pub fn wait_exit(&mut self) {
+        let deadline = Instant::now() + HANG_GUARD;
+        loop {
+            match self.child.try_wait().expect("wait") {
+                Some(status) => {
+                    assert!(status.success(), "the adapter ended with {status}");
+                    return;
+                }
+                None if Instant::now() > deadline => {
+                    let _ = self.child.kill();
+                    panic!("the adapter did not end");
+                }
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+    }
+
     /// Closes the adapter's input; it must end by itself, successfully.
     pub fn close_input(mut self) {
         drop(self.stdin.take());

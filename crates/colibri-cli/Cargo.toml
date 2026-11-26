@@ -37,11 +37,6 @@ path = "src/main.rs"
 name = "golden"
 harness = false
 
-# The transcript tests of the debug adapter: they live with it and drive this binary.
-[[test]]
-name = "dap"
-path = "../colibri-dap/tests/dap.rs"
-
 [dev-dependencies]
 libtest-mimic = "0.8.2"
 serde_json = "1"

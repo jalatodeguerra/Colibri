@@ -4,7 +4,10 @@ use std::cell::RefCell;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use colibri_runtime as colibri;
 use colibri_runtime::debug::{
@@ -34,7 +37,7 @@ pub struct LaunchArgs {
 }
 
 /// Builds the `Vm` of a `launch`.
-type Launcher = Box<dyn FnOnce(LaunchArgs) -> Result<colibri::Vm, String>>;
+type Launcher = Box<dyn FnMut(LaunchArgs) -> Result<colibri::Vm, String>>;
 
 /// One request of the client.
 struct Request {
@@ -47,25 +50,104 @@ enum Incoming {
     Request(Request),
     /// A message that could not be used; the session goes on.
     Malformed(String),
+    /// The input cannot be followed any more; the session ends (`Closed` comes next).
+    Broken(String),
     /// The input ended.
     Closed,
 }
 
+/// How long the VM thread has to take up an end of the session (`disconnect`, `terminate`, the
+/// input closing) before the reader's watchdog ends the adapter itself. The VM thread answers
+/// only at safepoints, so a program that is blocked in a native call (`time.sleep`) or idle
+/// in the event loop does not.
+const GRACE: Duration = Duration::from_secs(2);
+
+/// Shared by the reader thread and the VM thread: how a session ends when the program does not
+/// answer. It sets the pause flag (a running program stops, and `stopped` answers with
+/// `Terminate`), and a watchdog ends the process if the VM thread has not taken up the request.
+struct Ending {
+    pause: Mutex<Option<colibri::debug::PauseHandle>>,
+    /// `IDLE`, then `ACKED` when the VM thread took up the end, or `EXITING` when the watchdog
+    /// did; whoever comes first decides.
+    state: AtomicU8,
+    /// Without a debugger nothing answers while the program runs: no grace is given.
+    no_debug: AtomicBool,
+    out: Arc<Mutex<Out>>,
+}
+
+impl Ending {
+    const IDLE: u8 = 0;
+    const ACKED: u8 = 1;
+    const EXITING: u8 = 2;
+
+    /// The VM thread has taken up the end of the session (it answers, and ends the program).
+    fn ack(&self) {
+        let _ = self.state.compare_exchange(
+            Self::IDLE,
+            Self::ACKED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    /// `reply`: the request to answer if the watchdog has to end the session.
+    fn begin(self: &Arc<Self>, reply: Option<(i64, String)>) {
+        self.state.store(Self::IDLE, Ordering::Release);
+        if let Some(handle) = self.pause.lock().expect("the pause handle").as_ref() {
+            handle.pause();
+        }
+        let me = Arc::clone(self);
+        std::thread::spawn(move || {
+            if !me.no_debug.load(Ordering::Acquire) {
+                std::thread::sleep(GRACE);
+            }
+            let took = me.state.compare_exchange(
+                Self::IDLE,
+                Self::EXITING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            if took.is_err() {
+                return;
+            }
+            if let Some((seq, command)) = reply {
+                let request = Request {
+                    seq,
+                    command,
+                    args: Value::Null,
+                };
+                me.out
+                    .lock()
+                    .expect("the output")
+                    .respond(&request, Ok(Value::Null));
+            }
+            std::process::exit(0);
+        });
+    }
+}
+
 /// The reader thread: parses frames and hands them over.
-fn read_loop(mut input: impl BufRead, tx: mpsc::Sender<Incoming>) {
+fn read_loop(mut input: impl BufRead, tx: mpsc::Sender<Incoming>, ending: Arc<Ending>) {
     loop {
         let item = match read_message(&mut input) {
             Ok(value) => match request_of(&value) {
-                Ok(request) => Incoming::Request(request),
+                Ok(request) => {
+                    if request.command == "disconnect" || request.command == "terminate" {
+                        ending.begin(Some((request.seq, request.command.clone())));
+                    }
+                    Incoming::Request(request)
+                }
                 Err(why) => Incoming::Malformed(why),
             },
             Err(ReadError::Malformed(why)) => Incoming::Malformed(why),
             Err(ReadError::Eof) => {
+                ending.begin(None);
                 let _ = tx.send(Incoming::Closed);
                 return;
             }
             Err(ReadError::Fatal(why)) => {
-                let _ = tx.send(Incoming::Malformed(why));
+                ending.begin(None);
+                let _ = tx.send(Incoming::Broken(why));
                 let _ = tx.send(Incoming::Closed);
                 return;
             }
@@ -98,7 +180,7 @@ fn request_of(value: &Value) -> Result<Request, String> {
 
 /// What goes to the client.
 struct Out {
-    writer: Box<dyn Write>,
+    writer: Box<dyn Write + Send>,
     seq: i64,
     /// The client is gone or has disconnected: nothing more is sent.
     closed: bool,
@@ -148,7 +230,7 @@ impl Out {
 
 /// A writer that makes each write an `output` event.
 struct EventWriter {
-    out: Rc<RefCell<Out>>,
+    out: Arc<Mutex<Out>>,
     category: &'static str,
 }
 
@@ -156,7 +238,10 @@ impl Write for EventWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if !buf.is_empty() {
             let text = String::from_utf8_lossy(buf);
-            self.out.borrow_mut().output(self.category, &text);
+            self.out
+                .lock()
+                .expect("the output")
+                .output(self.category, &text);
         }
         Ok(buf.len())
     }
@@ -199,7 +284,13 @@ impl Handled {
 }
 
 struct State {
-    out: Rc<RefCell<Out>>,
+    out: Arc<Mutex<Out>>,
+    ending: Arc<Ending>,
+    /// Counts the stops: it is in the frame ids and variable references, so one from an earlier
+    /// stop is refused instead of meaning something else.
+    stop_serial: u32,
+    /// `launch` had `noDebug`: the program runs without the debugger.
+    no_debug: bool,
     rx: Receiver<Incoming>,
     /// `initialize` was answered.
     initialized: bool,
@@ -220,6 +311,8 @@ struct State {
     frames: Vec<(Option<u64>, usize)>,
     /// The host's `Vm` builder.
     launcher: Option<Launcher>,
+    /// A `launch` got as far as building the program (it started, or failed to load).
+    attempted: bool,
     program: PathBuf,
 }
 
@@ -231,18 +324,28 @@ struct State {
 /// Call it on a thread with a big stack: the program runs on it.
 pub fn serve(
     input: impl BufRead + Send + 'static,
-    output: impl Write + 'static,
-    launcher: impl FnOnce(LaunchArgs) -> Result<colibri::Vm, String> + 'static,
+    output: impl Write + Send + 'static,
+    launcher: impl FnMut(LaunchArgs) -> Result<colibri::Vm, String> + 'static,
 ) -> i32 {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || read_loop(input, tx));
-    let out = Rc::new(RefCell::new(Out {
+    let out = Arc::new(Mutex::new(Out {
         writer: Box::new(output),
         seq: 0,
         closed: false,
     }));
+    let ending = Arc::new(Ending {
+        pause: Mutex::new(None),
+        state: AtomicU8::new(Ending::IDLE),
+        no_debug: AtomicBool::new(false),
+        out: Arc::clone(&out),
+    });
+    let reader_ending = Arc::clone(&ending);
+    std::thread::spawn(move || read_loop(input, tx, reader_ending));
     let state = Rc::new(RefCell::new(State {
         out,
+        ending,
+        stop_serial: 0,
+        no_debug: false,
         rx,
         initialized: false,
         launched: false,
@@ -256,6 +359,7 @@ pub fn serve(
         break_on_panic: false,
         frames: Vec::new(),
         launcher: Some(Box::new(launcher)),
+        attempted: false,
         program: PathBuf::new(),
     }));
     run_session(&state);
@@ -273,16 +377,24 @@ fn run_session(state: &Rc<RefCell<State>>) {
                 state.borrow().report_malformed(&why);
                 continue;
             }
+            Ok(Incoming::Broken(why)) => {
+                state.borrow().report_broken(&why);
+                continue;
+            }
             Ok(Incoming::Closed) | Err(_) => return,
         };
         match request.command.as_str() {
             "disconnect" | "terminate" => {
                 let st = state.borrow_mut();
+                st.ending.ack();
                 st.reply(&request, Ok(Value::Null));
                 if request.command == "disconnect" {
                     return;
                 }
-                st.out.borrow_mut().event("terminated", json!({}));
+                st.out
+                    .lock()
+                    .expect("the output")
+                    .event("terminated", json!({}));
                 drop(st);
                 return after_program(state);
             }
@@ -291,14 +403,20 @@ fn run_session(state: &Rc<RefCell<State>>) {
                     vm = Some(launched);
                     let st = state.borrow();
                     st.reply(&request, Ok(Value::Null));
-                    st.out.borrow_mut().event("initialized", json!({}));
+                    st.out
+                        .lock()
+                        .expect("the output")
+                        .event("initialized", json!({}));
                 }
                 // A request that could not be used: the client may try again.
                 Err(Failed::Request(why)) => state.borrow().reply(&request, Err(why)),
                 Err(Failed::Program(why)) => {
                     let st = state.borrow();
                     st.reply(&request, Err(why));
-                    st.out.borrow_mut().event("terminated", json!({}));
+                    st.out
+                        .lock()
+                        .expect("the output")
+                        .event("terminated", json!({}));
                     drop(st);
                     return after_program(state);
                 }
@@ -333,7 +451,7 @@ fn run_session(state: &Rc<RefCell<State>>) {
     }
     {
         let st = state.borrow();
-        let mut out = st.out.borrow_mut();
+        let mut out = st.out.lock().expect("the output");
         if let Some(code) = code {
             out.event("exited", json!({"exitCode": code}));
         }
@@ -352,15 +470,23 @@ fn after_program(state: &Rc<RefCell<State>>) {
                 state.borrow().report_malformed(&why);
                 continue;
             }
+            Ok(Incoming::Broken(why)) => {
+                state.borrow().report_broken(&why);
+                continue;
+            }
             Ok(Incoming::Closed) | Err(_) => return,
         };
         let mut st = state.borrow_mut();
         match request.command.as_str() {
             "disconnect" => {
+                st.ending.ack();
                 st.reply(&request, Ok(Value::Null));
                 return;
             }
-            "terminate" => st.reply(&request, Ok(Value::Null)),
+            "terminate" => {
+                st.ending.ack();
+                st.reply(&request, Ok(Value::Null));
+            }
             "threads" => st.reply(&request, Ok(json!({"threads": []}))),
             "initialize" => {
                 let result = st.initialize(&request);
@@ -390,7 +516,7 @@ fn launch(state: &Rc<RefCell<State>>, request: &Request) -> Result<colibri::Vm, 
         if !st.initialized {
             return Err(Failed::Request("`initialize` comes before `launch`".into()));
         }
-        if st.launcher.is_none() {
+        if st.attempted {
             return Err(Failed::Request("the program was launched already".into()));
         }
         let program = args
@@ -428,14 +554,19 @@ fn launch(state: &Rc<RefCell<State>>, request: &Request) -> Result<colibri::Vm, 
             )));
         }
         let launcher = st.launcher.take().expect("checked above");
-        st.stop_on_entry = args
-            .get("stopOnEntry")
+        st.no_debug = args
+            .get("noDebug")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        st.stop_on_entry = !st.no_debug
+            && args
+                .get("stopOnEntry")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         st.program = PathBuf::from(program);
         let writer = |category| {
             Box::new(EventWriter {
-                out: Rc::clone(&st.out),
+                out: Arc::clone(&st.out),
                 category,
             }) as Box<dyn Write>
         };
@@ -449,11 +580,33 @@ fn launch(state: &Rc<RefCell<State>>, request: &Request) -> Result<colibri::Vm, 
         (launcher, launch_args)
     };
     let program = launch_args.program.clone();
-    let mut vm = launcher(launch_args).map_err(Failed::Program)?;
-    // From here on the debugger may call back (the program's top level runs in `load_path`).
-    vm.set_debugger(Box::new(Adapter(Rc::clone(state))));
+    let mut launcher = launcher;
+    let built = launcher(launch_args);
+    {
+        let mut st = state.borrow_mut();
+        st.launcher = Some(launcher);
+        // Nothing has started yet: the client may try again.
+        if built.is_ok() {
+            st.attempted = true;
+        }
+    }
+    let mut vm = built.map_err(Failed::Request)?;
+    let no_debug = state.borrow().no_debug;
+    if no_debug {
+        // Nothing answers while the program runs: the reader ends the session at once.
+        state
+            .borrow()
+            .ending
+            .no_debug
+            .store(true, Ordering::Release);
+    } else {
+        // From here on the debugger may call back (the program's top level runs in `load_path`).
+        vm.set_debugger(Box::new(Adapter(Rc::clone(state))));
+        let ending = Arc::clone(&state.borrow().ending);
+        *ending.pause.lock().expect("the pause handle") = Some(vm.debug_pause_handle());
+    }
     let mut warnings = EventWriter {
-        out: Rc::clone(&state.borrow().out),
+        out: Arc::clone(&state.borrow().out),
         category: "stderr",
     };
     vm.on_warnings(move |report| {
@@ -518,14 +671,9 @@ fn parse_hit_condition(text: &str) -> Result<HitCondition, String> {
     }
 }
 
-fn variable_json(var: &DebugVar) -> Value {
-    json!({
-        "name": var.name,
-        "value": var.value,
-        "type": var.ty,
-        "variablesReference": var.handle.map_or(0, |h| i64::from(h) + 1),
-    })
-}
+/// Bits of a frame id or a variable reference that hold the position in the table.
+const POSITION_BITS: u32 = 20;
+const POSITION_MASK: i64 = (1 << POSITION_BITS) - 1;
 
 impl<'v> Ctl<'_, 'v> {
     fn break_on_panic(&mut self, on: bool) {
@@ -559,7 +707,10 @@ impl<'v> Ctl<'_, 'v> {
 
 impl State {
     fn reply(&self, request: &Request, result: Result<Value, String>) {
-        self.out.borrow_mut().respond(request, result);
+        self.out
+            .lock()
+            .expect("the output")
+            .respond(request, result);
     }
 
     /// Sends the answer; returns how the program goes on when the request lets it.
@@ -567,13 +718,13 @@ impl State {
         let resume = handled.resume.filter(|_| handled.result.is_ok());
         self.reply(request, handled.result);
         if self.disconnected {
-            self.out.borrow_mut().closed = true;
+            self.out.lock().expect("the output").closed = true;
         }
         resume
     }
 
     fn report_malformed(&self, why: &str) {
-        self.out.borrow_mut().output(
+        self.out.lock().expect("the output").output(
             "stderr",
             &format!("colibri debug: message ignored: {why}\n"),
         );
@@ -583,8 +734,56 @@ impl State {
         if self.lines_start_at_1 {
             line
         } else {
-            line - 1
+            line.saturating_sub(1)
         }
+    }
+
+    fn report_broken(&self, why: &str) {
+        self.out.lock().expect("the output").output(
+            "stderr",
+            &format!("colibri debug: the input cannot be followed ({why}); ending the session\n"),
+        );
+    }
+
+    /// The part of an id that tells which stop it is from.
+    fn stop_tag(&self) -> i64 {
+        i64::from(self.stop_serial & 0x7ff) << POSITION_BITS
+    }
+
+    /// A frame id or variable reference for position `n` (1 or more) of this stop's table.
+    fn tagged(&self, n: usize) -> i64 {
+        if n as i64 > POSITION_MASK {
+            0
+        } else {
+            self.stop_tag() | n as i64
+        }
+    }
+
+    /// The position (1 or more) a tagged number holds, or why it is refused.
+    fn untag(&self, id: i64, what: &str) -> Result<usize, String> {
+        if id <= 0
+            || id >> POSITION_BITS != self.stop_tag() >> POSITION_BITS
+            || id & POSITION_MASK == 0
+        {
+            return Err(format!(
+                "{what} {id} is not from this stop (references are good only until the program goes on)"
+            ));
+        }
+        Ok((id & POSITION_MASK) as usize)
+    }
+
+    fn variable_json(&self, var: &DebugVar) -> Value {
+        let mut v = json!({
+            "name": var.name,
+            "value": var.value,
+            "type": var.ty,
+            "variablesReference": var.handle.map_or(0, |h| self.tagged(h as usize + 1)),
+        });
+        if let Some(n) = var.indexed {
+            v["indexedVariables"] = json!(n);
+            v["namedVariables"] = json!(0);
+        }
+        v
     }
 
     fn lines_from_client(&self, line: i64) -> u32 {
@@ -643,6 +842,21 @@ impl State {
             },
             "launch" => Handled::err("the program was launched already"),
             "configurationDone" => Handled::ok(Value::Null),
+            "setBreakpoints" if self.no_debug => {
+                let entries = args
+                    .get("breakpoints")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                let refused: Vec<Value> = (0..entries)
+                    .map(|_| {
+                        json!({
+                            "verified": false,
+                            "message": "the program runs without debugging (noDebug)",
+                        })
+                    })
+                    .collect();
+                Handled::ok(json!({"breakpoints": refused}))
+            }
             "setBreakpoints" => self.set_breakpoints(args, ctl),
             "setExceptionBreakpoints" => {
                 let listed = |key: &str| {
@@ -690,6 +904,7 @@ impl State {
                 }
             },
             "terminate" | "disconnect" => {
+                self.ending.ack();
                 self.end_requested = true;
                 self.disconnected = request.command == "disconnect";
                 match ctl {
@@ -844,7 +1059,7 @@ impl State {
         let mut shown = Vec::new();
         for frame in frames.iter().skip(start).take(take) {
             self.frames.push((coroutine, frame.index));
-            let id = self.frames.len();
+            let id = self.tagged(self.frames.len());
             let mut entry = json!({
                 "id": id,
                 "name": frame.name,
@@ -869,12 +1084,14 @@ impl State {
     fn frame_of(&self, args: &Value) -> Result<Option<(Option<u64>, usize)>, String> {
         match args.get("frameId").and_then(Value::as_i64) {
             None => Ok(None),
-            Some(id) => usize::try_from(id - 1)
-                .ok()
-                .and_then(|i| self.frames.get(i))
-                .copied()
-                .map(Some)
-                .ok_or_else(|| format!("frame {id} is not on the stack any more")),
+            Some(id) => {
+                let position = self.untag(id, "frame")?;
+                self.frames
+                    .get(position - 1)
+                    .copied()
+                    .map(Some)
+                    .ok_or_else(|| format!("frame {id} is not on the stack any more"))
+            }
         }
     }
 
@@ -894,7 +1111,7 @@ impl State {
             .map(|s| {
                 json!({
                     "name": s.name,
-                    "variablesReference": i64::from(s.handle) + 1,
+                    "variablesReference": self.tagged(s.handle as usize + 1),
                     "expensive": s.name != "Locals",
                 })
             })
@@ -911,8 +1128,9 @@ impl State {
             .get("variablesReference")
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        let Ok(handle) = u32::try_from(reference - 1) else {
-            return Handled::err("`variables` needs a `variablesReference` from `scopes`");
+        let handle = match self.untag(reference, "variablesReference") {
+            Ok(position) => position as u32 - 1,
+            Err(why) => return Handled::err(why),
         };
         let start = args.get("start").and_then(Value::as_u64).unwrap_or(0) as usize;
         let count = match args.get("count").and_then(Value::as_u64) {
@@ -922,7 +1140,7 @@ impl State {
         let vars: Vec<Value> = view
             .children(handle, start, count)
             .iter()
-            .map(variable_json)
+            .map(|v| self.variable_json(v))
             .collect();
         Handled::ok(json!({"variables": vars}))
     }
@@ -998,14 +1216,14 @@ impl State {
         Handled::ok(json!({
             "result": current.value,
             "type": current.ty,
-            "variablesReference": current.handle.map_or(0, |h| i64::from(h) + 1),
+            "variablesReference": current.handle.map_or(0, |h| self.tagged(h as usize + 1)),
         }))
     }
 
     /// The program ended with `outcome`: reports what it left on stderr and returns the exit code
     /// (`None` when the debugger ended it).
     fn finish(&mut self, vm: &mut colibri::Vm, outcome: Result<(), colibri::Error>) -> Option<i32> {
-        let mut out = self.out.borrow_mut();
+        let mut out = self.out.lock().expect("the output");
         match outcome {
             Ok(()) => Some(0),
             Err(colibri::Error::Panic { .. }) if colibri_std::exit_code(vm).is_some() => {
@@ -1034,6 +1252,7 @@ impl Debugger for Adapter {
             return Resume::Terminate;
         }
         st.frames.clear();
+        st.stop_serial = st.stop_serial.wrapping_add(1);
         let thread = thread_id(view.fibers().first().and_then(|f| f.coroutine));
         let entry = std::mem::take(&mut st.entry_pending);
         let mut body = Map::new();
@@ -1059,7 +1278,10 @@ impl Debugger for Adapter {
         }
         body.insert("threadId".into(), json!(thread));
         body.insert("allThreadsStopped".into(), json!(true));
-        st.out.borrow_mut().event("stopped", Value::Object(body));
+        st.out
+            .lock()
+            .expect("the output")
+            .event("stopped", Value::Object(body));
         loop {
             let incoming = st.rx.recv();
             match incoming {
@@ -1078,6 +1300,7 @@ impl Debugger for Adapter {
                     }
                 }
                 Ok(Incoming::Malformed(why)) => st.report_malformed(&why),
+                Ok(Incoming::Broken(why)) => st.report_broken(&why),
                 Ok(Incoming::Closed) | Err(_) => {
                     st.go_away();
                     return Resume::Terminate;
@@ -1101,6 +1324,7 @@ impl Debugger for Adapter {
                     st.answer(&request, handled);
                 }
                 Ok(Incoming::Malformed(why)) => st.report_malformed(&why),
+                Ok(Incoming::Broken(why)) => st.report_broken(&why),
                 Err(TryRecvError::Empty) => return,
                 Ok(Incoming::Closed) | Err(TryRecvError::Disconnected) => {
                     st.go_away();
@@ -1117,15 +1341,16 @@ impl Debugger for Adapter {
         if !text.ends_with('\n') {
             text.push('\n');
         }
-        st.out.borrow_mut().output("console", &text);
+        st.out.lock().expect("the output").output("console", &text);
     }
 }
 
 impl State {
     /// The client went away: the program is ended, and nothing more is sent.
     fn go_away(&mut self) {
+        self.ending.ack();
         self.end_requested = true;
         self.disconnected = true;
-        self.out.borrow_mut().closed = true;
+        self.out.lock().expect("the output").closed = true;
     }
 }

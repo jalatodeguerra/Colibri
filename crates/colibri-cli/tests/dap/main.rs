@@ -621,10 +621,12 @@ fn a_program_that_does_not_compile_fails_the_launch() {
 #[test]
 fn bad_requests_and_bad_frames_are_answered_or_reported_and_the_session_goes_on() {
     let mut dap = Dap::start("malformed");
-    dap.send_raw(b"Content-Length: abc\r\n\r\n");
+    // A body that is not JSON, JSON that is not a request, a request with no command.
     dap.send_raw(b"Content-Length: 5\r\n\r\n{nope");
     dap.send_raw(b"Content-Length: 2\r\n\r\n[]");
-    dap.send_raw(b"X-Header: 1\r\n\r\n");
+    let no_command = br#"{"seq":1,"type":"request"}"#;
+    dap.send_raw(format!("Content-Length: {}\r\n\r\n", no_command.len()).as_bytes());
+    dap.send_raw(no_command);
     let body = dap.request("initialize", json!({}));
     assert_eq!(body["supportsConfigurationDoneRequest"], true);
     let ignored = dap
@@ -632,7 +634,7 @@ fn bad_requests_and_bad_frames_are_answered_or_reported_and_the_session_goes_on(
         .lines()
         .filter(|l| l.contains("message ignored"))
         .count();
-    assert_eq!(ignored, 4, "{:?}", dap.output("stderr"));
+    assert_eq!(ignored, 3, "{:?}", dap.output("stderr"));
 
     let why = dap.request_fails("launch", json!({}));
     assert!(why.contains("program"), "{why}");
@@ -651,6 +653,33 @@ fn bad_requests_and_bad_frames_are_answered_or_reported_and_the_session_goes_on(
     dap.configuration_done();
     assert_eq!(dap.finish(), Some(0));
     dap.disconnect();
+}
+
+#[test]
+fn a_header_without_a_length_ends_the_session_instead_of_losing_the_next_requests() {
+    // The body that follows such a header cannot be told from the next header, so the adapter
+    // says so and ends; it does not answer the requests after it with silence.
+    for header in [
+        "Content-Length: 99999999999999999999999",
+        "Content-Length: abc",
+        "X-Header: 1",
+    ] {
+        let mut dap = Dap::start("bad-header");
+        dap.send_raw(format!("{header}\r\n\r\n{{\"seq\":1}}").as_bytes());
+        dap.send("initialize", json!({}));
+        let body = dap.event("output");
+        assert_eq!(body["category"], "stderr");
+        assert!(
+            text(&body["output"]).contains("cannot be followed"),
+            "{header}: {body}"
+        );
+        dap.wait_exit();
+        assert!(
+            dap.history.iter().all(|m| m["type"] != "response"),
+            "{header}: {:?}",
+            dap.history
+        );
+    }
 }
 
 #[test]
@@ -682,22 +711,197 @@ fn the_capabilities_say_what_is_supported() {
 }
 
 /// Unix: a program that starts another one with `process.status` (which gives the child the
-/// adapter's own standard output) must not write into the protocol stream.
+/// adapter's own standard output) must not write into the protocol stream, and must not be
+/// able to reach the descriptor the protocol is written to.
 #[cfg(unix)]
 #[test]
-fn a_child_process_writing_to_inherited_output_does_not_corrupt_the_stream() {
-    let src = "\
-import process
+fn a_child_process_cannot_write_into_the_stream_or_reach_its_descriptor() {
+    let src = r#"import process
 fn main() {
-    let _ = process.status(\"sh\", [\"-c\", \"echo from the child\"])
-    print(\"after\")
+    let script = "for fd in 3 4 5 6 7 8 9; do (echo LEAK >&$fd); done; echo from the child"
+    let _ = process.status("sh", ["-c", script])
+    print("after")
 }
-";
+"#;
     let mut dap = Dap::start("child");
     dap.launch(src, json!({}));
     dap.configuration_done();
     assert_eq!(dap.finish(), Some(0));
     assert_eq!(dap.output("stdout"), "after\n");
-    // What the child wrote went to the adapter's standard error, not into the stream.
-    assert!(dap.disconnect_stderr().contains("from the child"));
+    // What the child wrote to its standard output went to the adapter's standard error. A
+    // write to a leaked descriptor would have been a junk line in the stream (the harness
+    // reads it strictly) and `LEAK` here.
+    let stderr = dap.disconnect_stderr();
+    assert!(stderr.contains("from the child"), "{stderr}");
+    assert!(!stderr.contains("LEAK"), "{stderr}");
+}
+
+const SLEEPERS: [&str; 2] = [
+    "import time\nfn main() {\n    print(\"sleeping\")\n    time.sleep(600.0)\n}\n",
+    "fn main() {\n    print(\"sleeping\")\n    wait(600.0)\n}\n",
+];
+
+#[test]
+fn a_program_blocked_in_a_native_call_or_idle_still_ends_on_disconnect() {
+    for src in SLEEPERS {
+        let mut dap = Dap::start("sleep-disconnect");
+        dap.launch(src, json!({}));
+        dap.configuration_done();
+        // The program is about to sleep for ten minutes: nothing but the adapter's own
+        // watchdog can end the session.
+        while !dap.output("stdout").contains("sleeping") {
+            dap.event("output");
+        }
+        dap.disconnect();
+    }
+}
+
+#[test]
+fn a_program_blocked_in_a_native_call_or_idle_ends_with_the_input() {
+    for src in SLEEPERS {
+        let mut dap = Dap::start("sleep-input");
+        dap.launch(src, json!({}));
+        dap.configuration_done();
+        while !dap.output("stdout").contains("sleeping") {
+            dap.event("output");
+        }
+        dap.close_input();
+    }
+}
+
+#[test]
+fn terminating_runs_every_defer_even_one_that_has_a_breakpoint() {
+    let src = "\
+fn cleanup() {
+    print(\"cleanup start\")
+    print(\"cleanup end\") // @inner
+}
+fn main() {
+    defer cleanup()
+    defer print(\"outer\")
+    let x = 1 // @here
+    print(x)
+}
+";
+    let lines = [line_of(src, "here"), line_of(src, "inner")];
+    let (mut dap, _) = stopped_at("terminate-defers", src, &lines);
+    dap.request("terminate", json!({}));
+    dap.event("terminated");
+    // The breakpoint in `cleanup` is not a stop while the program is ended.
+    assert_eq!(dap.output("stdout"), "outer\ncleanup start\ncleanup end\n");
+    let stops = dap
+        .history
+        .iter()
+        .filter(|m| m["event"] == "stopped")
+        .count();
+    assert_eq!(stops, 1);
+    dap.disconnect();
+}
+
+#[test]
+fn references_from_an_earlier_stop_are_refused() {
+    let body = line_of(LOOP, "body");
+    let (mut dap, _) = stopped_at("stale", LOOP, &[body]);
+    let frame = dap.top_frame()["id"].as_i64().unwrap();
+    let locals = dap.scopes(frame)[0].1;
+    assert!(!dap.variables(locals).is_empty());
+    dap.request("continue", json!({"threadId": 1}));
+    dap.stopped();
+    // The new stop has frames and variables of its own; the old numbers are not among them.
+    dap.top_frame();
+    let why = dap.request_fails("variables", json!({"variablesReference": locals}));
+    assert!(why.contains("not from this stop"), "{why}");
+    let why = dap.request_fails("scopes", json!({"frameId": frame}));
+    assert!(why.contains("not from this stop"), "{why}");
+    dap.disconnect();
+}
+
+#[test]
+fn a_zero_based_client_and_a_breakpoint_with_no_line_do_not_crash_the_adapter() {
+    let mut dap = Dap::start("zero-based");
+    let path = dap.temp.write("main.colibri", LOOP);
+    dap.request(
+        "initialize",
+        json!({"linesStartAt1": false, "columnsStartAt1": false}),
+    );
+    dap.request("launch", json!({"program": json_path(&path)}));
+    dap.event("initialized");
+    let body = dap.request(
+        "setBreakpoints",
+        json!({"source": {"path": json_path(&path)}, "breakpoints": [{}, {"line": -1}, {"line": line_of(LOOP, "body") - 1}]}),
+    );
+    let set = body["breakpoints"].as_array().unwrap();
+    assert_eq!(set.len(), 3);
+    assert_eq!(set[2]["line"], line_of(LOOP, "body") - 1);
+    dap.configuration_done();
+    dap.stopped();
+    // Lines go out the way they came in: 0-based.
+    assert_eq!(dap.where_().1, line_of(LOOP, "body") - 1);
+    dap.disconnect();
+}
+
+#[test]
+fn a_list_says_how_many_items_it_has_so_that_the_client_pages() {
+    let end = line_of(SHAPES, "end");
+    let (mut dap, _) = stopped_at("paging", SHAPES, &[end]);
+    let frame = dap.top_frame()["id"].as_i64().unwrap();
+    let locals = dap.scopes(frame)[0].1;
+    let vars = dap.variables(locals);
+    let xs = vars.iter().find(|v| v["name"] == "xs").unwrap();
+    assert_eq!(xs["indexedVariables"], 2);
+    assert_eq!(xs["namedVariables"], 0);
+    let p = vars.iter().find(|v| v["name"] == "p").unwrap();
+    assert!(p.get("indexedVariables").is_none());
+    dap.disconnect();
+}
+
+#[test]
+fn no_debug_runs_the_program_without_stops_and_still_ends_on_disconnect() {
+    let body = line_of(LOOP, "body");
+    let mut dap = Dap::start("no-debug");
+    dap.launch(LOOP, json!({"noDebug": true, "stopOnEntry": true}));
+    let set = dap.break_at(&[body]);
+    assert_eq!(set[0]["verified"], false);
+    assert!(text(&set[0]["message"]).contains("noDebug"));
+    dap.configuration_done();
+    assert_eq!(dap.finish(), Some(0));
+    assert_eq!(dap.output("stdout"), "6\n");
+    assert!(dap.history.iter().all(|m| m["event"] != "stopped"));
+    dap.disconnect();
+
+    // No debugger is attached: the panic filter has nothing to stop.
+    let mut dap = Dap::start("no-debug-panic");
+    dap.launch(RISKY, json!({"noDebug": true}));
+    dap.request("setExceptionBreakpoints", json!({"filters": ["panic"]}));
+    dap.configuration_done();
+    assert_eq!(dap.finish(), Some(101));
+    assert!(dap.history.iter().all(|m| m["event"] != "stopped"));
+    dap.disconnect();
+
+    let mut dap = Dap::start("no-debug-spin");
+    dap.launch(SPIN, json!({"noDebug": true}));
+    dap.configuration_done();
+    dap.disconnect();
+}
+
+#[test]
+fn a_launch_that_cannot_start_fails_the_request_and_can_be_tried_again() {
+    let mut dap = Dap::start("launch-retry");
+    let path = dap
+        .temp
+        .write("main.colibri", "fn main() {\n    print(1)\n}\n");
+    let manifest = dap.temp.write("colibri.toml", "[package]\nname = \"x\"\n");
+    dap.request("initialize", json!({}));
+    let why = dap.request_fails(
+        "launch",
+        json!({"program": json_path(&path), "features": ["no good!"]}),
+    );
+    assert!(why.contains("feature"), "{why}");
+    let why = dap.request_fails("launch", json!({"program": json_path(&manifest)}));
+    assert!(why.contains("colibri.toml"), "{why}");
+    dap.request("launch", json!({"program": json_path(&path)}));
+    dap.event("initialized");
+    dap.configuration_done();
+    assert_eq!(dap.finish(), Some(0));
+    dap.disconnect();
 }

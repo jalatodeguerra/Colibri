@@ -1,7 +1,7 @@
 //! `colibri debug`: the debug adapter (Debug Adapter Protocol on standard input and output).
 //! The protocol is in `colibri-dap`; this builds the `Vm` of a `launch` as `colibri run` does.
 
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Write};
 use std::process::ExitCode;
 
 use colibri_dap::LaunchArgs;
@@ -23,22 +23,25 @@ pub fn run() -> ExitCode {
 /// (a program started with `process.status`, a C function called through `extern`) cannot
 /// corrupt the stream. On Windows the process's standard output is used as it is.
 #[cfg(unix)]
-fn protocol_output() -> Box<dyn io::Write> {
+fn protocol_output() -> Box<dyn io::Write + Send> {
     use std::os::fd::FromRawFd;
-    // SAFETY: `dup` of descriptor 1 gives a new descriptor that this function owns from here
-    // on (it is checked); `dup2` then makes descriptor 1 refer to what descriptor 2 refers to.
+    // SAFETY: `fcntl` with `F_DUPFD_CLOEXEC` gives a new descriptor (3 or above, closed in
+    // every program this one starts) that this function owns from here on (it is checked);
+    // `dup2` then makes descriptor 1 refer to what descriptor 2 refers to.
     unsafe {
-        let own = libc::dup(1);
-        if own < 0 {
+        let own = libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3);
+        if own < 0 || libc::dup2(2, 1) < 0 {
+            if own >= 0 {
+                libc::close(own);
+            }
             return Box::new(io::stdout());
         }
-        libc::dup2(2, 1);
         Box::new(std::fs::File::from_raw_fd(own))
     }
 }
 
 #[cfg(not(unix))]
-fn protocol_output() -> Box<dyn io::Write> {
+fn protocol_output() -> Box<dyn io::Write + Send> {
     Box::new(io::stdout())
 }
 
@@ -55,8 +58,11 @@ fn build_program_vm(args: LaunchArgs) -> Result<colibri_runtime::Vm, String> {
     }
     cfg.debug = true;
     crate::set_build_cfg(cfg);
-    if depscmd::prepare(&args.program, DepFlags::default()).is_err() {
-        return Err("the dependencies of the program could not be prepared (see the adapter's standard error)".into());
+    let mut args = args;
+    // What `colibri run` prints on standard error goes to the client as output.
+    let notes = depscmd::prepare_quiet(&args.program, DepFlags::default())?;
+    for note in notes {
+        let _ = writeln!(args.stderr, "  {note}");
     }
     let config = colibri_std::StdConfig {
         args: args.args,
