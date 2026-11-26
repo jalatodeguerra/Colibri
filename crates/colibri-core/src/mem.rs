@@ -248,7 +248,7 @@ pub fn installed() -> bool {
 /// multiple of one (`64 MiB`), plain bytes otherwise (`1000 bytes`).
 pub fn human_bytes(bytes: u64) -> String {
     for (unit, name) in [(1u64 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")] {
-        if bytes >= unit && bytes % unit == 0 {
+        if bytes >= unit && bytes.is_multiple_of(unit) {
             return format!("{} {name}", bytes / unit);
         }
     }
