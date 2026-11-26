@@ -202,10 +202,12 @@ fn the_table_hash_includes_the_capture_layout_of_closures() {
         vm.load_source("h.colibri", source).unwrap();
         vm.program_table_hash().unwrap()
     };
-    // Same names, same signatures, same globals: only how the closure holds what it captured
-    // differs (by value, or in a cell shared with the enclosing function).
-    let by_value = "fn make(base: int) -> fn(int) -> int {\n    return fn(n: int) => n * base\n}\n";
-    let in_a_cell = "fn make(base: int) -> fn(int) -> int {\n    let mut b = base\n    b += 0\n    return fn(n: int) => n * b\n}\n";
+    // The two sources have the same length and the same names, signatures and globals (what the
+    // tables show otherwise: a table keeps the spans of its items): only how the closure holds
+    // what it captured differs, by value or in a cell shared with the enclosing function.
+    let by_value = "fn make(base: int) -> fn(int) -> int {\n    let     b = base\n    return fn(n: int) => n * b\n}\n";
+    let in_a_cell = "fn make(base: int) -> fn(int) -> int {\n    let mut b = base\n    return fn(n: int) => n * b\n}\n";
+    assert_eq!(by_value.len(), in_a_cell.len());
     assert_eq!(hash(by_value), hash(by_value));
     assert_ne!(hash(by_value), hash(in_a_cell));
 }

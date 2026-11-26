@@ -1070,25 +1070,26 @@ mod tests {
     #[test]
     fn a_child_counts_into_its_parent_with_a_limit_of_its_own() {
         let _g = shared();
-        let parent = MemAccount::open();
+        let mut parent = MemAccount::open();
         let mut child = MemAccount::child_of(parent.tag());
         parent.set_limit(Some(10_000));
-        child.set_limit(Some(150));
         let l = layout(100, 8);
-        let p = within(&mut child, || unsafe { A.alloc(l) });
         let held = (100 + prefix_for(8)) as u64;
-        // The parent holds what the child allocated, and the child's limit is measured on the
-        // total, but only the child raised its flag.
-        assert_eq!(parent.used(), Some(held));
-        assert_eq!(child.used(), Some(held));
+        // The parent itself holds one block; the child's limit is measured on what everything
+        // under the parent holds, not on the child's own count.
+        let p = within(&mut parent, || unsafe { A.alloc(l) });
+        child.set_limit(Some(held + held / 2));
         assert!(!child.over());
         let q = within(&mut child, || unsafe { A.alloc(l) });
-        assert!(child.over());
+        assert_eq!(parent.used(), Some(2 * held));
+        assert_eq!(child.used(), Some(2 * held));
+        assert!(child.over(), "the total passed the child's limit");
+        // Only the child's flag was raised, and its limit is not the parent's.
         assert!(!parent.over());
-        // Setting the child's limit does not touch the parent's.
         child.set_limit(None);
         assert_eq!(parent.limit(), Some(10_000));
         assert_eq!(child.limit(), None);
+        assert!(!child.over());
         unsafe {
             A.dealloc(p, l);
             A.dealloc(q, l);

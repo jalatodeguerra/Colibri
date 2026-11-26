@@ -418,6 +418,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_workers_world_is_the_main_ones_but_for_its_input_and_its_seed() {
+        use std::io::BufRead;
+        let main = StdConfig {
+            args: vec!["a".to_string()],
+            env: EnvSource::Fixed(BTreeMap::from([("K".to_string(), "v".to_string())])),
+            temp_dir: Some(PathBuf::from("/tmp/t")),
+            seed: Some(7),
+            stdin: Some(Box::new(std::io::Cursor::new("main input\n"))),
+            local_offset: Some(3600),
+            web: false,
+            ..StdConfig::default()
+        };
+        let worker = WorkerStd::from_config(&main).with_clock(|| Box::new(ManualClock::new(5.0)));
+        let (first, second) = (worker.config(), worker.config());
+        for config in [&first, &second] {
+            assert_eq!(config.args, ["a"]);
+            assert!(matches!(&config.env, EnvSource::Fixed(m) if m["K"] == "v"));
+            assert_eq!(config.temp_dir, Some(PathBuf::from("/tmp/t")));
+            assert_eq!(config.local_offset, Some(3600));
+        }
+        // The worker's clock is the one the host chose.
+        let mut clock = first.clock;
+        assert_eq!(clock.unix_seconds(), 5.0);
+        // A worker never reads the main thread's input: it has an empty one of its own.
+        let mut line = String::new();
+        assert_eq!(first.stdin.unwrap().read_line(&mut line).unwrap(), 0);
+        // Each worker has a seed of its own, derived from the main one; an unseeded one stays so.
+        assert!(first.seed.is_some() && second.seed.is_some());
+        assert_ne!(first.seed, second.seed);
+        assert_ne!(first.seed, Some(7));
+        let unseeded = WorkerStd::from_config(&StdConfig::default());
+        assert_eq!(unseeded.config().seed, None);
+    }
+
+    #[test]
     fn an_unseeded_generator_takes_its_seed_from_the_hosts_random_bytes() {
         let seed = seed_from(|bytes| bytes.copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]));
         assert_eq!(seed, 0x0807_0605_0403_0201);

@@ -27,6 +27,14 @@ fn hog(n: int) -> int {
     return xs.len()
 }
 
+fn ints(n: int) -> List[int] {
+    let mut xs: List[int] = []
+    for i in 0..n {
+        xs.push(i)
+    }
+    return xs
+}
+
 fn small() -> int {
     return 3
 }
@@ -87,16 +95,14 @@ fn a_result_too_large_to_copy_back_is_a_memory_limit_failure() {
         .memory_limit(8 * MIB)
         .build();
     vm.load_source("mem.colibri", PROGRAM).unwrap();
-    // The worker builds the 6 MiB string (it fits), and copying it out would hold it twice.
-    let why = run(&mut vm, "blob", vec![Portable::Int(6 * MIB as i64)]).unwrap_err();
+    // 200,000 integers are 3 MiB in the worker (the task fits, and passes no safepoint with the
+    // flag raised), and their portable form is counted at more than the limit: the copy is
+    // refused, which is the memory limit's failure and not a failure to copy.
+    let why = run(&mut vm, "ints", vec![Portable::Int(200_000)]).unwrap_err();
     assert_eq!(why, TaskFailure::MemoryLimit { limit: 8 * MIB });
-    assert_eq!(
-        run(&mut vm, "blob", vec![Portable::Int(MIB as i64)])
-            .unwrap()
-            .value
-            .clone_str_len(),
-        MIB
-    );
+    // A smaller result goes through.
+    let small = run(&mut vm, "ints", vec![Portable::Int(1_000)]).unwrap();
+    assert!(matches!(&small.value, Portable::List { items, .. } if items.len() == 1_000));
 }
 
 #[test]
@@ -338,7 +344,6 @@ fn entry() {
 
 trait CloneInt {
     fn clone_int(&self) -> i64;
-    fn clone_str_len(&self) -> u64;
 }
 
 impl CloneInt for Portable {
@@ -346,13 +351,6 @@ impl CloneInt for Portable {
         match self {
             Portable::Int(n) => *n,
             other => panic!("not an int: {other:?}"),
-        }
-    }
-
-    fn clone_str_len(&self) -> u64 {
-        match self {
-            Portable::Str(text) => text.len() as u64,
-            other => panic!("not a string: {other:?}"),
         }
     }
 }
