@@ -163,94 +163,6 @@ impl Ending {
     }
 }
 
-#[cfg(test)]
-mod ending_tests {
-    use super::*;
-
-    /// A writer whose bytes the test can read.
-    #[derive(Clone, Default)]
-    struct Sink(Arc<Mutex<Vec<u8>>>);
-
-    impl Write for Sink {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn ending() -> (Arc<Ending>, Sink) {
-        let sink = Sink::default();
-        let out = Arc::new(Mutex::new(Out {
-            writer: Box::new(sink.clone()),
-            seq: 0,
-            closed: false,
-        }));
-        let ending = Arc::new(Ending {
-            pause: Mutex::new(None),
-            state: Mutex::new(EndState::default()),
-            no_debug: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-            out,
-        });
-        (ending, sink)
-    }
-
-    /// The messages written so far, each read whole.
-    fn messages(sink: &Sink) -> Vec<Value> {
-        let bytes = sink.0.lock().unwrap().clone();
-        let mut input = io::Cursor::new(bytes);
-        let mut out = Vec::new();
-        while let Ok(m) = read_message(&mut input) {
-            out.push(m);
-        }
-        assert_eq!(
-            input.position() as usize,
-            input.get_ref().len(),
-            "a torn frame"
-        );
-        out
-    }
-
-    #[test]
-    fn when_the_watchdog_has_the_end_the_vm_thread_is_told_so_and_one_answer_is_written() {
-        let (ending, sink) = ending();
-        let mut held = false;
-        let fired = ending.end_session(Some((7, "disconnect".into())), || {
-            // The output is still held when the process would end.
-            held = ending.out.try_lock().is_err();
-        });
-        assert!(fired && held);
-        assert!(!ending.ack(), "the VM thread must not answer");
-        assert!(!ending.end_session(Some((7, "disconnect".into())), || {}));
-        let written = messages(&sink);
-        assert_eq!(written.len(), 1);
-        assert_eq!(written[0]["request_seq"], 7);
-        assert!(ending.out.lock().unwrap().closed);
-    }
-
-    #[test]
-    fn when_the_vm_thread_has_the_end_the_watchdog_does_nothing() {
-        let (ending, sink) = ending();
-        assert!(ending.ack());
-        assert!(!ending.end_session(Some((1, "terminate".into())), || panic!("exit")));
-        assert!(messages(&sink).is_empty());
-        assert!(!ending.out.lock().unwrap().closed);
-    }
-
-    #[test]
-    fn a_terminate_the_watchdog_answers_is_followed_by_terminated() {
-        let (ending, sink) = ending();
-        assert!(ending.end_session(Some((2, "terminate".into())), || {}));
-        let written = messages(&sink);
-        assert_eq!(written.len(), 2);
-        assert_eq!(written[0]["type"], "response");
-        assert_eq!(written[1]["event"], "terminated");
-    }
-}
-
 /// The reader thread: parses frames and hands them over.
 fn read_loop(mut input: impl BufRead, tx: mpsc::Sender<Incoming>, ending: Arc<Ending>) {
     loop {
@@ -1481,5 +1393,93 @@ impl State {
         self.end_requested = true;
         self.disconnected = true;
         self.out.lock().expect("the output").closed = true;
+    }
+}
+
+#[cfg(test)]
+mod ending_tests {
+    use super::*;
+
+    /// A writer whose bytes the test can read.
+    #[derive(Clone, Default)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn ending() -> (Arc<Ending>, Sink) {
+        let sink = Sink::default();
+        let out = Arc::new(Mutex::new(Out {
+            writer: Box::new(sink.clone()),
+            seq: 0,
+            closed: false,
+        }));
+        let ending = Arc::new(Ending {
+            pause: Mutex::new(None),
+            state: Mutex::new(EndState::default()),
+            no_debug: AtomicBool::new(false),
+            running: AtomicBool::new(false),
+            out,
+        });
+        (ending, sink)
+    }
+
+    /// The messages written so far, each read whole.
+    fn messages(sink: &Sink) -> Vec<Value> {
+        let bytes = sink.0.lock().unwrap().clone();
+        let mut input = io::Cursor::new(bytes);
+        let mut out = Vec::new();
+        while let Ok(m) = read_message(&mut input) {
+            out.push(m);
+        }
+        assert_eq!(
+            input.position() as usize,
+            input.get_ref().len(),
+            "a torn frame"
+        );
+        out
+    }
+
+    #[test]
+    fn when_the_watchdog_has_the_end_the_vm_thread_is_told_so_and_one_answer_is_written() {
+        let (ending, sink) = ending();
+        let mut held = false;
+        let fired = ending.end_session(Some((7, "disconnect".into())), || {
+            // The output is still held when the process would end.
+            held = ending.out.try_lock().is_err();
+        });
+        assert!(fired && held);
+        assert!(!ending.ack(), "the VM thread must not answer");
+        assert!(!ending.end_session(Some((7, "disconnect".into())), || {}));
+        let written = messages(&sink);
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0]["request_seq"], 7);
+        assert!(ending.out.lock().unwrap().closed);
+    }
+
+    #[test]
+    fn when_the_vm_thread_has_the_end_the_watchdog_does_nothing() {
+        let (ending, sink) = ending();
+        assert!(ending.ack());
+        assert!(!ending.end_session(Some((1, "terminate".into())), || panic!("exit")));
+        assert!(messages(&sink).is_empty());
+        assert!(!ending.out.lock().unwrap().closed);
+    }
+
+    #[test]
+    fn a_terminate_the_watchdog_answers_is_followed_by_terminated() {
+        let (ending, sink) = ending();
+        assert!(ending.end_session(Some((2, "terminate".into())), || {}));
+        let written = messages(&sink);
+        assert_eq!(written.len(), 2);
+        assert_eq!(written[0]["type"], "response");
+        assert_eq!(written[1]["event"], "terminated");
     }
 }
