@@ -12,6 +12,21 @@ struct Chain[T] {
     next: Chain[(T, T)]?
 }
 
+// Two fields that grow differently: the number of types doubles at each level while the size
+// stays small for about a hundred levels.
+struct Br[X] {
+    v: X
+    a: Br[(X, int)]?
+    b: Br[(X, str)]?
+}
+
+fn branching(x: Br[int]) {
+    let ch = Channel[Br[int]]()
+    let t = task.run(fn() => x.v)
+    ch.send(x)
+    let s = Shared(x)
+}
+
 fn channels(n: Nest[int], c: Chain[int]) {
     let a = Channel[Nest[int]]()
     let b = Channel[Chain[int]]()

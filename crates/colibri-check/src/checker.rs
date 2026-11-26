@@ -2035,7 +2035,11 @@ impl<'a> Checker<'a> {
             .script
             .iter()
             .any(|s| matches!(s, ScriptStep::Global(x) if *x == g));
-        let hint = if in_script {
+        let hint = if verb == "writes" {
+            format!(
+                "a thread task cannot change the main thread's values: `{name}` stays as it is. Return what the task computed (`t.join()`) or send it on a `Channel`, and let the main thread store it"
+            )
+        } else if in_script {
             format!(
                 "`{name}` is a value of the script, so it belongs to the main thread even when the task seems to capture it; copy it into a local inside a block or a function first (`{{ let mine = {name}.clone(); task.run(fn() => mine.len()) }}`), or make it a `const`"
             )

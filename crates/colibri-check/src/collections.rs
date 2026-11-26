@@ -367,9 +367,8 @@ impl FnCtx<'_, '_> {
             Some(Ty::Adt(crate::types::SHARED_TYPE, a)) if a.len() == 1 => Some(a[0].clone()),
             _ => None,
         };
-        let (mark, ob_mark) = (self.deps_mark(), self.obligations.len());
         let value = self.check_expr(&arg.value, want.as_ref());
-        self.note_thread_boundary(&value, mark, ob_mark);
+        self.note_thread_boundary(&value);
         let ty = value.ty.clone();
         self.require_sendable(&ty, SendOrigin::SharedValue, arg.value.span);
         self.mk(

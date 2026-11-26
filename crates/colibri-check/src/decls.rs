@@ -248,7 +248,7 @@ impl<'a> Checker<'a> {
             );
             if is_thread_type_name(&name.name) {
                 diag = diag.with_hint(
-                    "`Task`, `Channel`, `Shared` and `Mutex` are the types of thread tasks (DESIGN §14.1); pick another name, such as `Job` or `Queue`",
+                    "`Task`, `Channel`, `Shared` and `Mutex` are the names of the types of thread tasks; pick another name, such as `Job` or `Queue`",
                 );
             }
             self.report(diag);

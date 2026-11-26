@@ -35,7 +35,7 @@ fn a_script_value_read_in_a_task_says_to_copy_it_into_a_local_first() {
 }
 
 #[test]
-fn a_program_value_gets_the_general_hint_and_a_write_is_reported_as_a_write() {
+fn a_write_is_reported_as_a_write_and_told_to_return_the_result() {
     let found = errors(
         "let mut hits = 0\nfn bump() {\n    hits += 1\n}\nfn main() {\n    print(task.run(bump).done())\n}\n",
     );
@@ -46,7 +46,10 @@ fn a_program_value_gets_the_general_hint_and_a_write_is_reported_as_a_write() {
     );
     let hint = found[0].hint.as_deref().unwrap_or_default();
     assert!(
-        hint.contains("make `hits` a `const`") && !hint.contains("copy it"),
+        hint.contains("cannot change the main thread's values")
+            && hint.contains("`t.join()`")
+            && !hint.contains("const")
+            && !hint.contains("copy it"),
         "{hint}"
     );
     assert!(
@@ -56,4 +59,29 @@ fn a_program_value_gets_the_general_hint_and_a_write_is_reported_as_a_write() {
             .any(|(_, l)| l == "`hits` is written here"),
         "{found:?}"
     );
+}
+
+#[test]
+fn a_write_in_a_script_task_gets_the_write_hint_not_the_copy_hint() {
+    let found =
+        errors("let mut total = 0\nlet t = task.run(fn() { total += 1 })\nprint(t.done())\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        found[0].message,
+        "`closure -> total` writes `total`, which belongs to the main thread"
+    );
+    let hint = found[0].hint.as_deref().unwrap_or_default();
+    assert!(hint.contains("Return what the task computed"), "{hint}");
+    assert!(!hint.contains("clone") && !hint.contains("len"), "{hint}");
+}
+
+#[test]
+fn the_hint_for_a_wrapped_part_keeps_the_wrapper() {
+    let found = errors(
+        "struct R { v: List[int] }\nfn f(ch: Channel[R?], r: R) {\n    ch.send(some(r))\n}\n",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    let hint = found[0].hint.as_deref().unwrap_or_default();
+    assert!(hint.contains("`r.clone()` where it is read"), "{hint}");
+    assert!(hint.contains("inside `some(..)`"), "{hint}");
 }

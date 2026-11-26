@@ -1,7 +1,9 @@
 // caps: net
 // allow: unused
-// A closure written in `send` or in `Shared(..)` crosses to another thread like the closure of
-// `task.run`: its captures must be sendable, and what it reaches must not be module state.
+// A closure written in `send` or in `Shared(..)` may cross to another thread: its captures are
+// copied wherever it goes, so they must be sendable. What it reaches is not checked here (see
+// `coroutine_callback_queue`): a callback that reaches module state on a worker is the run
+// time's to refuse.
 import net
 
 let mut counter = 0
@@ -15,11 +17,11 @@ fn mk[T]() -> Channel[T] {
 }
 
 fn senders(conn: net.Conn, jobs: Channel[fn()], n: int) {
-    jobs.send(fn() { bump() }) // error: `closure -> bump -> counter` writes `counter`, which belongs to the main thread
+    jobs.send(fn() { bump() })
     jobs.send(fn() { conn.close() }) // error: `closure.conn` is a `net.Conn`, which cannot be sent to another thread
     jobs.send(fn() { print(n) })
-    jobs.send(bump) // error: `bump -> counter` writes `counter`, which belongs to the main thread
-    let kept = Shared(fn() { counter += 1 }) // error: `closure -> counter` writes `counter`
+    jobs.send(bump)
+    let kept = Shared(fn() { counter += 1 })
     let fine = Shared(fn() => n)
 }
 

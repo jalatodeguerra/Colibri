@@ -34,6 +34,8 @@
 //! `ch.send(v)` has a second rule (Q2): a value that is more than plain data must be written as a
 //! visible copy, see [`FnCtx::note_channel_send`].
 
+use std::collections::HashSet;
+
 use colibri_syntax::{Diagnostic, Span};
 
 use crate::body::FnCtx;
@@ -103,6 +105,12 @@ const SHOWN_STEPS: usize = 12;
 /// What lies beyond it is left to the copy at run time, like a type parameter.
 const MAX_TYPE_SIZE: usize = 256;
 
+/// How many different types one walk enters. A type that branches while it grows
+/// (`struct Br[X] { a: Br[(X, int)]?, b: Br[(X, str)]? }`) stays under the size for a hundred
+/// levels and has twice the types at each, so a size alone does not stop it. Past the budget the
+/// walk accepts, and the copy at run time decides.
+const MAX_TYPES_VISITED: usize = 1024;
+
 /// The number of constructors in `ty`, counting no further than `limit`.
 fn type_size(ty: &Ty, limit: usize) -> usize {
     let mut n = 1;
@@ -168,7 +176,7 @@ impl Checker<'_> {
     /// field on it.
     pub(crate) fn sendable(&self, ty: &Ty, root: Option<&str>) -> Result<(), NotSend> {
         let mut path = Vec::new();
-        let mut done = Vec::new();
+        let mut done = HashSet::new();
         self.send_walk(ty, root, &mut path, &mut done)
     }
 
@@ -177,7 +185,7 @@ impl Checker<'_> {
         ty: &Ty,
         root: Option<&str>,
         path: &mut Vec<Seg>,
-        done: &mut Vec<Ty>,
+        done: &mut HashSet<String>,
     ) -> Result<(), NotSend> {
         let refuse = |this: &Self, path: &[Seg], refusal| {
             Err(NotSend {
@@ -231,13 +239,13 @@ impl Checker<'_> {
                 }
                 // A type that holds itself (a list of its own kind) is looked at once, and one
                 // that keeps growing is looked at up to a size.
-                if done.contains(ty)
+                if done.len() >= MAX_TYPES_VISITED
                     || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE
                     || self.out_of_stack()
+                    || !done.insert(format!("{ty:?}"))
                 {
                     return Ok(());
                 }
-                done.push(ty.clone());
                 let map: Vec<_> = def
                     .params
                     .iter()
@@ -324,10 +332,10 @@ impl Checker<'_> {
     /// through a second name (a list, a map, a set, an object, a closure, an interface value), or
     /// that holds one. Handles and plain values are not.
     pub(crate) fn holds_reference(&self, ty: &Ty) -> bool {
-        self.holds_ref_walk(ty, &mut Vec::new())
+        self.holds_ref_walk(ty, &mut HashSet::new())
     }
 
-    fn holds_ref_walk(&self, ty: &Ty, done: &mut Vec<Ty>) -> bool {
+    fn holds_ref_walk(&self, ty: &Ty, done: &mut HashSet<String>) -> bool {
         match ty {
             Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Fn(..) | Ty::Dyn(..) => true,
             Ty::Tuple(items) => items.iter().any(|t| self.holds_ref_walk(t, done)),
@@ -339,13 +347,13 @@ impl Checker<'_> {
                 let Some(def) = self.types.get(id.0 as usize) else {
                     return false;
                 };
-                if done.contains(ty)
+                if done.len() >= MAX_TYPES_VISITED
                     || type_size(ty, MAX_TYPE_SIZE) > MAX_TYPE_SIZE
                     || self.out_of_stack()
+                    || !done.insert(format!("{ty:?}"))
                 {
                     return false;
                 }
-                done.push(ty.clone());
                 let map: Vec<_> = def
                     .params
                     .iter()
@@ -413,15 +421,15 @@ impl FnCtx<'_, '_> {
         }
     }
 
-    /// A closure written where it crosses to another thread (`task.run(..)`, `ch.send(..)`,
-    /// `Shared(..)`): what it captures is copied, and what it reaches runs on the worker. `mark`
-    /// and `ob_mark` are where the argument's uses and bounds started. A function name counts for
-    /// the module-state rule too. Returns whether `arg` was one of the two.
-    pub(crate) fn note_thread_boundary(&mut self, arg: &hir::Expr, mark: usize, ob_mark: usize) {
+    /// A closure written where it may cross to another thread (`task.run(..)`, `ch.send(..)`,
+    /// `Shared(..)`): what it captures is copied wherever it goes, so each capture must be
+    /// sendable. What it reaches is not checked for `send` and `Shared`: a channel may stay
+    /// between the main thread and its coroutines, and a callback that does reach a worker is
+    /// left to the run-time read trap. Returns whether `arg` is a closure literal.
+    pub(crate) fn note_thread_boundary(&mut self, arg: &hir::Expr) -> bool {
         let closure = match &arg.kind {
             hir::ExprKind::Closure(c) => Some(c.f),
-            hir::ExprKind::FnRef { .. } => None,
-            _ => return,
+            _ => return false,
         };
         if let Some(f) = closure
             && let Some(done) = self.done.iter().find(|d| d.f == f)
@@ -437,7 +445,7 @@ impl FnCtx<'_, '_> {
                 self.require_sendable(&ty, SendOrigin::Capture(name), arg.span);
             }
         }
-        self.note_task_site(closure.is_some(), mark, ob_mark, arg.span);
+        closure.is_some()
     }
 
     /// Keeps what the argument of a thread boundary refers to for the module-state rule.
@@ -490,7 +498,7 @@ impl FnCtx<'_, '_> {
                     s.span,
                 )
                 .with_hint(format!(
-                    "write `ch.send({}.clone())`, or build the value in the call",
+                    "write `{}.clone()` where it is read (inside `some(..)`, a list or a struct too), or build the value in the call",
                     s.shown
                 )),
             );

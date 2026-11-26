@@ -1,0 +1,31 @@
+// allow: unused
+// A `Channel[fn()]` between `main` and a coroutine never leaves the main thread, so a callback
+// that changes module state is fine. Only a callback that reaches a worker is a problem, and that
+// is left to the run time. The functions are checked and not run.
+let mut score = 0
+
+fn add_point() {
+    score += 1
+}
+
+fn drain(q: Channel[fn()]) {
+    for f in q {
+        f()
+    }
+}
+
+fn pump() {
+    let q = Channel[fn()]()
+    let c = go drain(q)
+    q.send(fn() { score += 10 })
+    q.send(add_point)
+    let shared = Shared(add_point)
+    q.close()
+    c.join()
+}
+
+fn main() {
+    print("checked")
+}
+
+// expect: checked

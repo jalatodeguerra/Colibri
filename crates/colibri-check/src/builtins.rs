@@ -793,7 +793,6 @@ impl FnCtx<'_, '_> {
             })
             .collect();
         let full = format!("{}.{}", self.show(&recv_ty), name.name);
-        let (mark, ob_mark) = (self.deps_mark(), self.obligations.len());
         let Some(bound) = self.bind_args(&full, &params, args, span, 1) else {
             return Ok(self.error_expr_typed(span, sig.ret));
         };
@@ -804,7 +803,7 @@ impl FnCtx<'_, '_> {
             && let Some(sent) = bound.first()
         {
             self.note_channel_send(&sent.expr);
-            self.note_thread_boundary(&sent.expr, mark, ob_mark);
+            self.note_thread_boundary(&sent.expr);
         }
         Ok(self.finish_call(
             Callee::builtin(sig.op),
