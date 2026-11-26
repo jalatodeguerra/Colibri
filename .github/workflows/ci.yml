@@ -20,6 +20,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The VS Code extension has no build step or test runner: its manifest is checked here
+      # (the debugger it contributes, against the launch attributes the adapter reads).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: VS Code extension manifest
+        run: node editors/vscode/check-package.mjs
 
   # The engine crates must keep building for the web (`target_family = "wasm"`): no threads, no
   # `std::time::Instant`, no disk, no FFI. Nothing runs here; the build is the proof.

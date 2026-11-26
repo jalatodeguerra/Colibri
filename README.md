@@ -791,23 +791,25 @@ highlighting and the language client is in [`editors/vscode`](editors/vscode/REA
 ### Debugging
 
 `colibri debug` is a debug adapter: an editor that speaks the Debug Adapter Protocol starts it,
-sends a `launch` request (`program`, `args`, `cwd`, `features`, `stopOnEntry`) and debugs the
-script or package. It supports breakpoints (also in a function that has not been called yet),
-hit counts (`3`, `>= 3`, `% 2`) and logpoints (`i is {i}`), step over, in and out (through
-closures passed to `map` and the like), pause, stopping at a panic (the `panic` exception
-filter), the call stack, and the variables of every frame, with structs, classes, enums, lists,
-maps and tuples expanded. `evaluate` reads paths such as `point.pos[2]`; it does not evaluate
-expressions, and conditions other than hit counts are refused. What the program prints arrives
-as output events, so nothing but protocol goes to standard output. Inspecting a value never
+sends a `launch` request (`program`, `args`, `cwd`, `features`, `stopOnEntry`, `noDebug`, `watch`)
+and debugs the script or package. The VS Code extension in [`editors/vscode`](editors/vscode/README.md)
+contributes the `colibri` debugger type and launch configuration snippets; the
+[debugging guide](guide/debugging.md) says what you can do with it. It supports breakpoints (also
+in a function that has not been called yet: the editor is told when one goes live), hit counts
+(`3`, `>= 3`, `% 2`) and logpoints (`i is {i}`), step over, in and out (through closures passed
+to `map` and the like), pause, stopping at a panic (the `panic` exception filter), the call
+stack, and the variables of every frame, with structs, classes, enums, lists, maps and tuples
+expanded. Coroutines are threads (`go fetch (#12)`), and the main computation is thread 1.
+`"watch": true` reloads the program when its files change, as `colibri run --watch` does, and
+breakpoints stay where they were set. `evaluate` reads paths such as `point.pos[2]`; it does not
+evaluate expressions, and conditions other than hit counts are refused. What the program prints
+arrives as output events, so nothing but protocol goes to standard output (a child process
+started with `process.status` writes to the adapter's standard error). Inspecting a value never
 runs your code (a `Show` you wrote is not called). Debug mode compiles a step for every
-statement, so a debugged program is slower than a normal run, with the same output. The VS Code
-extension will get the launch configuration next; for now any DAP client can run
-`colibri debug`. `noDebug` runs the program with no debugger. A program that is blocked in a
-call (`time.sleep`) or idle in the event loop cannot be paused; `disconnect`, `terminate` and
-a closed input end it after a moment all the same. A breakpoint in a function that has not run
-yet shows as unverified until it does. On Unix a child process started with `process.status`
-writes to the adapter's standard error; on Windows its output is not yet kept out of the
-protocol stream.
+statement, so a debugged program is slower than a normal run, with the same output. `noDebug`
+runs the program with no debugger. A program that is blocked in a call (`time.sleep`) or idle in
+the event loop cannot be paused; `disconnect`, `terminate` and a closed input end it after a
+moment all the same.
 
 ### Hot reload
 
