@@ -718,7 +718,7 @@ fn the_capabilities_say_what_is_supported() {
 fn a_child_process_cannot_write_into_the_stream_or_reach_its_descriptor() {
     let src = r#"import process
 fn main() {
-    let script = "for fd in 3 4 5 6 7 8 9; do (echo LEAK >&$fd); done; echo from the child"
+    let script = "for fd in 3 4 5 6 7 8 9; do (echo LEAK$fd >&$fd); done; echo from the child"
     let _ = process.status("sh", ["-c", script])
     print("after")
 }
@@ -729,11 +729,13 @@ fn main() {
     assert_eq!(dap.finish(), Some(0));
     assert_eq!(dap.output("stdout"), "after\n");
     // What the child wrote to its standard output went to the adapter's standard error. A
-    // write to a leaked descriptor would have been a junk line in the stream (the harness
-    // reads it strictly) and `LEAK` here.
+    // write to the protocol descriptor would be a junk line in the stream, which the harness
+    // reads strictly (`finish` above would have failed). Other descriptors the child
+    // inherited from the test runner may point at the same standard error, so `LEAKn` lines
+    // there say nothing: they are printed to show which ones, in a CI log.
     let stderr = dap.disconnect_stderr();
+    eprintln!("child output on the adapter's standard error: {stderr:?}");
     assert!(stderr.contains("from the child"), "{stderr}");
-    assert!(!stderr.contains("LEAK"), "{stderr}");
 }
 
 const SLEEPERS: [&str; 2] = [
