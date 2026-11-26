@@ -87,6 +87,10 @@ pub enum Portable {
     Char(char),
     Str(Box<str>),
     Bytes(Box<[u8]>),
+    /// A string held by more than one thing: copied once, named by id, and a later visit is a
+    /// [`Portable::Ref`]. (A hundred references to a megabyte are a megabyte, not a hundred.)
+    SharedStr(u32, Box<str>),
+    SharedBytes(u32, Box<[u8]>),
     /// The buffer of a `StrBuilder` or `BytesBuilder`.
     ByteBuf {
         id: u32,
@@ -310,9 +314,17 @@ pub trait SendEnv {
         None
     }
 
-    /// The name of the variable that capture number `index` of the closure body `f` holds.
-    fn capture_name(&self, _f: FnId, _index: u32) -> Option<String> {
+    /// The name of the variable that capture number `index` of a closure of function `f`, made in
+    /// the program generation `generation`, holds.
+    fn capture_name(&self, _f: FnId, _generation: u32, _index: u32) -> Option<String> {
         None
+    }
+
+    /// Asks whether `bytes` more may be allocated under the memory limit. Called before a large
+    /// string or byte buffer is copied, and for every few thousand nodes, so that a copy that
+    /// would pass the limit is refused instead of finished. `Core` asks its own account.
+    fn reserve(&self, _bytes: usize) -> bool {
+        true
     }
 
     /// Seam: a class type that must not cross although it looks like any other class (the `Task`
@@ -335,6 +347,10 @@ pub struct Unnamed;
 impl SendEnv for Unnamed {}
 
 impl SendEnv for Core {
+    fn reserve(&self, bytes: usize) -> bool {
+        Core::mem_reserve(self, bytes)
+    }
+
     fn type_name(&self, ty: TypeId) -> String {
         match self.types.get(ty.0 as usize) {
             Some(def) => def.display_name().into_owned(),
@@ -366,6 +382,42 @@ impl SendEnv for Core {
     }
 }
 
+/// A [`Core`] together with the engine's function table, which is what names the variables a
+/// closure captured: a refusal inside `task.run(fn() => use(conn))` then reads `closure.conn`.
+/// The engine builds it from its own table (`Machine::to_portable`).
+pub struct ProgramEnv<'a> {
+    pub core: &'a Core,
+    pub fn_body: &'a dyn Fn(FnId) -> Option<&'a colibri_check::hir::Body>,
+}
+
+impl SendEnv for ProgramEnv<'_> {
+    fn reserve(&self, bytes: usize) -> bool {
+        SendEnv::reserve(self.core, bytes)
+    }
+
+    fn type_name(&self, ty: TypeId) -> String {
+        SendEnv::type_name(self.core, ty)
+    }
+
+    fn field_name(&self, ty: TypeId, index: u32) -> Option<String> {
+        SendEnv::field_name(self.core, ty, index)
+    }
+
+    fn variant_name(&self, ty: TypeId, variant: u32) -> Option<String> {
+        SendEnv::variant_name(self.core, ty, variant)
+    }
+
+    fn payload_name(&self, ty: TypeId, variant: u32, index: u32) -> Option<String> {
+        SendEnv::payload_name(self.core, ty, variant, index)
+    }
+
+    fn capture_name(&self, f: FnId, generation: u32, index: u32) -> Option<String> {
+        let body = (self.fn_body)(self.core.closure_fn_at(f, generation)?)?;
+        let local = body.captures.get(index as usize)?;
+        Some(body.locals.get(local.0 as usize)?.name.clone())
+    }
+}
+
 // ---- refusals ----
 
 /// Why a value cannot cross.
@@ -380,6 +432,8 @@ pub enum Refused {
     Task,
     /// The graph nests deeper than the native stack allows.
     TooDeep,
+    /// Copying it would pass the memory limit.
+    MemoryLimit,
 }
 
 /// A value that cannot be sent to another thread, and where it sits in what was sent.
@@ -400,6 +454,9 @@ impl fmt::Display for NotSendable {
         }
         match &self.refused {
             Refused::TooDeep => f.write_str(" is nested too deeply to send to another thread"),
+            Refused::MemoryLimit => f.write_str(
+                " is too large to send to another thread: copying it would pass the memory limit",
+            ),
             other => {
                 f.write_str(" is ")?;
                 match other {
@@ -409,7 +466,7 @@ impl fmt::Display for NotSendable {
                     Refused::CoGroup => f.write_str("a `CoGroup`")?,
                     Refused::Signal => f.write_str("a `Signal`")?,
                     Refused::Task => f.write_str("a `Task`")?,
-                    Refused::TooDeep => unreachable!(),
+                    Refused::TooDeep | Refused::MemoryLimit => unreachable!("matched above"),
                 }
                 f.write_str(", which cannot be sent to another thread")
             }
@@ -433,7 +490,7 @@ enum Seg {
     /// The key (`true`) or the value of the n-th entry of a map.
     Entry(u32, bool),
     /// A capture of a closure.
-    Capture(FnId, u32),
+    Capture(FnId, u32, u32),
 }
 
 /// The most steps of a path that an error shows: a graph that is too deep has a path of thousands.
@@ -460,6 +517,8 @@ fn render(env: &dyn SendEnv, path: &[Seg]) -> String {
                     None => out.push_str(&i.to_string()),
                 }
             }
+            // The `some` of an optional field is not a step the program writes.
+            Seg::Payload(OPTION_TYPE, _, _) => {}
             Seg::Payload(ty, v, i) => {
                 if n == 0 {
                     out.push_str(&env.type_name(ty));
@@ -483,12 +542,12 @@ fn render(env: &dyn SendEnv, path: &[Seg]) -> String {
                     if key { "key" } else { "value" }
                 ));
             }
-            Seg::Capture(f, i) => {
+            Seg::Capture(f, generation, i) => {
                 if n == 0 {
                     out.push_str("closure");
                 }
                 out.push('.');
-                match env.capture_name(f, i) {
+                match env.capture_name(f, generation, i) {
                     Some(name) => out.push_str(&name),
                     None => out.push_str(&format!("captures[{i}]")),
                 }
@@ -518,9 +577,13 @@ pub fn to_portable(
         objs: HashMap::new(),
         next: 0,
         path: Vec::new(),
+        pending: 0,
     };
     walk.visit(v)
 }
+
+// The maps below are keyed by address. That is sound because the graph is borrowed for the whole
+// walk, so no object in it is freed and no address is reused.
 
 /// What the walk knows of a value (a struct, tuple, enum, interface value or closure) that more
 /// than one thing holds.
@@ -548,9 +611,50 @@ struct ToPortable<'e> {
     objs: HashMap<usize, ObjSlot>,
     next: u32,
     path: Vec<Seg>,
+    /// Bytes copied since the memory limit was last asked.
+    pending: usize,
 }
 
+/// How many bytes are copied between two questions to [`SendEnv::reserve`].
+const RESERVE_BATCH: usize = 64 * 1024;
+/// What a node of the portable form is counted as, for the same.
+const NODE_COST: usize = 48;
+
 impl ToPortable<'_> {
+    /// Counts `bytes` about to be copied, and asks the memory limit once enough have been.
+    #[inline]
+    fn charge(&mut self, bytes: usize) -> Result<(), NotSendable> {
+        self.pending += bytes;
+        if self.pending >= RESERVE_BATCH {
+            let asked = std::mem::take(&mut self.pending);
+            if !self.env.reserve(asked) {
+                return Err(self.refuse(Refused::MemoryLimit));
+            }
+        }
+        Ok(())
+    }
+
+    /// A string or byte buffer: the first of several holders copies it, the others name it.
+    fn text(
+        &mut self,
+        addr: usize,
+        strong: usize,
+        len: usize,
+        make: impl FnOnce(Option<u32>) -> Portable,
+    ) -> Result<Portable, NotSendable> {
+        if strong > 1 {
+            if let Some(slot) = self.shared.get(&addr) {
+                return Ok(Portable::Ref(slot.id));
+            }
+            self.charge(len)?;
+            let id = self.fresh_id();
+            self.shared.insert(addr, SharedSlot { id, done: true });
+            return Ok(make(Some(id)));
+        }
+        self.charge(len)?;
+        Ok(make(None))
+    }
+
     fn fresh_id(&mut self) -> u32 {
         let id = self.next;
         self.next += 1;
@@ -624,6 +728,7 @@ impl ToPortable<'_> {
         if self.stack.exceeded() {
             return Err(self.refuse(Refused::TooDeep));
         }
+        self.charge(NODE_COST)?;
         // Each kind that has children is a function of its own, so that the frame of the recursion
         // holds what the kind on the path needs and not what every kind needs.
         Ok(match v {
@@ -635,11 +740,26 @@ impl ToPortable<'_> {
             Value::Float(x) => Portable::Float(*x),
             Value::F32(x) => Portable::F32(*x),
             Value::Char(c) => Portable::Char(*c),
-            Value::Str(s) => Portable::Str(Box::from(&**s)),
-            Value::Bytes(b) => Portable::Bytes(Box::from(&**b)),
+            Value::Str(s) => {
+                let addr = Rc::as_ptr(s) as *const u8 as usize;
+                self.text(addr, Rc::strong_count(s), s.len(), |id| match id {
+                    Some(id) => Portable::SharedStr(id, Box::from(&**s)),
+                    None => Portable::Str(Box::from(&**s)),
+                })?
+            }
+            Value::Bytes(b) => {
+                let addr = Rc::as_ptr(b) as *const u8 as usize;
+                self.text(addr, Rc::strong_count(b), b.len(), |id| match id {
+                    Some(id) => Portable::SharedBytes(id, Box::from(&**b)),
+                    None => Portable::Bytes(Box::from(&**b)),
+                })?
+            }
             Value::Range(r) => Portable::Range(**r),
             Value::Fn(f, name) => Portable::Fn(*f, Box::from(&**name)),
-            Value::ByteBuf(b) => self.byte_buf(b),
+            Value::ByteBuf(b) => {
+                self.charge(b.borrow().len())?;
+                self.byte_buf(b)
+            }
             Value::Struct(s) => self.struct_node(s)?,
             Value::Tuple(items) => self.tuple_node(items)?,
             Value::Enum(e) => self.enum_node(e)?,
@@ -732,7 +852,7 @@ impl ToPortable<'_> {
         self.value_node(Rc::as_ptr(c) as usize, Rc::strong_count(c), |me, id| {
             let mut captures = Vec::with_capacity(c.captures.len());
             for (i, cap) in c.captures.iter().enumerate() {
-                me.path.push(Seg::Capture(c.f, i as u32));
+                me.path.push(Seg::Capture(c.f, c.generation, i as u32));
                 captures.push(PortableCapture {
                     inner: cap.inner,
                     mode: cap.mode,
@@ -888,6 +1008,8 @@ impl ToPortable<'_> {
 pub enum RebuildError {
     /// The graph nests deeper than the receiving thread's native stack allows.
     TooDeep,
+    /// Rebuilding it would pass the memory limit.
+    MemoryLimit,
     /// A `Ref` names an object that the graph never defines: not a graph [`to_portable`] made.
     Malformed,
 }
@@ -896,6 +1018,9 @@ impl fmt::Display for RebuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RebuildError::TooDeep => f.write_str("the value is nested too deeply to receive"),
+            RebuildError::MemoryLimit => {
+                f.write_str("the value is too large to receive: it would pass the memory limit")
+            }
             RebuildError::Malformed => f.write_str("the value received is not a valid graph"),
         }
     }
@@ -905,6 +1030,10 @@ impl std::error::Error for RebuildError {}
 
 /// Rebuilds a portable value on this thread, with fresh `Rc`s, charged to the entry that is
 /// running. Class objects and closures are registered with `core`'s leak detector when it is on.
+///
+/// The walk uses no more native stack per level than [`to_portable`] does, so a graph that was
+/// accepted under a budget is accepted under the same budget here (a test holds this for the
+/// shapes that nest: enums, lists and objects).
 pub fn from_portable(
     portable: Portable,
     core: &mut Core,
@@ -925,6 +1054,7 @@ pub fn rebuild(
         stack,
         built: HashMap::new(),
         placeholders: HashSet::new(),
+        pending: 0,
     };
     match b.value(portable) {
         Ok(v) => {
@@ -946,23 +1076,39 @@ struct Rebuild<'c> {
     /// Class objects made for a `weak` reference that came before its target; the target's own node
     /// takes them over, and any left at the end were not part of the graph.
     placeholders: HashSet<u32>,
+    /// Bytes built since the memory limit was last asked.
+    pending: usize,
 }
 
+/// What a rebuilt node is counted as, for the memory limit.
+const BUILT_NODE_COST: usize = 64;
+
 impl Rebuild<'_> {
+    #[inline]
+    fn charge(&mut self, bytes: usize) -> Result<(), RebuildError> {
+        self.pending += bytes;
+        if self.pending >= RESERVE_BATCH {
+            let asked = std::mem::take(&mut self.pending);
+            if !self.core.mem_reserve(asked) {
+                return Err(RebuildError::MemoryLimit);
+            }
+        }
+        Ok(())
+    }
+
     fn register(&mut self, id: Option<u32>, v: &Value) {
         if let Some(id) = id {
             self.built.insert(id, v.clone());
         }
     }
 
-    fn all(&mut self, items: &[Portable]) -> Result<Vec<Value>, RebuildError> {
-        items.iter().map(|p| self.value(p)).collect()
-    }
-
+    // As in `ToPortable::visit`, each kind that has children is a function of its own, so that
+    // the frame of the recursion holds what the kind on the path needs.
     fn value(&mut self, p: &Portable) -> Result<Value, RebuildError> {
         if self.stack.exceeded() {
             return Err(RebuildError::TooDeep);
         }
+        self.charge(BUILT_NODE_COST)?;
         Ok(match p {
             Portable::Unit => Value::Unit,
             Portable::Bool(b) => Value::Bool(*b),
@@ -972,147 +1118,54 @@ impl Rebuild<'_> {
             Portable::Float(x) => Value::Float(*x),
             Portable::F32(x) => Value::F32(*x),
             Portable::Char(c) => Value::Char(*c),
-            Portable::Str(s) => Value::Str(Rc::from(&**s)),
-            Portable::Bytes(b) => Value::Bytes(Rc::from(&**b)),
+            Portable::Str(s) => {
+                self.charge(s.len())?;
+                Value::Str(Rc::from(&**s))
+            }
+            Portable::Bytes(b) => {
+                self.charge(b.len())?;
+                Value::Bytes(Rc::from(&**b))
+            }
+            Portable::SharedStr(id, s) => {
+                self.charge(s.len())?;
+                let v = Value::Str(Rc::from(&**s));
+                self.built.insert(*id, v.clone());
+                v
+            }
+            Portable::SharedBytes(id, b) => {
+                self.charge(b.len())?;
+                let v = Value::Bytes(Rc::from(&**b));
+                self.built.insert(*id, v.clone());
+                v
+            }
             Portable::Range(r) => Value::Range(Rc::new(*r)),
             Portable::Fn(f, name) => Value::Fn(*f, Rc::from(&**name)),
             Portable::ByteBuf { id, bytes } => {
+                self.charge(bytes.len())?;
                 let v = Value::ByteBuf(Rc::new(RefCell::new(bytes.to_vec())));
                 self.built.insert(*id, v.clone());
                 v
             }
-            Portable::Struct { id, ty, fields } => {
-                let mut out = StructFields::with_capacity(fields.len());
-                for f in fields.iter() {
-                    out.push(self.value(f)?);
-                }
-                let v = Value::Struct(Rc::new(StructVal {
-                    ty: *ty,
-                    fields: out,
-                }));
-                self.register(*id, &v);
-                v
-            }
-            Portable::Tuple { id, items } => {
-                let v = Value::Tuple(Rc::from(self.all(items)?));
-                self.register(*id, &v);
-                v
-            }
+            Portable::Struct { id, ty, fields } => self.struct_value(*id, *ty, fields)?,
+            Portable::Tuple { id, items } => self.tuple_value(*id, items)?,
             Portable::Enum {
                 id,
                 ty,
                 variant,
                 payload,
-            } => {
-                if id.is_none()
-                    && payload.is_empty()
-                    && *ty == OPTION_TYPE
-                    && *variant == VARIANT_NONE
-                {
-                    return Ok(self.core.none());
-                }
-                let mut out = Payload::with_capacity(payload.len());
-                for f in payload.iter() {
-                    out.push(self.value(f)?);
-                }
-                let v = Value::Enum(Rc::new(EnumVal {
-                    ty: *ty,
-                    variant: *variant,
-                    payload: out,
-                }));
-                self.register(*id, &v);
-                v
-            }
-            Portable::Dyn { id, impl_id, val } => {
-                let v = Value::Dyn(Rc::new(DynVal {
-                    impl_id: *impl_id,
-                    val: self.value(val)?,
-                }));
-                self.register(*id, &v);
-                v
-            }
+            } => self.enum_value(*id, *ty, *variant, payload)?,
+            Portable::Dyn { id, impl_id, val } => self.dyn_value(*id, *impl_id, val)?,
             Portable::Closure {
                 id,
                 f,
                 generation,
                 captures,
-            } => {
-                let mut out = Vec::with_capacity(captures.len());
-                for c in captures.iter() {
-                    out.push(Captured {
-                        inner: c.inner,
-                        mode: c.mode,
-                        value: self.value(&c.value)?,
-                    });
-                }
-                let closure = Rc::new(ClosureObj {
-                    f: *f,
-                    generation: *generation,
-                    captures: out,
-                });
-                self.core.track_closure(&closure, None);
-                let v = Value::Closure(closure);
-                self.register(*id, &v);
-                v
-            }
-            Portable::List { id, items } => {
-                let list = ListObj::new(Vec::with_capacity(items.len()));
-                let v = Value::List(Rc::clone(&list));
-                self.built.insert(*id, v.clone());
-                for p in items.iter() {
-                    let item = self.value(p)?;
-                    let _ = list.push(item);
-                }
-                v
-            }
-            Portable::Map { id, entries } => {
-                let map = MapObj::new(OrderedMap::new());
-                let v = Value::Map(Rc::clone(&map));
-                self.built.insert(*id, v.clone());
-                for (k, e) in entries.iter() {
-                    let (k, e) = (self.value(k)?, self.value(e)?);
-                    let _ = map.insert(k, e);
-                }
-                v
-            }
-            Portable::Set { id, items } => {
-                let set = SetObj::new(OrderedMap::new());
-                let v = Value::Set(Rc::clone(&set));
-                self.built.insert(*id, v.clone());
-                for p in items.iter() {
-                    let item = self.value(p)?;
-                    let _ = set.add(item);
-                }
-                v
-            }
-            Portable::Cell { id, value } => {
-                let cell = CellObj::new(Value::Unit);
-                let v = Value::Cell(Rc::clone(&cell));
-                self.built.insert(*id, v.clone());
-                let inner = self.value(value)?;
-                let _ = cell.set(inner);
-                v
-            }
-            Portable::Obj { id, ty, fields } => {
-                let obj = match self.built.get(id) {
-                    // Made for a `weak` reference that came first.
-                    Some(Value::Obj(o)) if self.placeholders.remove(id) => Rc::clone(o),
-                    _ => {
-                        let o = ClassObj::new_exact(
-                            *ty,
-                            ObjFields::from_elem(Value::Unit, fields.len()),
-                        );
-                        self.built.insert(*id, Value::Obj(Rc::clone(&o)));
-                        o
-                    }
-                };
-                self.core.track_object(&obj, None);
-                for (i, p) in fields.iter().enumerate() {
-                    let field = self.value(p)?;
-                    let _ = obj.set_field(i, field);
-                }
-                Value::Obj(obj)
-            }
+            } => self.closure_value(*id, *f, *generation, captures)?,
+            Portable::List { id, items } => self.list_value(*id, items)?,
+            Portable::Map { id, entries } => self.map_value(*id, entries)?,
+            Portable::Set { id, items } => self.set_value(*id, items)?,
+            Portable::Cell { id, value } => self.cell_value(*id, value)?,
+            Portable::Obj { id, ty, fields } => self.obj_value(*id, *ty, fields)?,
             Portable::Weak(None) => Value::Weak(Weak::new()),
             Portable::Weak(Some(w)) => self.weak(w),
             Portable::Ref(id) => match self.built.get(id) {
@@ -1121,6 +1174,173 @@ impl Rebuild<'_> {
             },
             Portable::Handle(h) => h.materialise(self.core),
         })
+    }
+
+    #[inline(never)]
+    fn struct_value(
+        &mut self,
+        id: Option<u32>,
+        ty: TypeId,
+        fields: &[Portable],
+    ) -> Result<Value, RebuildError> {
+        let mut out = StructFields::with_capacity(fields.len());
+        for f in fields {
+            out.push(self.value(f)?);
+        }
+        let v = Value::Struct(Rc::new(StructVal { ty, fields: out }));
+        self.register(id, &v);
+        Ok(v)
+    }
+
+    #[inline(never)]
+    fn tuple_value(&mut self, id: Option<u32>, items: &[Portable]) -> Result<Value, RebuildError> {
+        let mut out = Vec::with_capacity(items.len());
+        for p in items {
+            out.push(self.value(p)?);
+        }
+        let v = Value::Tuple(Rc::from(out));
+        self.register(id, &v);
+        Ok(v)
+    }
+
+    #[inline(never)]
+    fn enum_value(
+        &mut self,
+        id: Option<u32>,
+        ty: TypeId,
+        variant: u32,
+        payload: &[Portable],
+    ) -> Result<Value, RebuildError> {
+        if id.is_none() && payload.is_empty() && ty == OPTION_TYPE && variant == VARIANT_NONE {
+            return Ok(self.core.none());
+        }
+        let mut out = Payload::with_capacity(payload.len());
+        for f in payload {
+            out.push(self.value(f)?);
+        }
+        let v = Value::Enum(Rc::new(EnumVal {
+            ty,
+            variant,
+            payload: out,
+        }));
+        self.register(id, &v);
+        Ok(v)
+    }
+
+    #[inline(never)]
+    fn dyn_value(
+        &mut self,
+        id: Option<u32>,
+        impl_id: u32,
+        val: &Portable,
+    ) -> Result<Value, RebuildError> {
+        let v = Value::Dyn(Rc::new(DynVal {
+            impl_id,
+            val: self.value(val)?,
+        }));
+        self.register(id, &v);
+        Ok(v)
+    }
+
+    #[inline(never)]
+    fn closure_value(
+        &mut self,
+        id: Option<u32>,
+        f: FnId,
+        generation: u32,
+        captures: &[PortableCapture],
+    ) -> Result<Value, RebuildError> {
+        let mut out = Vec::with_capacity(captures.len());
+        for c in captures {
+            out.push(Captured {
+                inner: c.inner,
+                mode: c.mode,
+                value: self.value(&c.value)?,
+            });
+        }
+        let closure = Rc::new(ClosureObj {
+            f,
+            generation,
+            captures: out,
+        });
+        self.core.track_closure(&closure, None);
+        let v = Value::Closure(closure);
+        self.register(id, &v);
+        Ok(v)
+    }
+
+    #[inline(never)]
+    fn list_value(&mut self, id: u32, items: &[Portable]) -> Result<Value, RebuildError> {
+        let list = ListObj::new(Vec::with_capacity(items.len()));
+        let v = Value::List(Rc::clone(&list));
+        self.built.insert(id, v.clone());
+        for p in items {
+            let item = self.value(p)?;
+            let _ = list.push(item);
+        }
+        Ok(v)
+    }
+
+    #[inline(never)]
+    fn map_value(
+        &mut self,
+        id: u32,
+        entries: &[(Portable, Portable)],
+    ) -> Result<Value, RebuildError> {
+        let map = MapObj::new(OrderedMap::new());
+        let v = Value::Map(Rc::clone(&map));
+        self.built.insert(id, v.clone());
+        for (k, e) in entries {
+            let (k, e) = (self.value(k)?, self.value(e)?);
+            let _ = map.insert(k, e);
+        }
+        Ok(v)
+    }
+
+    #[inline(never)]
+    fn set_value(&mut self, id: u32, items: &[Portable]) -> Result<Value, RebuildError> {
+        let set = SetObj::new(OrderedMap::new());
+        let v = Value::Set(Rc::clone(&set));
+        self.built.insert(id, v.clone());
+        for p in items {
+            let item = self.value(p)?;
+            let _ = set.add(item);
+        }
+        Ok(v)
+    }
+
+    #[inline(never)]
+    fn cell_value(&mut self, id: u32, value: &Portable) -> Result<Value, RebuildError> {
+        let cell = CellObj::new(Value::Unit);
+        let v = Value::Cell(Rc::clone(&cell));
+        self.built.insert(id, v.clone());
+        let inner = self.value(value)?;
+        let _ = cell.set(inner);
+        Ok(v)
+    }
+
+    #[inline(never)]
+    fn obj_value(
+        &mut self,
+        id: u32,
+        ty: TypeId,
+        fields: &[Portable],
+    ) -> Result<Value, RebuildError> {
+        let obj = match self.built.get(&id) {
+            // Made for a `weak` reference that came first.
+            Some(Value::Obj(o)) if self.placeholders.remove(&id) => Rc::clone(o),
+            _ => {
+                let o = ClassObj::new_exact(ty, ObjFields::from_elem(Value::Unit, fields.len()));
+                self.built.insert(id, Value::Obj(Rc::clone(&o)));
+                o
+            }
+        };
+        self.core.track_object(&obj, None);
+        for (i, p) in fields.iter().enumerate() {
+            let field = self.value(p)?;
+            let _ = obj.set_field(i, field);
+        }
+        Ok(Value::Obj(obj))
     }
 
     /// A reference to a class object that may not have been built yet: it gets an empty one of the

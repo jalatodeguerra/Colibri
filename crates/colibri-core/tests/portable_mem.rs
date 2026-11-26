@@ -58,16 +58,48 @@ fn a_large_copy_is_charged_to_the_account_of_the_entry_it_runs_in() {
 }
 
 #[test]
-fn a_copy_that_goes_past_the_limit_sets_the_flag_of_its_entry() {
+fn a_copy_that_would_pass_the_limit_is_refused_and_leaves_nothing_charged() {
+    use colibri_core::portable::Refused;
     let mut core = core();
     let list = big_list();
     core.set_memory_limit(Some(100_000));
-    assert!(!core.memory_over());
+    // Many small nodes: the walk asks the limit every few thousand of them.
+    let entry = core.begin_entry();
+    let err = to_portable(&list, &core, StackGuard::here(1 << 20)).unwrap_err();
+    core.end_entry(entry, false);
+    assert_eq!(err.refused, Refused::MemoryLimit);
+    assert!(err.to_string().contains("memory limit"), "{err}");
+    drop(err);
+    assert_eq!(core.memory_used(), Some(0), "the partial copy was freed");
+    assert!(!core.memory_over(), "refused before the limit was passed");
+
+    // One large string: refused on its length, before it is copied.
+    let big = Value::str(&"x".repeat(1 << 20));
+    let entry = core.begin_entry();
+    let err = to_portable(&big, &core, StackGuard::here(1 << 20)).unwrap_err();
+    core.end_entry(entry, false);
+    assert_eq!(err.refused, Refused::MemoryLimit);
+    drop(err);
+    assert_eq!(core.memory_used(), Some(0));
+
+    // The receiver asks too: a portable value made without a limit is refused when it would
+    // not fit, and the partial rebuild is freed.
+    core.set_memory_limit(None);
     let entry = core.begin_entry();
     let portable = to_portable(&list, &Unnamed, StackGuard::here(1 << 20)).unwrap();
     core.end_entry(entry, false);
-    assert!(core.memory_over());
-    drop(portable);
+    core.set_memory_limit(Some(portable_size_hint(&core)));
+    let entry = core.begin_entry();
+    let err = from_portable(portable, &mut core, StackGuard::here(1 << 20)).unwrap_err();
+    core.end_entry(entry, false);
+    assert_eq!(err, colibri_core::portable::RebuildError::MemoryLimit);
+    assert_eq!(core.memory_used(), Some(0));
+}
+
+/// A limit a little above what the portable form of the big list holds, so the same amount more
+/// does not fit.
+fn portable_size_hint(core: &Core) -> u64 {
+    core.memory_used().unwrap() + 100_000
 }
 
 #[test]

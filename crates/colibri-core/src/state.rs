@@ -155,12 +155,13 @@ impl Core {
     /// The function id a closure made in an earlier generation has now.
     #[inline]
     pub fn closure_fn(&self, c: &ClosureObj) -> Option<FnId> {
-        let mut id = c.f.0;
-        for map in self
-            .closure_maps
-            .get(c.generation as usize..)
-            .unwrap_or(&[])
-        {
+        self.closure_fn_at(c.f, c.generation)
+    }
+
+    /// [`Core::closure_fn`] for a function id and the generation it was made in.
+    pub fn closure_fn_at(&self, f: FnId, generation: u32) -> Option<FnId> {
+        let mut id = f.0;
+        for map in self.closure_maps.get(generation as usize..).unwrap_or(&[]) {
             id = *map.get(id as usize)?;
             if id == u32::MAX {
                 return None;

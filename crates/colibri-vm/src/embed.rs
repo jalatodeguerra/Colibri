@@ -426,6 +426,21 @@ impl Machine {
         }
     }
 
+    /// Copies a value into its portable form, naming the variables a refused closure captured
+    /// from this program's function table (`closure.conn`).
+    pub fn to_portable(
+        &self,
+        v: &Value,
+        stack: colibri_core::portable::StackGuard,
+    ) -> Result<colibri_core::portable::Portable, colibri_core::portable::NotSendable> {
+        let body = |f: FnId| self.fns.get(f.0 as usize).map(|s| &*s.body);
+        let env = colibri_core::portable::ProgramEnv {
+            core: &self.core,
+            fn_body: &body,
+        };
+        colibri_core::portable::to_portable(v, &env, stack)
+    }
+
     /// The cycles that nothing reaches.
     pub fn find_leaks(&self) -> Vec<Leak> {
         self.core

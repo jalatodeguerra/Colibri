@@ -954,7 +954,7 @@ fn the_path_goes_through_lists_maps_tuples_enums_closures_and_cells() {
 fn closure_captures_are_named_by_the_program_when_it_knows_them() {
     struct Names;
     impl SendEnv for Names {
-        fn capture_name(&self, f: FnId, index: u32) -> Option<String> {
+        fn capture_name(&self, f: FnId, _generation: u32, index: u32) -> Option<String> {
             (f == FnId(1) && index == 0).then(|| "conn".to_string())
         }
     }
@@ -1122,12 +1122,63 @@ fn a_graph_deeper_than_the_budget_is_refused_cleanly() {
     assert!(err.path.contains("levels"), "{}", err.path);
 }
 
+/// Bytes of native stack that one level of a nested enum costs `to_portable` and `from_portable`
+/// here (found by shrinking the budget until a 100-level chain no longer fits; the cost depends on
+/// the platform and the profile, which is why no test assumes a depth for a fixed budget).
+fn bytes_per_level() -> (usize, usize) {
+    const LEVELS: usize = 100;
+    let v = chain(LEVELS);
+    let mut send = 1024;
+    while to_portable(&v, &Unnamed, StackGuard::here(send)).is_err() {
+        send += 1024;
+    }
+    let mut c = core();
+    let mut recv = 1024;
+    while from_portable(
+        to_portable(&v, &Unnamed, StackGuard::here(1 << 24)).unwrap(),
+        &mut c,
+        StackGuard::here(recv),
+    )
+    .is_err()
+    {
+        recv += 1024;
+    }
+    (send / LEVELS, recv / LEVELS)
+}
+
 #[test]
 fn a_deep_graph_within_the_budget_is_copied() {
-    let mut core = core();
-    let v = chain(200);
-    let copy = round_trip(&mut core, &v);
-    assert_eq!(dump(&copy), dump(&v));
+    // The depth is derived from the measured frame cost and the budget, so it fits on every
+    // platform: half of what the budget allows, on a thread whose stack is far larger than it.
+    const STACK: usize = 64 << 20;
+    const BUDGET: usize = 32 << 20;
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(|| {
+            let (send, recv) = bytes_per_level();
+            eprintln!(
+                "native stack per nested level: to_portable {send} B, from_portable {recv} B"
+            );
+            let depth = (BUDGET / 2 / send.max(recv)).min(20_000);
+            // A frame cost that grew past 32 KB a level would be a bug on any platform.
+            assert!(
+                depth >= 500,
+                "only {depth} levels fit {BUDGET} bytes ({send}/{recv} B each)"
+            );
+            let mut core = core();
+            let v = chain(depth);
+            let guard = StackGuard::here(BUDGET);
+            let p = to_portable(&v, &core, guard).expect("fits");
+            let copy = from_portable(p, &mut core, guard).expect("fits");
+            assert_eq!(dump(&copy), dump(&v));
+            // The same chain is refused, cleanly, by a budget a tenth as large.
+            let tight = StackGuard::here(depth * send / 10);
+            let err = to_portable(&v, &core, tight).unwrap_err();
+            assert_eq!(err.refused, Refused::TooDeep);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
@@ -1557,4 +1608,114 @@ fn random_graphs_keep_their_aliasing_through_the_portable_form() {
         all.push(copy);
         dispose(all);
     }
+}
+
+// ---- strings are copied once ----
+
+#[test]
+fn a_string_held_a_hundred_times_is_copied_once_and_rebuilt_as_one() {
+    let text: Rc<str> = Rc::from("x".repeat(1 << 20).as_str());
+    let bytes: Rc<[u8]> = Rc::from(vec![7u8; 1 << 10]);
+    let mut items: Vec<Value> = (0..100).map(|_| Value::Str(Rc::clone(&text))).collect();
+    items.extend((0..100).map(|_| Value::Bytes(Rc::clone(&bytes))));
+    // A string nobody else holds is plain.
+    items.push(Value::str("alone"));
+    let root = Value::list(items);
+    let p = to_portable(&root, &Unnamed, stack()).unwrap();
+    let Portable::List { items, .. } = &p else {
+        panic!()
+    };
+    let mut copied = 0usize;
+    let mut refs = 0;
+    for item in items.iter() {
+        match item {
+            Portable::SharedStr(_, s) => copied += s.len(),
+            Portable::SharedBytes(_, b) => copied += b.len(),
+            Portable::Str(s) => copied += s.len(),
+            Portable::Ref(_) => refs += 1,
+            other => panic!("{other:?}"),
+        }
+    }
+    // One megabyte and one kilobyte, not a hundred of each.
+    assert_eq!(copied, (1 << 20) + (1 << 10) + "alone".len());
+    assert_eq!(refs, 198);
+    let mut c = core();
+    let Value::List(l) = from_portable(p, &mut c, stack()).unwrap() else {
+        panic!()
+    };
+    let out = l.snapshot();
+    let Value::Str(first) = &out[0] else { panic!() };
+    assert_eq!(first.len(), 1 << 20);
+    assert!(
+        out[..100]
+            .iter()
+            .all(|v| matches!(v, Value::Str(s) if Rc::ptr_eq(s, first)))
+    );
+    let Value::Bytes(b0) = &out[100] else {
+        panic!()
+    };
+    assert!(
+        out[100..200]
+            .iter()
+            .all(|v| matches!(v, Value::Bytes(b) if Rc::ptr_eq(b, b0)))
+    );
+    // The receiver's strings are its own.
+    assert!(!Rc::ptr_eq(first, &text));
+}
+
+// ---- what is sent can be received ----
+
+/// A value `depth` levels deep of the given shape.
+fn nested(shape: u8, depth: usize) -> Value {
+    let mut v = Value::Int(0);
+    for i in 0..depth {
+        v = match shape {
+            0 => Value::variant(MSG, 0, vec![Value::Int(i as i64), v]),
+            1 => Value::list(vec![v]),
+            2 => Value::Obj(obj(NODE, vec![v, Value::Unit])),
+            3 => Value::tuple(vec![v, Value::Int(1)]),
+            _ => Value::strukt(POINT, vec![v, Value::Unit]),
+        };
+    }
+    v
+}
+
+#[test]
+fn whatever_the_sender_accepts_the_receiver_takes_under_the_same_budget() {
+    // For each shape that nests, the deepest value `to_portable` accepts under a budget must be
+    // rebuilt by `from_portable` under that same budget.
+    const BUDGET: usize = 256 * 1024;
+    std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(|| {
+            for shape in 0..5u8 {
+                let mut deepest = 0;
+                let mut depth = 8;
+                loop {
+                    let v = nested(shape, depth);
+                    let sent = to_portable(&v, &Unnamed, StackGuard::here(BUDGET));
+                    dispose(vec![v]);
+                    if sent.is_err() {
+                        break;
+                    }
+                    deepest = depth;
+                    depth += 4;
+                }
+                assert!(deepest > 8, "shape {shape}: only {deepest} levels fit");
+                // Two levels short of the edge: the two walks start a few hundred bytes apart (and
+                // a release build inlines the calls differently), so the very last level is not
+                // told apart. A receiver that cost a tenth more per level would still fail.
+                let deepest = deepest - 2;
+                let v = nested(shape, deepest);
+                let p = to_portable(&v, &Unnamed, StackGuard::here(BUDGET)).unwrap();
+                let mut c = core();
+                let back = from_portable(p, &mut c, StackGuard::here(BUDGET))
+                    .unwrap_or_else(|e| panic!("shape {shape}, {deepest} levels: {e}"));
+                eprintln!("shape {shape}: {deepest} levels sent and received in {BUDGET} bytes");
+                dispose(vec![v, back]);
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
