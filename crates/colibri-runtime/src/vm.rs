@@ -1512,15 +1512,22 @@ impl Vm {
         self.engine.core().memory_used()
     }
 
-    /// Sets the memory limit in bytes (`None` lifts it): the most this `Vm`'s entries may hold,
-    /// as [`Vm::memory_used`] counts it. It is **approximate, with a bounded overshoot**, like
+    /// Sets the memory limit in bytes (`None` lifts it). Each isolate is limited separately. The
+    /// main `Vm`'s entries may hold up to the limit themselves, not counting what its thread-pool
+    /// workers hold, so a worker's memory never fails the main thread. A task in a worker fails
+    /// with `TaskFailure::MemoryLimit` when the `Vm` and all its workers together
+    /// ([`Vm::memory_used`]) hold more than the limit. So with workers, [`Vm::memory_used`] can
+    /// reach about twice the limit: the workers up to the limit, then the main thread up to the
+    /// limit on its own, each plus the overshoot described below; set the limit to about half
+    /// of a hard cap. It is **approximate, with a bounded overshoot**, like
     /// the instruction budget: the program is checked every 4,096 steps, and the built-ins that
     /// allocate in proportion to an argument (`str.repeat`, `pad_left`, `join`, `fs.read`, an
     /// HTTP body, `json.decode`, concatenation) check before they allocate, so between two checks
     /// a program can pass the limit by what 4,096 steps allocate without such a built-in.
     ///
     /// When the limit is passed, evaluation unwinds like a panic: `defer` statements and `Drop`
-    /// hooks run, with 1 MiB of memory more than the `Vm` held (or the limit, if that is more) for
+    /// hooks run, with 1 MiB more than the failing isolate held when it was stopped (or than the limit, if
+    /// that is more), measured the way its limit is, for
     /// them; past that they are skipped (plain releases still happen). The entry returns
     /// [`Error::MemoryLimit`] and the `Vm` stays usable. A coroutine that passes it ends the same
     /// way: [`Error::MemoryLimit`] reaches the host, a `join_result` never receives it and a

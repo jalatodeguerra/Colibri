@@ -385,20 +385,14 @@ fn charge(tag: u64, bytes: usize) {
             .own
             .fetch_add(bytes, Ordering::Relaxed)
             .wrapping_add(bytes);
-        let used = slot
-            .used
-            .fetch_add(bytes, Ordering::Relaxed)
-            .wrapping_add(bytes);
+        slot.used.fetch_add(bytes, Ordering::Relaxed);
         let now = match slot.parent_slot() {
             Some(parent) => parent
                 .used
                 .fetch_add(bytes, Ordering::Relaxed)
                 .wrapping_add(bytes),
             // The main `Vm`'s limit is measured on what it holds itself, not on its workers.
-            None => {
-                let _ = used;
-                own
-            }
+            None => own,
         };
         if now > slot.limit.load(Ordering::Relaxed) {
             slot.over.store(true, Ordering::Relaxed);
@@ -617,6 +611,18 @@ impl MemAccount {
     pub fn used(&self) -> Option<u64> {
         let slot = lookup(self.tag)?;
         Some(slot.total().max(0) as u64)
+    }
+
+    /// Bytes held that this account's limit is measured on: what the main `Vm` holds itself
+    /// (not its workers), or for a worker's account everything the `Vm` and its workers hold.
+    /// `None` for an inert account or one whose slot is gone.
+    pub fn measured_used(&self) -> Option<u64> {
+        Some(lookup(self.tag)?.measured().max(0) as u64)
+    }
+
+    /// Bytes this account holds itself, whatever its workers hold. `None` when inert.
+    pub fn own_used(&self) -> Option<u64> {
+        Some(lookup(self.tag)?.own.load(Ordering::Relaxed).max(0) as u64)
     }
 
     /// Sets the limit in bytes (`None` for none) and re-evaluates `over` against it. Allocation

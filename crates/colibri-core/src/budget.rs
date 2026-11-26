@@ -480,7 +480,9 @@ impl Core {
         let limit = self.memlimit.limit.unwrap_or(0);
         match self.memlimit.state {
             MemState::Normal => {
-                let used = self.mem.used().unwrap_or(0);
+                // The grace is sized like the limit is measured: on what this isolate holds itself
+                // (for a worker's account, everything the `Vm` and its workers hold).
+                let used = self.mem.measured_used().unwrap_or(0);
                 self.memlimit.grace_limit = limit.max(used).saturating_add(MEMORY_GRACE_BYTES);
                 self.memlimit.state = MemState::Grace;
                 self.mem.set_limit(Some(self.memlimit.grace_limit));

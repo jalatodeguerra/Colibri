@@ -145,6 +145,26 @@ impl Gate {
 }
 
 const GATED: &str = r#"
+fn grace_entry() -> int {
+    wait_over()
+    let mut xs: List[int] = []
+    defer cleanup()
+    for i in 0..4000000 {
+        xs.push(i)
+    }
+    return 0
+}
+
+fn cleanup() {
+    let mut ys: List[int] = []
+    for i in 0..400000 {
+        ys.push(i)
+        if i % 500 == 0 {
+            progress(i)
+        }
+    }
+}
+
 fn entry_alloc() -> int {
     wait_over()
     let mut xs: List[int] = []
@@ -173,6 +193,9 @@ fn entry() -> int {
 }
 "#;
 
+/// How far the `defer` of `grace_entry` got (only that test calls `progress`).
+static PROGRESS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
 fn gated_vm(gate: &Arc<Gate>, limit: u64) -> colibri::Vm {
     let mut vm = colibri::Vm::builder()
         .worker_threads(1)
@@ -194,6 +217,10 @@ fn gated_vm(gate: &Arc<Gate>, limit: u64) -> colibri::Vm {
         })
         .build();
     vm.register_fn("grab", || {}).unwrap();
+    vm.register_fn("progress", |i: i64| {
+        PROGRESS.fetch_max(i, std::sync::atomic::Ordering::SeqCst);
+    })
+    .unwrap();
     let waiting = Arc::clone(gate);
     vm.register_fn("wait_over", move || {
         waiting.over_rx.lock().unwrap().recv().unwrap();
@@ -248,6 +275,32 @@ fn main_allocates_freely_while_a_worker_is_over_the_limit() {
         task.wait().unwrap_err(),
         TaskFailure::MemoryLimit { limit: 8 * MIB }
     );
+}
+
+#[test]
+fn main_gets_the_same_grace_whatever_the_workers_hold() {
+    let gate = Gate::new();
+    let mut vm = gated_vm(&gate, 8 * MIB);
+    let task = vm
+        .submit_portable("hog", vec![Portable::Int(20_000)])
+        .unwrap();
+    // The worker holds 9 MiB, parked. Main breaches the limit on its own bytes; the `defer` that
+    // unwinding runs has the 1 MiB of grace of an isolate that holds what main holds, which is
+    // some 60,000 ints of 16 bytes, and not the workers' 9 MiB more.
+    let entry = vm.get_fn::<(), i64>("grace_entry").unwrap();
+    let called = entry.call(&mut vm, ());
+    gate.go_tx.lock().unwrap().send(()).unwrap();
+    assert!(
+        matches!(called, Err(colibri::Error::MemoryLimit { limit, .. }) if limit == 8 * MIB),
+        "{called:?}"
+    );
+    let got = PROGRESS.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(got > 0, "the defer ran");
+    assert!(
+        got < 70_000,
+        "the grace was sized from the workers' memory too: {got}"
+    );
+    assert!(task.wait().is_err());
 }
 
 #[test]
