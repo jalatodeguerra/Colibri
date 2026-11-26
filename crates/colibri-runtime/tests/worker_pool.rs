@@ -250,6 +250,43 @@ fn a_script_value_is_the_main_threads_too() {
     );
 }
 
+#[test]
+fn a_worker_runs_no_initialiser_and_no_script_but_consts() {
+    // `tick` counts how often a program's own code reaches it, on any thread.
+    let ticks = Arc::new(AtomicUsize::new(0));
+    let register = {
+        let ticks = Arc::clone(&ticks);
+        move |vm: &mut colibri::Vm| {
+            let ticks = Arc::clone(&ticks);
+            vm.register_fn("tick", move || ticks.fetch_add(1, Ordering::SeqCst) as i64)
+                .unwrap();
+        }
+    };
+    let programs = [
+        // A program: the initialisers of its values run before `main`.
+        "const K = 4\nlet seed = tick()\nfn probe() -> int {\n    return K\n}\nfn main() {}\n",
+        // A script: its top-level statements run, and so does the initialiser of its `let`.
+        "const K = 4\nlet seed = tick()\ntick()\nfn probe() -> int {\n    return K\n}\n",
+    ];
+    for source in programs {
+        ticks.store(0, Ordering::SeqCst);
+        let mut vm = colibri::Vm::builder()
+            .worker_threads(2)
+            .worker_setup(register.clone())
+            .build();
+        register(&mut vm);
+        vm.load_source("init.colibri", source).unwrap();
+        let on_main = ticks.load(Ordering::SeqCst);
+        assert!(on_main >= 1, "{source}");
+        // Several tasks, so every worker has built its `Vm`: none of them ran an initialiser or
+        // the script again, and each has its `const`.
+        for _ in 0..6 {
+            assert_eq!(int(run(&mut vm, "probe", vec![])), 4);
+        }
+        assert_eq!(ticks.load(Ordering::SeqCst), on_main, "{source}");
+    }
+}
+
 const DROPS: &str = r#"
 let mut live = 0
 
