@@ -17,6 +17,10 @@ use crate::value::Value;
 
 pub(crate) use crate::builders::builder_text;
 
+/// What one piece of a split text costs at most: its `Value` and the `Rc<str>` allocation with
+/// its counts and the allocator's prefix.
+pub const PIECE_BYTES: usize = 24 + 32;
+
 /// The most integers `range.to_list()` builds.
 pub(crate) const MAX_RANGE_LIST: u64 = 1 << 27;
 
@@ -72,6 +76,7 @@ pub trait StrOps: Engine {
                 {
                     return Ok(only);
                 }
+                self.mem_reserve(fiber, span, usize::try_from(total(obj)).unwrap_or(0))?;
                 // Join once and keep the joined text as the only chunk, so asking again (or
                 // appending a little more) does not walk the pieces a second time.
                 let joined: Rc<str> = Rc::from(builder_text(obj));
@@ -149,6 +154,13 @@ pub trait StrOps: Engine {
                 if width > (1 << 30) {
                     return Err(self.panic(fiber, span, "the width is more than a gigabyte"));
                 }
+                let fill_len = width.saturating_sub(len).saturating_mul(fill.len_utf8());
+                // The padding, and the text made of it.
+                self.mem_reserve(
+                    fiber,
+                    span,
+                    fill_len.saturating_mul(2).saturating_add(text.len()),
+                )?;
                 let pad: String = std::iter::repeat_n(fill, width.saturating_sub(len)).collect();
                 Value::str(&if op == Builtin::StrPadLeft {
                     format!("{pad}{text}")
@@ -164,6 +176,19 @@ pub trait StrOps: Engine {
                         span,
                         "`split` needs a separator that is not empty",
                     ));
+                }
+                // Every piece is a `Value` and an `Rc<str>` with its prefix, even an empty one: a
+                // separator byte can make about 56 bytes. Count the pieces first, when there is a
+                // limit to ask.
+                if self.core().memory_limit().is_some() {
+                    let pieces = text.matches(&*sep).count() + 1;
+                    self.mem_reserve(
+                        fiber,
+                        span,
+                        pieces
+                            .saturating_mul(PIECE_BYTES)
+                            .saturating_add(text.len()),
+                    )?;
                 }
                 // A one-byte ASCII separator splits on a `char`, which searches by byte
                 // instead of running the general substring searcher.
@@ -188,6 +213,12 @@ pub trait StrOps: Engine {
                         span,
                         "`replace` needs a pattern that is not empty",
                     ));
+                }
+                if to.len() > from.len() {
+                    // At most one match per `from.len()` bytes, each now `to.len()` long.
+                    let size = (text.len() / from.len()).saturating_mul(to.len());
+                    // The result, and the `Rc<str>` made from it.
+                    self.mem_reserve(fiber, span, size.saturating_mul(2))?;
                 }
                 Value::str(&text.replace(&**from, to))
             }
@@ -233,6 +264,13 @@ pub trait StrOps: Engine {
                         format!("a range of {n} integers is too long to turn into a list"),
                     ));
                 }
+                self.mem_reserve(
+                    fiber,
+                    span,
+                    usize::try_from(r.len())
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(std::mem::size_of::<Value>()),
+                )?;
                 let items = if r.inclusive {
                     (r.start..=r.end).map(Value::Int).collect()
                 } else {

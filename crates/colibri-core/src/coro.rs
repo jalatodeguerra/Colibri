@@ -32,6 +32,7 @@ fn bare_panic_info(message: &str) -> Box<PanicInfo> {
         notes: Vec::new(),
         budget: false,
         debug_serial: 0,
+        memory: None,
     })
 }
 
@@ -130,11 +131,15 @@ pub trait Sched: Engine {
             let fresh = Budget::fresh(allotment, slice, core.safepoints.progress);
             std::mem::replace(&mut core.budget, fresh)
         });
+        let saved_memory = fresh.then(|| core.begin_resumption_memory());
         // No reference into the core is held across this call: the engine runs the
         // coroutine, which uses the core through the engine's own pointer.
         let outcome = self.resume_stack(id, slot, cancel);
         let core = self.core_mut();
-        let exhausted = fresh && core.budget_was_exhausted();
+        let exhausted = if fresh { core.exhaustion() } else { None };
+        if let Some(m) = saved_memory {
+            core.end_resumption_memory(m);
+        }
         if let Some(b) = saved_budget {
             // What the coroutine spent counts toward the slice; the entry it interrupted goes on
             // from there.
@@ -164,7 +169,7 @@ pub trait Sched: Engine {
                 Finish::Panicked(bare_panic_info(
                     "internal error: the engine lost the stack of a coroutine",
                 )),
-                false,
+                None,
             ),
         };
         s.entries[idx].state = State::Finished;
@@ -521,7 +526,13 @@ pub(crate) trait SchedInternal: Engine {
 
     /// Records how coroutine `id` ended: its handle's status and result, its group, and a
     /// panic that nobody has collected yet.
-    fn finish_coro(&mut self, idx: usize, id: u64, finish: Finish, exhausted: bool) {
+    fn finish_coro(
+        &mut self,
+        idx: usize,
+        id: u64,
+        finish: Finish,
+        exhausted: Option<crate::budget::Exhaustion>,
+    ) {
         let s = &mut self.core_mut().sched;
         let handle = s.entries[idx].handle.upgrade();
         if let Some(g) = s.entries[idx].group {
@@ -532,11 +543,18 @@ pub(crate) trait SchedInternal: Engine {
         s.wake_joiners(id);
         let finish = match finish {
             Finish::Panicked(info) => Finish::Panicked(info),
-            other if exhausted => {
+            other if exhausted.is_some() => {
                 if let Finish::Done(v) = other {
                     self.release(v);
                 }
-                let mut info = bare_panic_info("the instruction budget is exhausted");
+                let mut info = match exhausted {
+                    Some(crate::budget::Exhaustion::Memory(limit)) => {
+                        let mut info = bare_panic_info(&crate::mem::limit_message(limit));
+                        info.memory = Some(limit);
+                        info
+                    }
+                    _ => bare_panic_info("the instruction budget is exhausted"),
+                };
                 info.budget = true;
                 Finish::Panicked(info)
             }

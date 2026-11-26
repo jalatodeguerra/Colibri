@@ -268,6 +268,8 @@ impl Machine {
                 fiber.state.cancelling = true;
                 Err(Ctl::Cancel)
             }
+            Err(HostFault::MemoryLimit) => Err(self.memory_exceeded(fiber, span)),
+            Err(_) => Err(self.panic(fiber, span, "internal error: an unknown host fault")),
         };
         let shim = fiber.frames.pop();
         debug_assert!(

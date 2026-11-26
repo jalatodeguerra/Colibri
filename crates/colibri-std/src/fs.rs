@@ -6,7 +6,7 @@
 use std::io::ErrorKind;
 use std::path::Path;
 
-use colibri_runtime::{Bytes, Cap, Error, TypedError, Vm};
+use colibri_runtime::{Bytes, Cap, Ctx, Error, TypedError, Vm};
 
 use crate::errors::error_kind;
 use crate::needs;
@@ -217,6 +217,20 @@ fn append_to(path: &str, data: &[u8]) -> Result<(), TypedError> {
         .map_err(|e| fail("append to", path, &e))
 }
 
+/// Asks the memory limit for the room a whole-file read needs (the file, and the Colibri value
+/// made from it) before reading it.
+pub(crate) fn reserve_file(cx: &mut Ctx, path: &str) {
+    reserve_file_up_to(cx, path, u64::MAX);
+}
+
+/// [`reserve_file`] for a read of at most `n` bytes.
+pub(crate) fn reserve_file_up_to(cx: &mut Ctx, path: &str, n: u64) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let len = meta.len().min(n);
+        cx.reserve_memory(usize::try_from(len).unwrap_or(usize::MAX).saturating_mul(2));
+    }
+}
+
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     Kind::declare(vm)?;
     let mut m = vm.std_module("fs");
@@ -228,10 +242,12 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     // The whole-file functions run on the calling thread and return when they are done: a
     // coroutine that calls one does not give the others a turn. Streaming and non-blocking
     // file I/O is what `fs.File` is for.
-    fs_fn!("read", ["path"], |path: String| {
+    fs_fn!("read", ["path"], |cx: &mut Ctx, path: String| {
+        reserve_file(cx, &path);
         std::fs::read_to_string(&path).map_err(|e| fail("read", &path, &e))
     });
-    fs_fn!("read_bytes", ["path"], |path: String| {
+    fs_fn!("read_bytes", ["path"], |cx: &mut Ctx, path: String| {
+        reserve_file(cx, &path);
         std::fs::read(&path)
             .map(Bytes)
             .map_err(|e| fail("read", &path, &e))

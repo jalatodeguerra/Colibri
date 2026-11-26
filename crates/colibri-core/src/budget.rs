@@ -8,7 +8,9 @@
 //! statements and hooks are skipped (plain releases still happen), so a script cannot extend its
 //! life with an infinite cleanup.
 
+use std::cell::Cell;
 use std::num::NonZeroU32;
+use std::rc::Rc;
 
 use crate::mem::EntryGuard;
 use crate::state::Core;
@@ -24,6 +26,59 @@ pub(crate) enum BudgetState {
     Grace,
     /// The grace ran out too: cleanups are skipped.
     Dead,
+}
+
+/// Where an entry stands with the memory limit (the sibling of [`BudgetState`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MemState {
+    Normal,
+    /// The limit was passed: unwinding, with [`MEMORY_GRACE_BYTES`] of room for cleanups.
+    Grace,
+    /// The grace was used up too: cleanups are skipped.
+    Dead,
+}
+
+/// How many steps pass between two looks at the memory account (the slice of its safepoint).
+pub const MEMORY_SLICE: u32 = 4_096;
+
+/// How many bytes more than it held when the limit was passed the cleanups of an unwinding entry
+/// may allocate.
+pub const MEMORY_GRACE_BYTES: u64 = 1 << 20;
+
+/// The memory limit of an engine and where the current entry stands with it.
+#[derive(Debug)]
+pub struct MemLimit {
+    /// The host's limit in bytes (`None`: unlimited).
+    limit: Option<u64>,
+    state: MemState,
+    /// The limit the account has while the entry is in its grace.
+    grace_limit: u64,
+}
+
+impl MemLimit {
+    pub(crate) fn new() -> MemLimit {
+        MemLimit {
+            limit: None,
+            state: MemState::Normal,
+            grace_limit: 0,
+        }
+    }
+}
+
+/// The memory state of the entry a fresh coroutine resumption interrupted (see
+/// [`Core::begin_resumption_memory`]).
+#[derive(Clone, Copy, Debug)]
+pub struct SavedMemState {
+    state: MemState,
+    grace_limit: u64,
+}
+
+/// What ran out in an entry whose program swallowed the panic that said so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exhaustion {
+    Budget,
+    /// The memory limit, in bytes.
+    Memory(u64),
 }
 
 /// The counters of the budget.
@@ -226,6 +281,9 @@ pub struct Entry {
     outermost: bool,
     /// Restores the thread's memory account if the entry is dropped by an unwind.
     mem: EntryGuard,
+    /// Where an entry that is dropped without having ended says so (see [`Core::begin_entry`]).
+    lost: Rc<Cell<u32>>,
+    ended: bool,
 }
 
 impl Entry {
@@ -233,6 +291,15 @@ impl Entry {
     #[inline]
     pub fn is_outermost(&self) -> bool {
         self.outermost
+    }
+}
+
+impl Drop for Entry {
+    fn drop(&mut self) {
+        if !self.ended {
+            // A panic unwound past the entry: the engine settles its books at the next entry.
+            self.lost.set(self.lost.get() + 1);
+        }
     }
 }
 
@@ -266,23 +333,37 @@ impl Core {
 
     /// Begins an entry from the host: the outermost one gets a fresh allotment. The result goes
     /// to [`Core::end_entry`]; if a panic unwinds past it instead, dropping it gives the thread
-    /// back its previous memory account.
+    /// back its previous memory account and tells the engine, which settles its books (the depth
+    /// of entries, the budget and the memory limit) before the next entry or end.
     #[inline]
     pub fn begin_entry(&mut self) -> Entry {
+        if self.lost_entries.get() != 0 {
+            self.settle_lost_entries();
+        }
         let outermost = self.budget.depth == 0;
         let mem = if outermost {
             self.budget.arm(self.safepoints.progress);
+            self.arm_memory_limit();
             self.mem.enter()
         } else {
             EntryGuard::inert()
         };
         self.budget.depth += 1;
-        Entry { outermost, mem }
+        Entry {
+            outermost,
+            mem,
+            lost: Rc::clone(&self.lost_entries),
+            ended: false,
+        }
     }
 
     /// Ends the entry `begin_entry` began. `record` keeps its step count for `steps_used`.
     #[inline]
-    pub fn end_entry(&mut self, entry: Entry, record: bool) {
+    pub fn end_entry(&mut self, mut entry: Entry, record: bool) {
+        if self.lost_entries.get() != 0 {
+            self.settle_lost_entries();
+        }
+        entry.ended = true;
         self.budget.depth -= 1;
         if entry.outermost {
             if record {
@@ -290,7 +371,25 @@ impl Core {
             }
             self.close_budget();
             self.budget.idle();
-            self.mem.leave(entry.mem);
+            self.rest_memory_limit();
+            let guard = std::mem::replace(&mut entry.mem, EntryGuard::inert());
+            self.mem.leave(guard);
+        }
+    }
+
+    /// Entries were dropped without ending (a Rust panic unwound past them): takes them out of
+    /// the depth, and when none is left, gives the budget and the memory limit the state of an
+    /// engine between entries, so that the next entry is outermost with a fresh allotment and
+    /// limit.
+    #[cold]
+    #[inline(never)]
+    fn settle_lost_entries(&mut self) {
+        let lost = self.lost_entries.replace(0);
+        self.budget.depth = self.budget.depth.saturating_sub(lost);
+        if self.budget.depth == 0 {
+            self.close_budget();
+            self.budget.idle();
+            self.rest_memory_limit();
         }
     }
 
@@ -300,15 +399,150 @@ impl Core {
         self.mem.used()
     }
 
-    /// Sets the memory limit in bytes (`None` for none). The allocator only raises a flag past
-    /// it; the safepoint that acts on the flag is the enforcement of `memory_limit`.
+    /// Sets the memory limit in bytes (`None` for none). The allocator raises a flag past it,
+    /// which a safepoint of 4,096 steps reads (and the built-ins that allocate in proportion to
+    /// an argument check first with [`Core::mem_reserve`]); the enforcement is a panic like the
+    /// budget's. The engine must be between entries.
     pub fn set_memory_limit(&mut self, limit: Option<u64>) {
+        self.memlimit.limit = limit;
+        self.memlimit.state = MemState::Normal;
+        match limit {
+            Some(_) => {
+                if let Some(every) = NonZeroU32::new(MEMORY_SLICE) {
+                    self.want_safepoints(crate::safepoint::SafepointKind::Memory, every);
+                }
+            }
+            None => self.drop_safepoints(crate::safepoint::SafepointKind::Memory),
+        }
         self.mem.set_limit(limit);
+    }
+
+    /// The memory limit in bytes, if one is set.
+    pub fn memory_limit(&self) -> Option<u64> {
+        self.memlimit.limit
     }
 
     /// Whether the account went past its limit since the flag was last cleared.
     pub fn memory_over(&self) -> bool {
         self.mem.over()
+    }
+
+    /// An outermost entry begins: the account has its limit (the host may have set it, or
+    /// something may have been freed since the flag was raised).
+    #[inline]
+    fn arm_memory_limit(&mut self) {
+        if self.memlimit.limit.is_some() {
+            self.memlimit.state = MemState::Normal;
+            self.mem.set_limit(self.memlimit.limit);
+        }
+    }
+
+    /// The outermost entry ended (or was lost): back to the host's limit, with the grace over.
+    #[inline]
+    fn rest_memory_limit(&mut self) {
+        if self.memlimit.limit.is_some() || self.memlimit.state != MemState::Normal {
+            self.memlimit.state = MemState::Normal;
+            self.mem.set_limit(self.memlimit.limit);
+        }
+    }
+
+    /// Whether `bytes` more fit under the memory limit. A built-in that allocates in proportion
+    /// to an argument asks before it allocates, so that one statement cannot allocate gigabytes
+    /// between two safepoints; `false` means it fails with the memory-limit panic
+    /// ([`Protocol::mem_reserve`](crate::protocol::Protocol::mem_reserve) does that). With no
+    /// limit, this is one comparison.
+    #[inline]
+    pub fn mem_reserve(&self, bytes: usize) -> bool {
+        if self.memlimit.limit.is_none() {
+            return true;
+        }
+        self.mem_reserve_checked(bytes)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn mem_reserve_checked(&self, bytes: usize) -> bool {
+        self.memlimit.state != MemState::Dead && !self.mem.would_exceed(bytes as u64)
+    }
+
+    /// Whether the memory safepoint must fail: the account passed its limit, or the grace of an
+    /// earlier failure of this entry is used up.
+    #[inline]
+    pub fn memory_exceeded(&self) -> bool {
+        self.memlimit.state == MemState::Dead || self.mem.over()
+    }
+
+    /// The memory limit was passed: the first time begins the grace (the account gets
+    /// [`MEMORY_GRACE_BYTES`] more than it holds, or than its limit when that is more), the second
+    /// ends it. Gives the host's limit, for the message.
+    #[doc(hidden)]
+    pub fn exhaust_memory(&mut self) -> u64 {
+        let limit = self.memlimit.limit.unwrap_or(0);
+        match self.memlimit.state {
+            MemState::Normal => {
+                let used = self.mem.used().unwrap_or(0);
+                self.memlimit.grace_limit = limit.max(used).saturating_add(MEMORY_GRACE_BYTES);
+                self.memlimit.state = MemState::Grace;
+                self.mem.set_limit(Some(self.memlimit.grace_limit));
+            }
+            MemState::Grace => self.memlimit.state = MemState::Dead,
+            MemState::Dead => {}
+        }
+        limit
+    }
+
+    /// A coroutine resumption of the scheduler gets a memory state of its own, as it gets a budget
+    /// of its own: it starts `Normal` under the host's limit, so one coroutine's breach (and its
+    /// grace) does not decide the fate of the others in the same tick. Gives what to restore.
+    pub fn begin_resumption_memory(&mut self) -> SavedMemState {
+        let saved = SavedMemState {
+            state: self.memlimit.state,
+            grace_limit: self.memlimit.grace_limit,
+        };
+        if self.memlimit.limit.is_some() {
+            self.memlimit.state = MemState::Normal;
+            self.mem.set_limit(self.memlimit.limit);
+        }
+        saved
+    }
+
+    /// The resumption is over: the interrupted entry's state comes back.
+    pub fn end_resumption_memory(&mut self, saved: SavedMemState) {
+        if self.memlimit.limit.is_none() {
+            return;
+        }
+        self.memlimit.state = saved.state;
+        self.memlimit.grace_limit = saved.grace_limit;
+        let limit = match saved.state {
+            MemState::Normal => self.memlimit.limit,
+            _ => Some(saved.grace_limit),
+        };
+        self.mem.set_limit(limit);
+    }
+
+    /// Whether the current entry passed the memory limit (even if the program swallowed the
+    /// panic).
+    #[inline]
+    pub fn memory_was_exhausted(&self) -> bool {
+        self.memlimit.state != MemState::Normal
+    }
+
+    /// Whether remaining `defer` statements and `Drop` hooks are skipped: the grace of an
+    /// exhausted budget or of the memory limit is used up.
+    #[inline]
+    pub fn cleanups_are_dead(&self) -> bool {
+        self.budget.state == BudgetState::Dead || self.memlimit.state == MemState::Dead
+    }
+
+    /// What the current entry ran out of, if anything (the budget first).
+    pub fn exhaustion(&self) -> Option<Exhaustion> {
+        if self.budget_was_exhausted() {
+            Some(Exhaustion::Budget)
+        } else if self.memory_was_exhausted() {
+            Some(Exhaustion::Memory(self.memlimit.limit.unwrap_or(0)))
+        } else {
+            None
+        }
     }
 }
 

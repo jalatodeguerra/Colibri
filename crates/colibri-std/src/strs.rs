@@ -67,9 +67,15 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
         }),
     )?;
     // Split at `\n`, dropping a `\r` before it and the empty piece after a final newline.
-    plain(m.register_fn_named("lines", ["text"], |text: String| {
-        text.lines().map(str::to_string).collect::<Vec<_>>()
-    }))?;
+    plain(
+        m.register_fn_named("lines", ["text"], |cx: &mut Ctx, text: String| {
+            // A line is a `String` made here and a Colibri string made from it, and each is a
+            // value in the list: count them (an upper bound) before making any.
+            let lines = text.bytes().filter(|b| *b == b'\n').count() + 1;
+            cx.reserve_memory(lines.saturating_mul(2 * 56).saturating_add(text.len()));
+            text.lines().map(str::to_string).collect::<Vec<_>>()
+        }),
+    )?;
     plain(m.register_fn_named(
         "repeat",
         ["text", "times"],
@@ -80,6 +86,8 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             if text.len().saturating_mul(times) > (1 << 30) {
                 cx.raise("str.repeat: the result would be more than a gigabyte");
             }
+            // The result is made, then copied into a Colibri string.
+            cx.reserve_memory(text.len().saturating_mul(times).saturating_mul(2));
             text.repeat(times)
         },
     ))?;

@@ -62,6 +62,10 @@ pub struct Core {
     /// The memory account of this engine: what its entries allocate is charged to it, when the
     /// counting allocator is installed (ARCHITECTURE §35).
     pub mem: crate::mem::MemAccount,
+    /// The memory limit and where the current entry stands with it.
+    pub memlimit: crate::budget::MemLimit,
+    /// Entries that were dropped without ending, because a panic unwound past them.
+    pub(crate) lost_entries: Rc<std::cell::Cell<u32>>,
 }
 
 impl Core {
@@ -95,6 +99,8 @@ impl Core {
             none: Value::option(None),
             release_work: Vec::new(),
             mem: crate::mem::MemAccount::new(),
+            memlimit: crate::budget::MemLimit::new(),
+            lost_entries: Rc::new(std::cell::Cell::new(0)),
         }
     }
 

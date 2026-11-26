@@ -1081,6 +1081,8 @@ impl Decoder<'_, '_> {
 }
 
 fn decode(cx: &mut Ctx, text: &str) -> Result<Value, TypedError> {
+    // The parsed document and the value made of it take several times the text.
+    cx.reserve_memory(text.len().saturating_mul(4));
     let json = Parser {
         text,
         pos: 0,
@@ -1140,16 +1142,19 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
     )?;
     m.register_type::<Jv>()?;
     // fn parse(text: str) -> Result[Value]: any JSON, without a type to read it into.
-    plain(m.register_fn_named("parse", ["text"], |text: String| {
-        let json = Parser {
-            text: &text,
-            pos: 0,
-            finite: true,
-        }
-        .document()
-        .map_err(|m| Kind::Syntax.error(m))?;
-        Jv::from_json(&json).map_err(|e| Kind::Mismatch.error(e.message))
-    }))?;
+    plain(
+        m.register_fn_named("parse", ["text"], |cx: &mut Ctx, text: String| {
+            cx.reserve_memory(text.len().saturating_mul(4));
+            let json = Parser {
+                text: &text,
+                pos: 0,
+                finite: true,
+            }
+            .document()
+            .map_err(|m| Kind::Syntax.error(m))?;
+            Jv::from_json(&json).map_err(|e| Kind::Mismatch.error(e.message))
+        }),
+    )?;
     // fn decode[T](text: str) -> Result[T]: the type comes from the call (`json.decode[Player](text)`).
     m.register_fn_named("decode", ["text"], |cx: &mut Ctx, text: String| {
         decode(cx, &text)

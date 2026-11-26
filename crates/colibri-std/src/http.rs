@@ -277,7 +277,11 @@ fn run(
         .map_or(Some(DEFAULT_TIMEOUT), |s| s.timeout);
     let (method, url, headers) = (method.to_string(), url.to_string(), headers.clone());
     // On a background thread: inside a coroutine only this coroutine waits.
-    cx.run_async(move || perform(timeout, &method, &url, &headers, body))
+    let raw = cx.run_async(move || perform(timeout, &method, &url, &headers, body))?;
+    // The body was read on another thread, outside the `Vm`'s account; it is about to be copied
+    // into a Colibri value.
+    cx.reserve_memory(raw.body.len().saturating_mul(2));
+    Ok(raw)
 }
 
 pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {

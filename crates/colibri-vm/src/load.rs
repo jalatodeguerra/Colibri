@@ -6,7 +6,7 @@ use colibri_core::prelude::*;
 use colibri_core::stack_position;
 use colibri_core::value::Value;
 
-use crate::engine::{bare_panic, budget_panic};
+use crate::engine::{bare_panic, limit_panic};
 use crate::fiber::VmFiber;
 use crate::machine::{Machine, Slot};
 
@@ -202,14 +202,18 @@ impl Machine {
         // A script that swallowed the exhaustion (through a host function that returned
         // normally) still ran out of budget.
         let outermost = entry.is_outermost();
-        let swallowed = outermost && self.core.budget_was_exhausted();
+        let swallowed = if outermost {
+            self.core.exhaustion()
+        } else {
+            None
+        };
         self.core.end_entry(entry, record);
-        let result = match result {
-            Ok(v) if swallowed => {
+        let result = match (result, swallowed) {
+            (Ok(v), Some(what)) => {
                 self.release(v);
-                Err(budget_panic())
+                Err(limit_panic(what))
             }
-            other => other,
+            (other, _) => other,
         };
         // A coroutine met a refusal that nothing settled (it was cancelled by this entry's last
         // act): it is this entry's error.

@@ -108,6 +108,17 @@ pub enum Error {
         /// The Colibri call stack, innermost first.
         stack: Vec<StackFrame>,
     },
+    /// The `Vm`'s memory limit was passed (EMBEDDING §5). The program unwound like a panic (its
+    /// `defer` statements and `Drop` hooks ran, with a little extra memory for them, 1 MiB) and
+    /// the `Vm` stays usable.
+    MemoryLimit {
+        /// The limit in bytes.
+        limit: u64,
+        /// Where the script was when the limit was passed; `None` if nothing was running.
+        location: Option<Location>,
+        /// The Colibri call stack, innermost first.
+        stack: Vec<StackFrame>,
+    },
     /// An interface file (`.cbi`) does not match what the host registered.
     InterfaceMismatch {
         path: String,
@@ -144,6 +155,16 @@ impl Error {
             } => render_trace(format!("panic: {message}\n"), location, stack, notes),
             Error::BudgetExhausted { location, stack } => render_trace(
                 "error: the instruction budget is exhausted\n".to_string(),
+                location,
+                stack,
+                &[],
+            ),
+            Error::MemoryLimit {
+                limit,
+                location,
+                stack,
+            } => render_trace(
+                format!("error: {}\n", colibri_core::mem::limit_message(*limit)),
                 location,
                 stack,
                 &[],
@@ -244,6 +265,13 @@ impl fmt::Display for Error {
                 Some(at) => write!(f, "the instruction budget is exhausted (at {at})"),
                 None => f.write_str("the instruction budget is exhausted"),
             },
+            Error::MemoryLimit { limit, location, .. } => {
+                let text = colibri_core::mem::limit_message(*limit);
+                match location {
+                    Some(at) => write!(f, "{text} (at {at})"),
+                    None => f.write_str(&text),
+                }
+            }
             Error::InterfaceMismatch {
                 path,
                 expected,

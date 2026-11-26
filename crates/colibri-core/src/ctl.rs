@@ -34,8 +34,12 @@ pub struct PanicInfo {
     /// Further panics that happened while this one was unwinding (in `defer` statements); the
     /// first panic is the one reported and these ride along.
     pub notes: Vec<String>,
-    /// The instruction budget ran out (EMBEDDING §5): the panic is not the program's own.
+    /// A limit the host set ran out (EMBEDDING §5): the instruction budget, or with `memory` set
+    /// the memory limit. The panic is not the program's own: it is never a `join_result`'s value
+    /// and nobody takes it over.
     pub budget: bool,
+    /// The memory limit in bytes that was exceeded; set together with `budget`.
+    pub memory: Option<u64>,
     /// Set by a debugger that stopped at this panic (`colibri_vm::debug`): which one it was, so
     /// that the panic is not reported again as it passes through further frames. `0` otherwise.
     pub debug_serial: u64,
@@ -53,6 +57,7 @@ pub fn into_panic(ctl: Ctl, fallback: Span) -> Box<PanicInfo> {
             notes: Vec::new(),
             budget: false,
             debug_serial: 0,
+            memory: None,
         }),
     }
 }

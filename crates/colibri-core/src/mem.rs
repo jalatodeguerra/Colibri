@@ -198,6 +198,11 @@ thread_local! {
     /// first use, which would recurse into the allocator. No target Colibri builds for is like
     /// that: Linux, macOS, Windows and wasm all have a native or plain-static path.)
     static CURRENT: Cell<u64> = const { Cell::new(0) };
+    /// Set while an outermost entry that began during a Rust unwind runs: it counts even though
+    /// the thread is panicking (a `Vm` dropped by the host's unwind runs its `Drop` hooks under
+    /// its limit). Allocations of the panic machinery itself happen before such an entry begins,
+    /// so they stay uncounted.
+    static KEEP_COUNTING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The account allocations on this thread are charged to; 0 while the thread is panicking.
@@ -210,7 +215,7 @@ thread_local! {
 /// destructor-free thread-local only when that is non-zero, so it neither allocates nor panics.
 #[inline]
 fn current() -> u64 {
-    if std::thread::panicking() {
+    if std::thread::panicking() && !KEEP_COUNTING.try_with(Cell::get).unwrap_or(false) {
         return 0;
     }
     // `try_with` cannot fail for a type without a destructor, but the allocator must never panic.
@@ -242,6 +247,22 @@ fn note_installed() {
 /// A program that has made any allocation at all knows, so this is reliable from `main` on.
 pub fn installed() -> bool {
     INSTALLED.load(Ordering::Relaxed)
+}
+
+/// A byte count as the memory-limit panic words it: whole `GiB`, `MiB` or `KiB` when it is a
+/// multiple of one (`64 MiB`), plain bytes otherwise (`1000 bytes`).
+pub fn human_bytes(bytes: u64) -> String {
+    for (unit, name) in [(1u64 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")] {
+        if bytes >= unit && bytes.is_multiple_of(unit) {
+            return format!("{} {name}", bytes / unit);
+        }
+    }
+    format!("{bytes} bytes")
+}
+
+/// The text of the memory-limit panic: ``memory limit of 64 MiB exceeded``.
+pub fn limit_message(limit: u64) -> String {
+    format!("memory limit of {} exceeded", human_bytes(limit))
 }
 
 /// Panics with a message that says how to install the allocator, when it is not. A builder calls
@@ -424,6 +445,7 @@ pub struct MemAccount {
 /// the thread never keeps the tag of a `Vm` that is no longer running.
 pub struct EntryGuard {
     prev: u64,
+    prev_keep: bool,
     armed: bool,
 }
 
@@ -433,6 +455,7 @@ impl EntryGuard {
     pub const fn inert() -> EntryGuard {
         EntryGuard {
             prev: 0,
+            prev_keep: false,
             armed: false,
         }
     }
@@ -443,6 +466,7 @@ impl Drop for EntryGuard {
     fn drop(&mut self) {
         if self.armed {
             swap_current(self.prev);
+            let _ = KEEP_COUNTING.try_with(|k| k.set(self.prev_keep));
         }
     }
 }
@@ -478,8 +502,10 @@ impl MemAccount {
         if self.tag == 0 {
             return EntryGuard::inert();
         }
+        let keep = std::thread::panicking();
         EntryGuard {
             prev: swap_current(self.tag),
+            prev_keep: KEEP_COUNTING.try_with(|k| k.replace(keep)).unwrap_or(false),
             armed: true,
         }
     }
@@ -491,6 +517,7 @@ impl MemAccount {
         if guard.armed {
             guard.armed = false;
             swap_current(guard.prev);
+            let _ = KEEP_COUNTING.try_with(|k| k.set(guard.prev_keep));
         }
     }
 
@@ -509,6 +536,23 @@ impl MemAccount {
             let over = slot.used.load(Ordering::Relaxed) > limit;
             slot.over.store(over, Ordering::Relaxed);
         }
+    }
+
+    /// The limit in bytes, `None` when there is none or the account is inert.
+    pub fn limit(&self) -> Option<u64> {
+        let limit = lookup(self.tag)?.limit.load(Ordering::Relaxed);
+        (limit != i64::MAX).then_some(limit.max(0) as u64)
+    }
+
+    /// Whether `extra` more bytes would take the account past its limit (what a built-in asks
+    /// before it allocates in proportion to an argument). False for an inert account.
+    pub fn would_exceed(&self, extra: u64) -> bool {
+        let Some(slot) = lookup(self.tag) else {
+            return false;
+        };
+        let used = slot.used.load(Ordering::Relaxed).max(0) as u64;
+        let limit = slot.limit.load(Ordering::Relaxed);
+        limit != i64::MAX && used.saturating_add(extra) > limit.max(0) as u64
     }
 
     /// Whether an allocation went past the limit since it was set or cleared.
@@ -542,6 +586,7 @@ impl Drop for MemAccount {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::alloc::System;
     use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -557,6 +602,49 @@ mod tests {
 
     fn exclusive() -> RwLockWriteGuard<'static, ()> {
         OPENING.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn limits_are_worded_in_whole_units() {
+        assert_eq!(limit_message(64 << 20), "memory limit of 64 MiB exceeded");
+        assert_eq!(human_bytes(1 << 30), "1 GiB");
+        assert_eq!(human_bytes(3 << 10), "3 KiB");
+        assert_eq!(human_bytes(1536), "1536 bytes");
+        assert_eq!(human_bytes((1 << 20) + 1), "1048577 bytes");
+        assert_eq!(human_bytes(0), "0 bytes");
+    }
+
+    #[test]
+    fn an_entry_that_begins_during_an_unwind_keeps_counting() {
+        let _g = shared();
+        let account = MemAccount::open();
+        let l = layout(100, 8);
+        struct Late(MemAccount, Layout, std::sync::mpsc::Sender<(u64, u64)>);
+        impl Drop for Late {
+            fn drop(&mut self) {
+                // The thread is panicking, and an entry begins now: its allocations count. Outside
+                // the entry the unwind goes back to counting nothing.
+                let guard = self.0.enter();
+                let inside = unsafe { A.alloc(self.1) };
+                let tag_in = unsafe { tag_slot(inside).read() };
+                self.0.leave(guard);
+                let outside = unsafe { A.alloc(self.1) };
+                let tag_out = unsafe { tag_slot(outside).read() };
+                self.2.send((tag_in, tag_out)).unwrap();
+                unsafe {
+                    A.dealloc(inside, self.1);
+                    A.dealloc(outside, self.1);
+                }
+            }
+        }
+        let tag = account.tag();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _late = Late(account, l, tx);
+            panic!("unwinding");
+        }));
+        assert!(r.is_err());
+        assert_eq!(rx.recv().unwrap(), (tag, 0));
     }
 
     fn layout(size: usize, align: usize) -> Layout {

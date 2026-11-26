@@ -350,12 +350,13 @@ pub trait Release: Engine {
                 notes: Vec::new(),
                 budget: false,
                 debug_serial: 0,
+                memory: None,
             });
             return false;
         }
         // Past the grace of an exhausted budget, hooks no longer run (the object is released
         // plainly).
-        if core.budget_is_dead() {
+        if core.cleanups_are_dead() {
             return false;
         }
         core.hook_depth += 1;
