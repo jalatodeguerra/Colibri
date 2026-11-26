@@ -285,6 +285,9 @@ struct Bp {
     hits: u64,
 }
 
+/// The locator of the program a chunk was compiled for.
+type EpochLocator = Option<Rc<dyn Locator>>;
+
 /// The part of the debugger the compiler reaches: the breakpoints and the chunks to put them
 /// into. In the `CompileEnv`, so `Slot::chunk` can adopt each chunk it makes.
 #[derive(Default)]
@@ -294,7 +297,7 @@ pub(crate) struct DebugShared {
     /// Every chunk built, with the locator of the program it belongs to: a frame that keeps
     /// running a body from before a hot reload still gets breakpoints, found by file name and
     /// the lines of its own epoch.
-    chunks: RefCell<Vec<(Weak<Chunk>, Option<Rc<dyn Locator>>)>>,
+    chunks: RefCell<Vec<(Weak<Chunk>, EpochLocator)>>,
     locator: RefCell<Option<Rc<dyn Locator>>>,
     /// Breakpoints a compilation verified since the debugger was told last.
     newly: RefCell<Vec<BreakpointInfo>>,
@@ -376,7 +379,7 @@ impl DebugShared {
         true
     }
 
-    fn live_chunks(&self) -> Vec<(Rc<Chunk>, Option<Rc<dyn Locator>>)> {
+    fn live_chunks(&self) -> Vec<(Rc<Chunk>, EpochLocator)> {
         self.chunks
             .borrow()
             .iter()
