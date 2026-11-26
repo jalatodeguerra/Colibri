@@ -189,10 +189,9 @@ impl FnCompiler<'_> {
     pub(super) fn stmt(&mut self, s: &Stmt) {
         self.stmt_span = s.span;
         self.unlisted = match &s.kind {
-            StmtKind::Break(id) | StmtKind::Continue(id) => self
-                .loops
-                .iter()
-                .any(|c| c.id == *id && c.span == s.span),
+            StmtKind::Break(id) | StmtKind::Continue(id) => {
+                self.loops.iter().any(|c| c.id == *id && c.span == s.span)
+            }
             _ => false,
         };
         self.count_statement(s.span);

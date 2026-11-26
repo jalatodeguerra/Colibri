@@ -9,7 +9,8 @@ use colibri_core::prelude::*;
 use colibri_syntax::{FileId, SourceMap, Span};
 
 use crate::debug::{
-    BreakpointInfo, BreakpointSpec, DebugView, Debugger, HitCondition, Locator, Resume, StepKind, Stop,
+    BreakpointInfo, BreakpointSpec, DebugView, Debugger, HitCondition, Locator, Resume, StepKind,
+    Stop,
 };
 use crate::fiber::VmFiber;
 use crate::machine::Machine;
@@ -64,7 +65,11 @@ struct Recorder {
     react: React,
 }
 
-pub(crate) fn locals_of(view: &mut DebugView<'_>, coroutine: Option<u64>, frame: usize) -> Vec<String> {
+pub(crate) fn locals_of(
+    view: &mut DebugView<'_>,
+    coroutine: Option<u64>,
+    frame: usize,
+) -> Vec<String> {
     let scopes = view.scopes(coroutine, frame);
     view.children(scopes[0].handle, 0, 1000)
         .into_iter()
@@ -314,20 +319,31 @@ fn main() {
 #[test]
 fn step_over_in_and_out_follow_the_frames() {
     use StepKind::{In, Out, Over};
-    let run = run_debug(CALLS, Setup::lines(&[7]), scripted(vec![
-        Resume::Step(In),
-        Resume::Step(In),
-        Resume::Step(In),
-    ]));
+    let run = run_debug(
+        CALLS,
+        Setup::lines(&[7]),
+        scripted(vec![Resume::Step(In), Resume::Step(In), Resume::Step(In)]),
+    );
     // In: into the call, down its statements, back to the caller's next statement.
     assert_eq!(trail(&run), ["main:7", "double:2", "double:3", "main:8"]);
-    assert_eq!(run.seen[1].frames, [("double".to_string(), 2), ("main".to_string(), 7)]);
+    assert_eq!(
+        run.seen[1].frames,
+        [("double".to_string(), 2), ("main".to_string(), 7)]
+    );
     assert_eq!(run.seen[1].locals, ["x = 1"]);
     assert_eq!(run.seen[2].locals, ["x = 1", "y = 2"]);
-    let run = run_debug(CALLS, Setup::lines(&[7]), scripted(vec![Resume::Step(Over), Resume::Step(Over)]));
+    let run = run_debug(
+        CALLS,
+        Setup::lines(&[7]),
+        scripted(vec![Resume::Step(Over), Resume::Step(Over)]),
+    );
     assert_eq!(trail(&run), ["main:7", "main:8"]);
     assert_eq!(run.out, "2\n");
-    let run = run_debug(CALLS, Setup::lines(&[2]), scripted(vec![Resume::Step(Out), Resume::Step(Over)]));
+    let run = run_debug(
+        CALLS,
+        Setup::lines(&[2]),
+        scripted(vec![Resume::Step(Out), Resume::Step(Over)]),
+    );
     assert_eq!(trail(&run), ["double:2", "main:8"]);
     let _ = (In, Out, Over);
 }
@@ -344,7 +360,11 @@ const MAPPED: &str = "fn main() {
 
 #[test]
 fn stepping_in_to_a_closure_built_in_stops_in_the_closure_and_hides_the_built_in() {
-    let run = run_debug(MAPPED, Setup::lines(&[3]), scripted(vec![Resume::Step(StepKind::In)]));
+    let run = run_debug(
+        MAPPED,
+        Setup::lines(&[3]),
+        scripted(vec![Resume::Step(StepKind::In)]),
+    );
     assert_eq!(trail(&run), ["main:3", "<closure in main>:4"]);
     // The frames of the prelude's `map` are not on the stack the debugger sees.
     let names: Vec<&str> = run.seen[1].frames.iter().map(|f| f.0.as_str()).collect();
@@ -357,29 +377,47 @@ fn stepping_in_to_a_closure_built_in_stops_in_the_closure_and_hides_the_built_in
 #[test]
 fn stepping_over_and_out_across_a_closure_built_in() {
     // Over the whole `map` line: the next statement of `main`.
-    let run = run_debug(MAPPED, Setup::lines(&[3]), scripted(vec![Resume::Step(StepKind::Over)]));
+    let run = run_debug(
+        MAPPED,
+        Setup::lines(&[3]),
+        scripted(vec![Resume::Step(StepKind::Over)]),
+    );
     assert_eq!(trail(&run), ["main:3", "main:7"]);
     // Out of the closure: past the built-in's loop, to `main`'s next statement.
     let one = MAPPED.replace("[1, 2, 3]", "[1]");
-    let run = run_debug(&one, Setup::lines(&[4]), scripted(vec![Resume::Step(StepKind::Out)]));
+    let run = run_debug(
+        &one,
+        Setup::lines(&[4]),
+        scripted(vec![Resume::Step(StepKind::Out)]),
+    );
     assert_eq!(trail(&run), ["<closure in main>:4", "main:7"]);
 }
 
 #[test]
 fn a_hit_count_condition_counts_hits_and_acts_on_the_ones_it_names() {
     let at = |hit| Setup {
-        bps: vec![BreakpointSpec { line: 4, hit: Some(hit), log: None }],
+        bps: vec![BreakpointSpec {
+            line: 4,
+            hit: Some(hit),
+            log: None,
+        }],
         before_load: false,
         break_on_panic: false,
         poll: None,
         on_machine: None,
     };
-    let run = run_debug(LOOP, at(HitCondition::Equals(2)), |_, _, _| Resume::Continue);
+    let run = run_debug(LOOP, at(HitCondition::Equals(2)), |_, _, _| {
+        Resume::Continue
+    });
     assert_eq!(run.seen.len(), 1);
     assert_eq!(run.seen[0].locals, ["total = 0", "i = 1"]);
-    let run = run_debug(LOOP, at(HitCondition::AtLeast(2)), |_, _, _| Resume::Continue);
+    let run = run_debug(LOOP, at(HitCondition::AtLeast(2)), |_, _, _| {
+        Resume::Continue
+    });
     assert_eq!(run.seen.len(), 2);
-    let run = run_debug(LOOP, at(HitCondition::MultipleOf(2)), |_, _, _| Resume::Continue);
+    let run = run_debug(LOOP, at(HitCondition::MultipleOf(2)), |_, _, _| {
+        Resume::Continue
+    });
     assert_eq!(run.seen.len(), 1);
     assert_eq!(run.seen[0].locals, ["total = 0", "i = 1"]);
 }
@@ -434,7 +472,10 @@ fn break_on_panic_stops_at_the_site_with_its_locals_before_any_cleanup_runs() {
         panic!("{:?}", s.stop)
     };
     assert!(message.contains("zero"), "{message}");
-    assert_eq!(s.frames, [("risky".to_string(), 4), ("main".to_string(), 9)]);
+    assert_eq!(
+        s.frames,
+        [("risky".to_string(), 4), ("main".to_string(), 9)]
+    );
     assert_eq!(s.locals, ["n = 3", "d = 0"]);
     // The `defer` of the call that panics has not run; those of the calls before it have.
     assert_eq!(s.out, "cleanup 1\ncleanup 2\n");
@@ -495,7 +536,12 @@ fn a_running_while_true_pauses_when_another_thread_asks() {
         }
     }));
     let run = run_debug(src, setup, |_, _, _| Resume::Terminate);
-    helper.borrow_mut().take().expect("spawned").join().expect("the helper ends");
+    helper
+        .borrow_mut()
+        .take()
+        .expect("spawned")
+        .join()
+        .expect("the helper ends");
     assert!(polls.get() >= 3);
     assert_eq!(run.seen.len(), 1);
     assert_eq!(run.seen[0].stop, Stop::Pause);
@@ -543,7 +589,11 @@ fn a_breakpoint_reaches_the_tail_of_a_closure_that_has_no_statement() {
     assert_eq!(run.seen[1].locals, ["x = 1"]);
     assert_eq!(run.seen[2].locals, ["x = 2"]);
     // Stepping in lands in the closure at once, tail or not.
-    let run = run_debug(src, Setup::lines(&[3]), scripted(vec![Resume::Step(StepKind::In)]));
+    let run = run_debug(
+        src,
+        Setup::lines(&[3]),
+        scripted(vec![Resume::Step(StepKind::In)]),
+    );
     assert_eq!(trail(&run)[..2], ["main:3", "<closure in main>:3"]);
 }
 
@@ -571,7 +621,10 @@ fn main() {
             sink.borrow_mut().push((
                 fiber.coroutine,
                 fiber.name,
-                frames.iter().map(|f| (f.name.clone(), f.line.unwrap_or(0))).collect(),
+                frames
+                    .iter()
+                    .map(|f| (f.name.clone(), f.line.unwrap_or(0)))
+                    .collect(),
                 locals,
             ));
         }
@@ -626,21 +679,41 @@ fn main() {
                 && let Some(h) = v.handle
             {
                 for k in view.children(h, 0, 100) {
-                    let inner = k.handle.map(|h| view.children(h, 0, 10)).unwrap_or_default();
+                    let inner = k
+                        .handle
+                        .map(|h| view.children(h, 0, 10))
+                        .unwrap_or_default();
                     for i in inner {
                         kid_sink.borrow_mut().push((i.name, i.value, i.ty));
                     }
                 }
             }
-            sink.borrow_mut().push((v.name, v.value, v.ty, v.handle.is_some()));
+            sink.borrow_mut()
+                .push((v.name, v.value, v.ty, v.handle.is_some()));
         }
         Resume::Continue
     });
     assert_eq!(run.out, "end\n", "a user `Show` was run");
     let vars = vars.borrow();
-    let get = |name: &str| vars.iter().find(|v| v.0 == name).unwrap_or_else(|| panic!("{name}: {vars:?}")).clone();
-    assert_eq!(get("p"), ("p".into(), "P { x: 1, y: 2 }".into(), "P".into(), true));
-    assert_eq!(get("s"), ("s".into(), "Circle(radius: 2.5)".into(), "Shape".into(), true));
+    let get = |name: &str| {
+        vars.iter()
+            .find(|v| v.0 == name)
+            .unwrap_or_else(|| panic!("{name}: {vars:?}"))
+            .clone()
+    };
+    assert_eq!(
+        get("p"),
+        ("p".into(), "P { x: 1, y: 2 }".into(), "P".into(), true)
+    );
+    assert_eq!(
+        get("s"),
+        (
+            "s".into(),
+            "Circle(radius: 2.5)".into(),
+            "Shape".into(),
+            true
+        )
+    );
     assert_eq!(get("xs").1, "[P { x: 1, y: 2 }, P { x: 1, y: 2 }]");
     assert_eq!(get("xs").2, "List[P]");
     assert_eq!(get("m").1, "{\"a\": 1}");

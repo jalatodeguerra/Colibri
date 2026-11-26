@@ -93,9 +93,14 @@ fn main() {
 fn breakpoints_set_by_file_name_hit_in_main_and_in_what_it_calls() {
     let mut s = session(|_| Resume::Continue);
     s.vm.load_source("p.colibri", PROGRAM).unwrap();
-    let set = s.vm.debug_set_breakpoints("p.colibri", &[bp(3), bp(8)]).unwrap();
+    let set =
+        s.vm.debug_set_breakpoints("p.colibri", &[bp(3), bp(8)])
+            .unwrap();
     assert_eq!(set.len(), 2);
-    assert!(s.vm.debug_set_breakpoints("other.colibri", &[bp(1)]).is_none());
+    assert!(
+        s.vm.debug_set_breakpoints("other.colibri", &[bp(1)])
+            .is_none()
+    );
     s.vm.run_main().unwrap();
     let seen = s.seen.borrow();
     let trail: Vec<(String, u32)> = seen.iter().map(|(_, f, _)| f[0].clone()).collect();
@@ -160,7 +165,10 @@ fn a_hit_count_and_a_logpoint_through_the_vm() {
     s.vm.run_main().unwrap();
     assert_eq!(s.seen.borrow().len(), 1);
     assert_eq!(s.seen.borrow()[0].2, ["n = 2", "r = 4"]);
-    assert_eq!(*s.logs.borrow(), ["i=1 total=0", "i=2 total=1", "i=3 total=5"]);
+    assert_eq!(
+        *s.logs.borrow(),
+        ["i=1 total=0", "i=2 total=1", "i=3 total=5"]
+    );
 }
 
 #[test]
@@ -180,7 +188,10 @@ fn main() {
     s.vm.load_source("w.colibri", src).unwrap();
     s.vm.debug_set_breakpoints("w.colibri", &[bp(4)]).unwrap();
     s.vm.run_main().unwrap();
-    assert!(s.seen.borrow().is_empty(), "not reached before the wait ends");
+    assert!(
+        s.seen.borrow().is_empty(),
+        "not reached before the wait ends"
+    );
     s.vm.run_event_loop().unwrap();
     let seen = s.seen.borrow();
     assert_eq!(seen.len(), 1);
@@ -200,7 +211,13 @@ fn main() {
     print(boom(a - 1))
 }
 ";
-    let mut s = session(|n| if n == 0 { Resume::Step(StepKind::In) } else { Resume::Continue });
+    let mut s = session(|n| {
+        if n == 0 {
+            Resume::Step(StepKind::In)
+        } else {
+            Resume::Continue
+        }
+    });
     s.vm.debug_break_on_panic(true);
     s.vm.load_source("b.colibri", src).unwrap();
     s.vm.debug_set_breakpoints("b.colibri", &[bp(6)]).unwrap();
