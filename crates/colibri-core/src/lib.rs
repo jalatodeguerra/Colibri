@@ -33,6 +33,7 @@ pub mod num;
 pub mod ops;
 pub mod ordered;
 pub mod pattern;
+pub mod portable;
 pub(crate) mod protocol;
 pub mod release;
 pub(crate) mod results;
