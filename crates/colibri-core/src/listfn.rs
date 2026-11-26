@@ -175,7 +175,13 @@ pub trait ListFnOps: Engine {
                         ),
                     ));
                 }
-                if let Err(ctl) = self.charge(fiber, span, total) {
+                if let Err(ctl) = self.charge(fiber, span, total).and_then(|()| {
+                    self.mem_reserve(
+                        fiber,
+                        span,
+                        total.saturating_mul(std::mem::size_of::<Value>()),
+                    )
+                }) {
                     self.release_all(items);
                     return Err(ctl);
                 }
@@ -243,8 +249,22 @@ pub trait ListFnOps: Engine {
                 let Some(Value::Str(sep)) = args.get(1) else {
                     return Err(self.internal(fiber, span, "ill-typed `join`"));
                 };
-                // One buffer, sized for the strings in it (an integer or other value takes a
-                // guess), and no copy of the list or per-item `String`.
+                // The buffer is sized for the strings in it (an integer or other value takes a
+                // guess); with a memory limit set, that size is asked for first.
+                if self.core().memory_limit().is_some() {
+                    let guess = list.with(|items| {
+                        items
+                            .iter()
+                            .map(|v| match v {
+                                Value::Str(s) => s.len(),
+                                _ => 8,
+                            })
+                            .sum::<usize>()
+                            .saturating_add(sep.len().saturating_mul(items.len().saturating_sub(1)))
+                    });
+                    self.mem_reserve(fiber, span, guess)?;
+                }
+                // One buffer, and no copy of the list or per-item `String`.
                 let types = &self.core().types;
                 let text = list.with(|items| {
                     let guess: usize = items

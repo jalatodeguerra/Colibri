@@ -244,6 +244,22 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Relaxed)
 }
 
+/// A byte count as the memory-limit panic words it: whole `GiB`, `MiB` or `KiB` when it is a
+/// multiple of one (`64 MiB`), plain bytes otherwise (`1000 bytes`).
+pub fn human_bytes(bytes: u64) -> String {
+    for (unit, name) in [(1u64 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")] {
+        if bytes >= unit && bytes % unit == 0 {
+            return format!("{} {name}", bytes / unit);
+        }
+    }
+    format!("{bytes} bytes")
+}
+
+/// The text of the memory-limit panic: ``memory limit of 64 MiB exceeded``.
+pub fn limit_message(limit: u64) -> String {
+    format!("memory limit of {} exceeded", human_bytes(limit))
+}
+
 /// Panics with a message that says how to install the allocator, when it is not. A builder calls
 /// it for a feature that needs byte counts (`memory_limit`).
 #[track_caller]
@@ -511,6 +527,23 @@ impl MemAccount {
         }
     }
 
+    /// The limit in bytes, `None` when there is none or the account is inert.
+    pub fn limit(&self) -> Option<u64> {
+        let limit = lookup(self.tag)?.limit.load(Ordering::Relaxed);
+        (limit != i64::MAX).then_some(limit.max(0) as u64)
+    }
+
+    /// Whether `extra` more bytes would take the account past its limit (what a built-in asks
+    /// before it allocates in proportion to an argument). False for an inert account.
+    pub fn would_exceed(&self, extra: u64) -> bool {
+        let Some(slot) = lookup(self.tag) else {
+            return false;
+        };
+        let used = slot.used.load(Ordering::Relaxed).max(0) as u64;
+        let limit = slot.limit.load(Ordering::Relaxed);
+        limit != i64::MAX && used.saturating_add(extra) > limit.max(0) as u64
+    }
+
     /// Whether an allocation went past the limit since it was set or cleared.
     #[inline]
     pub fn over(&self) -> bool {
@@ -542,6 +575,16 @@ impl Drop for MemAccount {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limits_are_worded_in_whole_units() {
+        assert_eq!(limit_message(64 << 20), "memory limit of 64 MiB exceeded");
+        assert_eq!(human_bytes(1 << 30), "1 GiB");
+        assert_eq!(human_bytes(3 << 10), "3 KiB");
+        assert_eq!(human_bytes(1536), "1536 bytes");
+        assert_eq!(human_bytes((1 << 20) + 1), "1048577 bytes");
+        assert_eq!(human_bytes(0), "0 bytes");
+    }
     use std::alloc::System;
     use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 

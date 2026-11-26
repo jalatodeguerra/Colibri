@@ -32,6 +32,7 @@ fn bare_panic_info(message: &str) -> Box<PanicInfo> {
         notes: Vec::new(),
         budget: false,
         debug_serial: 0,
+        memory: None,
     })
 }
 

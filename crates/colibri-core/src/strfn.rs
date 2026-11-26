@@ -72,6 +72,7 @@ pub trait StrOps: Engine {
                 {
                     return Ok(only);
                 }
+                self.mem_reserve(fiber, span, usize::try_from(total(obj)).unwrap_or(0))?;
                 // Join once and keep the joined text as the only chunk, so asking again (or
                 // appending a little more) does not walk the pieces a second time.
                 let joined: Rc<str> = Rc::from(builder_text(obj));
@@ -149,6 +150,13 @@ pub trait StrOps: Engine {
                 if width > (1 << 30) {
                     return Err(self.panic(fiber, span, "the width is more than a gigabyte"));
                 }
+                let fill_len = width.saturating_sub(len).saturating_mul(fill.len_utf8());
+                // The padding, and the text made of it.
+                self.mem_reserve(
+                    fiber,
+                    span,
+                    fill_len.saturating_mul(2).saturating_add(text.len()),
+                )?;
                 let pad: String = std::iter::repeat_n(fill, width.saturating_sub(len)).collect();
                 Value::str(&if op == Builtin::StrPadLeft {
                     format!("{pad}{text}")
@@ -188,6 +196,11 @@ pub trait StrOps: Engine {
                         span,
                         "`replace` needs a pattern that is not empty",
                     ));
+                }
+                if to.len() > from.len() {
+                    // At most one match per `from.len()` bytes, each now `to.len()` long.
+                    let size = (text.len() / from.len()).saturating_mul(to.len());
+                    self.mem_reserve(fiber, span, size)?;
                 }
                 Value::str(&text.replace(&**from, to))
             }
@@ -233,6 +246,13 @@ pub trait StrOps: Engine {
                         format!("a range of {n} integers is too long to turn into a list"),
                     ));
                 }
+                self.mem_reserve(
+                    fiber,
+                    span,
+                    usize::try_from(r.len())
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(std::mem::size_of::<Value>()),
+                )?;
                 let items = if r.inclusive {
                     (r.start..=r.end).map(Value::Int).collect()
                 } else {

@@ -42,7 +42,13 @@ impl Machine {
                 Err(self.panic(fiber, span, "a safepoint consumer failed"))
             } else {
                 match due.kind {
-                    // No memory limit is built yet: it arrives with its own step.
+                    SafepointKind::Memory if self.core.memory_exceeded() => {
+                        let span = fiber.frames.last().map_or_else(
+                            || colibri_syntax::Span::new(colibri_syntax::FileId(0), 0, 0),
+                            |f| f.span(),
+                        );
+                        Err(self.memory_exceeded(fiber, span))
+                    }
                     SafepointKind::Memory => Ok(()),
                     SafepointKind::Debugger => self.debug_safepoint(fiber),
                     SafepointKind::Profiler => {

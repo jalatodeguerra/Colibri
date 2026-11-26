@@ -22,6 +22,7 @@ pub trait Protocol: Engine {
             notes: Vec::new(),
             budget: false,
             debug_serial: 0,
+            memory: None,
         }))
     }
 
@@ -46,7 +47,7 @@ pub trait Protocol: Engine {
 
     /// The control flow a failed host function or host hook ends the running operation with:
     /// a panic at the position of the innermost frame, or cancellation.
-    fn host_fault_ctl(&self, fiber: &mut Self::Fiber, fault: HostFault) -> Ctl {
+    fn host_fault_ctl(&mut self, fiber: &mut Self::Fiber, fault: HostFault) -> Ctl {
         match fault {
             HostFault::Panic(message) | HostFault::Message(message) => {
                 let span = Self::position(fiber).unwrap_or(Span::new(FileId(0), 0, 0));
@@ -56,6 +57,43 @@ pub trait Protocol: Engine {
                 Self::fiber_state_mut(fiber).cancelling = true;
                 Ctl::Cancel
             }
+            HostFault::MemoryLimit => {
+                let span = Self::position(fiber).unwrap_or(Span::new(FileId(0), 0, 0));
+                self.memory_exceeded(fiber, span)
+            }
+        }
+    }
+
+    /// Asks whether `bytes` more fit under the memory limit, before a built-in allocates in
+    /// proportion to an argument. Costs one comparison when no limit is set.
+    #[inline]
+    fn mem_reserve(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        span: Span,
+        bytes: usize,
+    ) -> crate::ctl::Eval<()> {
+        if self.core().mem_reserve(bytes) {
+            Ok(())
+        } else {
+            Err(self.memory_exceeded(fiber, span))
+        }
+    }
+
+    /// The memory limit was passed: the panic that unwinds with a grace and reaches the host as
+    /// `Error::MemoryLimit`. The first one begins the grace, the second ends it.
+    #[cold]
+    #[inline(never)]
+    fn memory_exceeded(&mut self, fiber: &mut Self::Fiber, span: Span) -> Ctl {
+        let limit = self.core_mut().exhaust_memory();
+        let message = crate::mem::limit_message(limit);
+        match self.panic(fiber, span, message) {
+            Ctl::Panic(mut info) => {
+                info.budget = true;
+                info.memory = Some(limit);
+                Ctl::Panic(info)
+            }
+            other => other,
         }
     }
 

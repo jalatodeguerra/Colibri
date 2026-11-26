@@ -383,6 +383,7 @@ impl HostType for File {
         });
         // Everything from the current position to the end of the file.
         d.method("read_all", [], |cx: &mut Ctx, this: &File| {
+            crate::fs::reserve_file(cx, &this.path);
             on_handle(cx, this, |g, path| g.read_all(path))
         });
         d.method(

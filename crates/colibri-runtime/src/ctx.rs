@@ -26,6 +26,9 @@ pub struct Ctx<'a> {
 /// panic with exactly this message.
 pub(crate) struct RaisedPanic(pub String);
 
+/// The payload of the Rust panic [`Ctx::mem_reserve`] starts when the limit would be passed.
+pub(crate) struct RaisedMemory;
+
 /// Why [`Ctx::try_await_completion`] gave no value.
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +122,21 @@ impl<'a> Ctx<'a> {
             std::panic::panic_any(raised)
         }
         std::panic::resume_unwind(Box::new(raised))
+    }
+
+    /// Asks whether `bytes` more fit under the `Vm`'s memory limit
+    /// ([`crate::Vm::set_memory_limit`]); when they do not, the program ends with the limit's
+    /// panic ([`Error::MemoryLimit`] reaches the host) and this does not return. Call it before
+    /// allocating in proportion to an argument (a repeat count, the size of a file), so that one
+    /// call cannot allocate gigabytes between two checks of the limit. With no limit it costs a
+    /// comparison. `bytes` is an estimate of the whole allocation.
+    pub fn mem_reserve(&mut self, bytes: usize) {
+        if !self.eng.core().mem_reserve(bytes) {
+            if cfg!(target_family = "wasm") {
+                std::panic::panic_any(RaisedMemory)
+            }
+            std::panic::resume_unwind(Box::new(RaisedMemory))
+        }
     }
 
     /// Runs `work` on a background thread and returns its result, **without blocking the
@@ -461,6 +479,13 @@ pub(crate) fn panic_error(core: &colibri_core::Core, info: PanicInfo) -> Error {
         })
         .collect();
     if info.budget {
+        if let Some(limit) = info.memory {
+            return Error::MemoryLimit {
+                limit,
+                location,
+                stack,
+            };
+        }
         return Error::BudgetExhausted { location, stack };
     }
     Error::Panic {

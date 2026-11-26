@@ -80,6 +80,8 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             if text.len().saturating_mul(times) > (1 << 30) {
                 cx.raise("str.repeat: the result would be more than a gigabyte");
             }
+            // The result is made, then copied into a Colibri string.
+            cx.mem_reserve(text.len().saturating_mul(times).saturating_mul(2));
             text.repeat(times)
         },
     ))?;

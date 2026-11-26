@@ -167,6 +167,14 @@ pub trait BytesOps: Engine {
         let Some(Value::ByteBuf(buf)) = obj.field(0) else {
             return Err(self.internal(fiber, span, "a malformed byte builder"));
         };
+        // What the builder grows by, or what `to_bytes` copies: asked for before it is made.
+        let growth = match (op, args.get(1)) {
+            (Builtin::BytesBuilderPushBytes, Some(Value::Bytes(b))) => b.len(),
+            (Builtin::BytesBuilderPushStr, Some(Value::Str(s))) => s.len(),
+            (Builtin::BytesBuilderToBytes, _) => buf.borrow().len(),
+            _ => 0,
+        };
+        self.mem_reserve(fiber, span, growth)?;
         let mut buf = buf.borrow_mut();
         Ok(match (op, args.get(1)) {
             (Builtin::BytesBuilderPush, Some(Value::Int(n))) => {

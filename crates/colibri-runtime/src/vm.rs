@@ -106,6 +106,7 @@ pub struct VmBuilder {
     track_leaks: bool,
     caps: CapSet,
     instruction_budget: Option<u64>,
+    memory_limit: Option<u64>,
     coroutine_stack_size: Option<usize>,
     clock: Option<Box<dyn Clock>>,
     cfg: BuildCfg,
@@ -232,6 +233,15 @@ impl VmBuilder {
         self
     }
 
+    /// Limits the memory this `Vm`'s entries may hold to `bytes` (approximately: see
+    /// [`Vm::set_memory_limit`]). **The program must have installed the counting allocator**
+    /// ([`crate::CountingAlloc`]) as its global allocator, or [`VmBuilder::build`] panics, with a
+    /// message that says how.
+    pub fn memory_limit(mut self, bytes: u64) -> Self {
+        self.memory_limit = Some(bytes);
+        self
+    }
+
     /// Counts the budget in slices of `steps` and runs a (test-only) safepoint at each end, so
     /// that tests can check that nothing observable depends on the slice. See
     /// [`Vm::safepoints_run`].
@@ -250,6 +260,10 @@ impl VmBuilder {
         engine
             .core_mut()
             .set_instruction_budget(self.instruction_budget);
+        if let Some(bytes) = self.memory_limit {
+            colibri_core::mem::require_installed("a memory limit");
+            engine.core_mut().set_memory_limit(Some(bytes));
+        }
         if let Some(every) = self.safepoint_slice.and_then(std::num::NonZeroU32::new) {
             engine
                 .core_mut()
@@ -431,6 +445,7 @@ impl Vm {
             track_leaks: false,
             caps: CapSet::none(),
             instruction_budget: None,
+            memory_limit: None,
             coroutine_stack_size: None,
             clock: None,
             cfg: BuildCfg::default(),
@@ -1405,11 +1420,27 @@ impl Vm {
         self.engine.core().memory_used()
     }
 
-    /// Sets the byte limit of this `Vm`'s account. Only the flag the allocator raises is
-    /// reachable from here: enforcement and the public setters come with `memory_limit`.
-    #[allow(dead_code)] // The builder and `set_memory_limit` of the enforcement step call it.
-    pub(crate) fn set_memory_account_limit(&mut self, limit: Option<u64>) {
-        colibri_core::mem::require_installed("a memory limit");
+    /// Sets the memory limit in bytes (`None` lifts it): the most this `Vm`'s entries may hold,
+    /// as [`Vm::memory_used`] counts it. It is **approximate, with a bounded overshoot**, like
+    /// the instruction budget: the program is checked every 4,096 steps, and the built-ins that
+    /// allocate in proportion to an argument (`str.repeat`, `pad_left`, `join`, `fs.read`, an
+    /// HTTP body, `json.decode`, concatenation) check before they allocate, so between two checks
+    /// a program can pass the limit by what 4,096 steps allocate without such a built-in.
+    ///
+    /// When the limit is passed, evaluation unwinds like a panic: `defer` statements and `Drop`
+    /// hooks run, with 1 MiB of memory more than the `Vm` held (or the limit, if that is more) for
+    /// them; past that they are skipped (plain releases still happen). The entry returns
+    /// [`Error::MemoryLimit`] and the `Vm` stays usable. A coroutine that passes it ends the same
+    /// way: [`Error::MemoryLimit`] reaches the host, a `join_result` never receives it and a
+    /// joiner never takes it over. What a host function allocates during an entry counts.
+    ///
+    /// # Panics
+    /// With `Some`, when the program has not installed the counting allocator
+    /// ([`crate::CountingAlloc`]); the message says how. Call it between entries.
+    pub fn set_memory_limit(&mut self, limit: Option<u64>) {
+        if limit.is_some() {
+            colibri_core::mem::require_installed("a memory limit");
+        }
         self.engine.core_mut().set_memory_limit(limit);
     }
 
@@ -2577,15 +2608,19 @@ fn trampoline(name: &str, module: &str, raw: crate::host::RawHostFn) -> HostFnIm
                 // Worded by the host layer, shown as is.
                 HostFault::Message(message) => HostFault::Message(message),
                 HostFault::Cancel => HostFault::Cancel,
+                HostFault::MemoryLimit => HostFault::MemoryLimit,
             }),
             Err(payload) => Err(match payload.downcast::<crate::ctx::RaisedPanic>() {
                 Ok(raised) => HostFault::Message(raised.0),
                 Err(payload) => match payload.downcast::<crate::ctx::RaisedCancel>() {
                     Ok(_) => HostFault::Cancel,
-                    Err(payload) => HostFault::Panic(format!(
-                        "host function `{name}` panicked: {}",
-                        payload_message(payload.as_ref())
-                    )),
+                    Err(payload) => match payload.downcast::<crate::ctx::RaisedMemory>() {
+                        Ok(_) => HostFault::MemoryLimit,
+                        Err(payload) => HostFault::Panic(format!(
+                            "host function `{name}` panicked: {}",
+                            payload_message(payload.as_ref())
+                        )),
+                    },
                 },
             }),
         }
@@ -2768,13 +2803,13 @@ impl HostModule<'_> {
 mod memory_tests {
     use super::*;
 
-    /// This test binary does not install the counting allocator, which is what the check that
-    /// the memory-limit builder will make reports.
+    /// This test binary does not install the counting allocator, which is what the check of
+    /// the memory-limit setter reports.
     #[test]
     fn the_limit_setter_refuses_without_the_allocator() {
         let mut vm = Vm::builder().build();
         let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            vm.set_memory_account_limit(Some(1 << 20));
+            vm.set_memory_limit(Some(1 << 20));
         }))
         .expect_err("no allocator, so the setter panics");
         let text = err.downcast_ref::<String>().expect("a formatted message");
@@ -2783,5 +2818,7 @@ mod memory_tests {
             "{text}"
         );
         assert_eq!(vm.memory_used(), None);
+        // Lifting a limit that was never set needs nothing.
+        vm.set_memory_limit(None);
     }
 }

@@ -511,10 +511,16 @@ pub trait Builtins: Engine {
                 Err(v) => return Err(self.violation(fiber, span, v)),
             },
             Builtin::ListExtend => {
-                let more = match args.get(1).and_then(list_of) {
-                    Some(other) => other.snapshot(),
-                    None => return Err(self.internal(fiber, span, "ill-typed built-in call")),
+                let Some(other) = args.get(1).and_then(list_of) else {
+                    return Err(self.internal(fiber, span, "ill-typed built-in call"));
                 };
+                // `xs.extend(xs)` doubles the list in one statement.
+                self.mem_reserve(
+                    fiber,
+                    span,
+                    other.len().saturating_mul(std::mem::size_of::<Value>()),
+                )?;
+                let more = other.snapshot();
                 match list.extend(more) {
                     Ok(()) => Value::Unit,
                     Err(rejected) => {

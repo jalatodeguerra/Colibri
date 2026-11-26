@@ -350,17 +350,24 @@ pub(crate) fn bare_panic(message: &str) -> Box<PanicInfo> {
         notes: Vec::new(),
         budget: false,
         debug_serial: 0,
+        memory: None,
     })
 }
 
-/// What a failed run ends with, for the host.
-pub(crate) fn budget_panic() -> Ctl {
+/// What a run that ran out of a limit the host set ends with, for the host.
+pub(crate) fn limit_panic(what: colibri_core::budget::Exhaustion) -> Ctl {
+    use colibri_core::budget::Exhaustion;
+    let (message, memory) = match what {
+        Exhaustion::Budget => ("the instruction budget is exhausted".to_string(), None),
+        Exhaustion::Memory(limit) => (colibri_core::mem::limit_message(limit), Some(limit)),
+    };
     Ctl::Panic(Box::new(PanicInfo {
-        message: "the instruction budget is exhausted".to_string(),
+        message,
         span: no_span(),
         stack: Vec::new(),
         notes: Vec::new(),
         budget: true,
         debug_serial: 0,
+        memory,
     }))
 }

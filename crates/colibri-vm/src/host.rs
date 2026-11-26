@@ -268,6 +268,7 @@ impl Machine {
                 fiber.state.cancelling = true;
                 Err(Ctl::Cancel)
             }
+            Err(HostFault::MemoryLimit) => Err(self.memory_exceeded(fiber, span)),
         };
         let shim = fiber.frames.pop();
         debug_assert!(

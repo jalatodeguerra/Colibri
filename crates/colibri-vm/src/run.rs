@@ -988,7 +988,7 @@ impl Machine {
                 }
 
                 Op::SkipIfDead { off } => {
-                    if self.core.budget_is_dead() {
+                    if self.core.cleanups_are_dead() {
                         jump!(off);
                     }
                 }
@@ -1358,6 +1358,10 @@ impl Machine {
                     out.push_str(&text?);
                 }
             }
+        }
+        if !self.core.mem_reserve(out.len()) {
+            self.scratch = out;
+            return Err(self.memory_exceeded(fiber, span));
         }
         let text: Rc<str> = Rc::from(out.as_str());
         self.scratch = out;

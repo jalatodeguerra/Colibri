@@ -107,3 +107,71 @@ fn a_block_made_outside_an_entry_is_charged_when_it_grows_inside_one() {
     drop(host);
     assert_eq!(core.memory_used(), Some(0));
 }
+
+#[test]
+fn a_reserve_asks_the_limit_and_a_second_failure_ends_the_grace() {
+    let mut core = core();
+    // No limit: everything fits, and nothing is checked.
+    assert!(core.mem_reserve(usize::MAX));
+    core.set_memory_limit(Some(100_000));
+    let entry = core.begin_entry();
+    assert!(core.mem_reserve(50_000));
+    assert!(!core.mem_reserve(150_000));
+    assert!(!core.memory_was_exhausted());
+    // The first failure begins the grace (the account may now hold 1 MiB more than the limit) ...
+    assert_eq!(core.exhaust_memory(), 100_000);
+    assert!(core.memory_was_exhausted());
+    assert!(!core.cleanups_are_dead());
+    assert!(core.mem_reserve(500_000));
+    assert!(!core.mem_reserve(2_000_000));
+    // ... the second ends it: cleanups are skipped and nothing more is reserved.
+    core.exhaust_memory();
+    assert!(core.cleanups_are_dead());
+    assert!(core.memory_exceeded());
+    assert!(!core.mem_reserve(1));
+    // The entry's end gives the next entry the host's limit and a fresh grace.
+    core.end_entry(entry, false);
+    assert!(!core.memory_was_exhausted());
+    assert!(!core.cleanups_are_dead());
+    assert!(!core.memory_exceeded());
+    let entry = core.begin_entry();
+    assert!(core.mem_reserve(50_000));
+    assert!(!core.mem_reserve(150_000));
+    core.end_entry(entry, false);
+}
+
+#[test]
+fn an_entry_lost_to_a_panic_gives_the_next_one_its_limit_back() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let mut core = core();
+    core.set_memory_limit(Some(10_000));
+    let lost = catch_unwind(AssertUnwindSafe(|| {
+        let _entry = core.begin_entry();
+        // In the grace, the account may hold a MiB more.
+        core.exhaust_memory();
+        panic!("a bug in the engine");
+    }));
+    assert!(lost.is_err());
+    let next = core.begin_entry();
+    assert!(next.is_outermost());
+    assert!(!core.memory_was_exhausted(), "the grace was left behind");
+    let big: Vec<u8> = vec![0; 100_000];
+    assert!(core.memory_over(), "the limit was not restored");
+    core.end_entry(next, false);
+    drop(big);
+}
+
+#[test]
+fn the_flag_is_judged_again_when_an_entry_begins() {
+    let mut core = core();
+    core.set_memory_limit(Some(10_000));
+    let entry = core.begin_entry();
+    let big: Vec<u8> = vec![0; 100_000];
+    assert!(core.memory_over());
+    core.end_entry(entry, false);
+    // Freed between entries: the flag raised earlier must not fail the next entry.
+    drop(big);
+    let entry = core.begin_entry();
+    assert!(!core.memory_over());
+    core.end_entry(entry, false);
+}

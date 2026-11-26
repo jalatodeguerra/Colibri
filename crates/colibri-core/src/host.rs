@@ -28,6 +28,8 @@ pub enum HostFault {
     /// The coroutine running the host function was cancelled while the function waited for a
     /// background operation (`Ctx::run_async`): unwind without a panic.
     Cancel,
+    /// The memory limit was passed (`Ctx::mem_reserve`): the panic of the limit, with its grace.
+    MemoryLimit,
 }
 
 /// Which customisation of a host class is meant: how its objects are shown, compared (`==`) or
