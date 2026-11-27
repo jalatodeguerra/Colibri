@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use colibri_runtime::{CancelToken, Cap, Ctx, Error, HostType, TypeBuilder, TypedError, Vm};
 
-use crate::config::State;
+use crate::config::{EnvSource, State};
 use crate::errors::error_kind;
 use crate::fs::reason;
 use crate::needs;
@@ -104,7 +104,8 @@ fn text(bytes: Vec<u8>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// The command, with the environment of this program: the process's own plus whatever
+/// The command, with the environment of this program: the process's own (or the fixed one the
+/// `Vm` was built with, and nothing of the host's) plus whatever
 /// `os.set_env` changed, then the options' own variables on top.
 ///
 /// `raw` is text appended to the command line exactly as it is, after the arguments, with no
@@ -130,6 +131,12 @@ fn command(
         cmd.current_dir(cwd);
     }
     if let Some(state) = cx.state_mut::<State>() {
+        // The same view of the environment as `os.env` and `os.vars`: a `Vm` built with a fixed
+        // environment is hermetic, so its children must not inherit the host's variables.
+        if let EnvSource::Fixed(vars) = &state.env {
+            cmd.env_clear();
+            cmd.envs(vars);
+        }
         cmd.envs(&state.env_overrides);
     }
     cmd.envs(&opts.env);

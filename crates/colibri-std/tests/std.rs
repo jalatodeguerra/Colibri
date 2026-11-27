@@ -667,6 +667,28 @@ fn a_child_gets_the_variables_the_script_set_and_its_own_folder() {
     );
 }
 
+// Unix only: `printenv` (a fixed environment must not leak the host's variables to a child, and the host surely has a `PATH`).
+#[cfg(unix)]
+#[test]
+fn a_child_of_a_fixed_environment_gets_that_environment_and_nothing_of_the_hosts() {
+    let (mut vm, out) = vm_with(
+        StdConfig {
+            env: EnvSource::Fixed(BTreeMap::from([
+                ("K".to_string(), "fixed".to_string()),
+                ("L".to_string(), "dropped".to_string()),
+            ])),
+            ..StdConfig::default()
+        },
+        &[colibri::Cap::Os],
+    );
+    run(
+        &mut vm,
+        "import process\nimport os\nfn main() {\n    os.set_env(\"L\", \"overridden\")\n    let mut o = process.options()\n    o.env = { \"M\": \"option\" }\n    let r = process.run_with(\"printenv\", [\"PATH\", \"K\", \"L\", \"M\"], o) or |e| { panic(e.message()) }\n    print(r.stdout)\n}\n",
+    )
+    .unwrap();
+    assert_eq!(out.contents(), "fixed\noverridden\noption\n\n");
+}
+
 // Unix only: a signal that ends a program exists only on Unix (Windows has exit codes only).
 #[cfg(unix)]
 #[test]
