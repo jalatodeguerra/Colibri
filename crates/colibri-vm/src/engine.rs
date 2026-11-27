@@ -339,6 +339,16 @@ impl Engine for Machine {
     fn resume_stack(&mut self, id: u64, slot: EngineSlot, cancel: bool) -> Resumed {
         self.resume_fiber(id, slot, cancel)
     }
+
+    fn task_builtin(
+        &mut self,
+        fiber: &mut VmFiber,
+        op: colibri_check::hir::Builtin,
+        recv: &Value,
+        span: Span,
+    ) -> Eval {
+        self.task_ops(fiber, op, recv, span)
+    }
 }
 
 /// A panic with no position, for failures before anything runs.

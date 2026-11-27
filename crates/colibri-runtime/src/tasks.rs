@@ -17,16 +17,20 @@
 //! needs_send::<colibri_runtime::Vm>();
 //! ```
 
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::JoinHandle;
 
 use colibri_check::package::{BuildCfg, MemoryFs};
+use colibri_core::external::Completer;
 pub use colibri_core::portable::Portable;
+use colibri_core::taskrun::{SpawnRequest, StolenTask, TaskOutcome, TaskSpawner};
 
 use crate::cap::CapSet;
 use crate::reload::OwnedEntry;
@@ -111,6 +115,7 @@ const _: () = {
     send_sync::<ProgramImage>();
     send_sync::<PoolStats>();
     send::<Job>();
+    send::<Submission>();
     send::<Portable>();
     send::<TaskDone>();
     send::<TaskFailure>();
@@ -198,53 +203,7 @@ pub(crate) fn program_hash(program: &colibri_check::hir::Program) -> u64 {
 
 // ---- results ----
 
-/// What a task that ran produced.
-#[derive(Debug)]
-pub struct TaskDone {
-    pub value: Portable,
-    /// The steps the entry used (the instruction budget counts in these).
-    pub steps: u64,
-}
-
-/// Why a task gave no value. Plain data: it crosses back to the thread that submitted the task.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TaskFailure {
-    /// The task panicked. `trace` is the stack, one frame a line.
-    Panic { message: String, trace: String },
-    /// The entry used up the instruction budget of the `Vm` (a worker's failure is not the main
-    /// entry's: it reaches the joiner as an `err`).
-    BudgetExhausted,
-    /// The task passed the memory limit of the `Vm` (the limit is the task's own: what the `Vm`
-    /// and its other workers hold counts, but only the isolate that allocates past it fails).
-    MemoryLimit { limit: u64 },
-    /// An argument could not be rebuilt on the worker, or the result could not be copied out
-    /// (the message names the reason).
-    Copy(String),
-    /// The worker could not be built (the program image does not match, or `worker_setup` failed),
-    /// or the engine failed. A bug, not a failure of the task.
-    Internal(String),
-    /// The pool could not start a task: there are no threads on the web.
-    CannotStart(String),
-    /// The `Vm` was dropped before the task started, or while it ran (it was stopped at a
-    /// safepoint).
-    Cancelled,
-}
-
-impl std::fmt::Display for TaskFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TaskFailure::Panic { message, .. } => f.write_str(message),
-            TaskFailure::BudgetExhausted => f.write_str("the instruction budget ran out"),
-            TaskFailure::MemoryLimit { limit } => {
-                f.write_str(&colibri_core::mem::limit_message(*limit))
-            }
-            TaskFailure::Copy(message) => f.write_str(message),
-            TaskFailure::Internal(message) => write!(f, "internal error: {message}"),
-            TaskFailure::CannotStart(message) => f.write_str(message),
-            TaskFailure::Cancelled => f.write_str("the task was cancelled: the Vm was dropped"),
-        }
-    }
-}
+pub use colibri_core::taskrun::{TaskDone, TaskFailure};
 
 /// A task that was submitted: wait for what it produced.
 #[derive(Debug)]
@@ -302,26 +261,60 @@ pub(crate) struct WorkerCfg {
     pub threads_supported: bool,
 }
 
+/// What a worker runs.
+pub(crate) enum JobEntry {
+    /// A function of the program by name, with portable arguments (the substrate's own tests).
+    Call {
+        function: String,
+        args: Vec<Portable>,
+    },
+    /// A closure (or function value) that `task.run` copied.
+    Closure(Portable),
+}
+
+/// Where the outcome of a task goes.
+pub(crate) enum Reply {
+    /// To a [`PendingTask`], which waits on a channel.
+    Channel(mpsc::Sender<Result<TaskDone, TaskFailure>>),
+    /// To the isolate that started it, which waits on a background operation.
+    Completer(Completer<TaskOutcome>),
+}
+
+impl Reply {
+    fn send(self, outcome: Result<TaskDone, TaskFailure>) {
+        match self {
+            // The submitter may have dropped its handle (a detached task).
+            Reply::Channel(tx) => {
+                let _ = tx.send(outcome);
+            }
+            Reply::Completer(completer) => completer.complete(outcome),
+        }
+    }
+}
+
 /// One task for a worker.
 struct Job {
+    /// What `steal` finds it by.
+    key: u64,
     image: Arc<ProgramImage>,
     hash: u64,
-    function: String,
-    args: Vec<Portable>,
+    entry: JobEntry,
     /// The instruction budget of one entry, and the memory account and limit of the parent.
     budget: Option<u64>,
     account: (u64, Option<u64>),
-    reply: mpsc::Sender<Result<TaskDone, TaskFailure>>,
+    /// Names the task for what is derived per task (the seed of the random generator).
+    serial: u64,
+    reply: Reply,
 }
 
 /// What a submission carries: see [`Vm::submit_portable`].
 pub(crate) struct Submission {
     pub image: Arc<ProgramImage>,
     pub hash: u64,
-    pub function: String,
-    pub args: Vec<Portable>,
+    pub entry: JobEntry,
     pub budget: Option<u64>,
     pub account: (u64, Option<u64>),
+    pub serial: u64,
 }
 
 struct Queue {
@@ -329,12 +322,52 @@ struct Queue {
     closed: bool,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     queue: Mutex<Queue>,
     wake: Condvar,
+    /// The key of the next job.
+    next_key: AtomicU64,
     /// Set when the pool shuts down: the task that runs stops at its next safepoint, like the
     /// debugger's pause request (`SafepointKind::Cancel`).
-    cancel: Arc<AtomicBool>,
+    pub(crate) cancel: Arc<AtomicBool>,
+}
+
+impl Shared {
+    fn key(&self) -> u64 {
+        self.next_key.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Queues a job and wakes a thread. A closed queue (the `Vm` is going away) refuses it.
+    fn enqueue(&self, job: Job) -> Result<(), TaskFailure> {
+        {
+            let mut queue = lock(&self.queue);
+            if queue.closed {
+                return Err(TaskFailure::Cancelled);
+            }
+            queue.jobs.push_back(job);
+        }
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    /// Takes the closure job `key` out of the queue, if no thread has started it.
+    fn steal(&self, key: u64) -> Option<StolenTask> {
+        let mut queue = lock(&self.queue);
+        let at = queue
+            .jobs
+            .iter()
+            .position(|job| job.key == key && matches!(job.entry, JobEntry::Closure(_)))?;
+        let job = queue.jobs.remove(at)?;
+        match (job.entry, job.reply) {
+            (JobEntry::Closure(closure), Reply::Completer(completer)) => Some(StolenTask {
+                closure,
+                completer,
+                serial: job.serial,
+                hash: job.hash,
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// The worker threads of a `Vm`. Dropping the pool shuts it down: see [`TaskPool::shutdown`].
@@ -356,6 +389,7 @@ impl TaskPool {
                     closed: false,
                 }),
                 wake: Condvar::new(),
+                next_key: AtomicU64::new(1),
                 cancel: Arc::new(AtomicBool::new(false)),
             }),
             stats,
@@ -372,31 +406,35 @@ impl TaskPool {
 
     /// Queues a task, starting the threads if this is the first.
     pub(crate) fn submit(&mut self, job: Submission) -> Result<PendingTask, TaskFailure> {
+        let (reply, rx) = mpsc::channel();
+        self.submit_with(job, Reply::Channel(reply))?;
+        Ok(PendingTask { rx })
+    }
+
+    /// [`TaskPool::submit`] with the outcome going to `reply`; gives the key of the job.
+    pub(crate) fn submit_with(
+        &mut self,
+        job: Submission,
+        reply: Reply,
+    ) -> Result<u64, TaskFailure> {
         if !self.cfg.threads_supported {
             return Err(TaskFailure::CannotStart(
                 colibri_core::external::NO_THREADS.to_string(),
             ));
         }
         self.start_threads()?;
-        let (reply, rx) = mpsc::channel();
-        let job = Job {
+        let key = self.shared.key();
+        self.shared.enqueue(Job {
+            key,
             image: job.image,
             hash: job.hash,
-            function: job.function,
-            args: job.args,
+            entry: job.entry,
             budget: job.budget,
             account: job.account,
+            serial: job.serial,
             reply,
-        };
-        {
-            let mut queue = lock(&self.shared.queue);
-            if queue.closed {
-                return Err(TaskFailure::Cancelled);
-            }
-            queue.jobs.push_back(job);
-        }
-        self.shared.wake.notify_one();
-        Ok(PendingTask { rx })
+        })?;
+        Ok(key)
     }
 
     fn start_threads(&mut self) -> Result<(), TaskFailure> {
@@ -474,6 +512,211 @@ impl Drop for TaskPool {
     }
 }
 
+// ---- what the engine submits through ----
+
+/// A number that names a task: the same on every run of a program, whatever thread runs it. A
+/// task that `parent` (0 for the main program) started as its `n`-th gets it from both, so that
+/// nested tasks are named by where they were started and not by when they were queued.
+fn task_serial(parent: u64, n: u64) -> u64 {
+    // SplitMix64's finaliser.
+    let mut z = parent
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(n.wrapping_mul(0xBF58_476D_1CE4_E5B9))
+        .wrapping_add(0x94D0_49BB_1331_11EB);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) | 1
+}
+
+/// The pool of the main `Vm`, with what a task is submitted with: `task.run` goes through it.
+pub(crate) struct Launch {
+    pool: RefCell<TaskPool>,
+    image: RefCell<Option<Arc<ProgramImage>>>,
+    program: RefCell<Option<Rc<colibri_check::hir::Program>>>,
+    hash: Cell<Option<u64>>,
+    /// How many tasks the program has started.
+    started: Cell<u64>,
+}
+
+impl Launch {
+    pub(crate) fn new(pool: TaskPool) -> Launch {
+        Launch {
+            pool: RefCell::new(pool),
+            image: RefCell::new(None),
+            program: RefCell::new(None),
+            hash: Cell::new(None),
+            started: Cell::new(0),
+        }
+    }
+
+    pub(crate) fn pool(&self) -> std::cell::RefMut<'_, TaskPool> {
+        self.pool.borrow_mut()
+    }
+
+    /// A program was loaded: workers build their isolates from `image`.
+    pub(crate) fn set_image(&self, image: Option<Arc<ProgramImage>>) {
+        *self.image.borrow_mut() = image;
+        self.hash.set(None);
+    }
+
+    /// The loaded program, which the hash that workers must reproduce is taken of.
+    pub(crate) fn set_program(&self, program: Option<Rc<colibri_check::hir::Program>>) {
+        *self.program.borrow_mut() = program;
+        self.hash.set(None);
+    }
+
+    pub(crate) fn image(&self) -> Option<Arc<ProgramImage>> {
+        self.image.borrow().clone()
+    }
+
+    /// The hash of the loaded program's tables, made when the first task is submitted.
+    pub(crate) fn hash(&self) -> Option<u64> {
+        if self.hash.get().is_none() {
+            self.hash
+                .set(self.program.borrow().as_deref().map(program_hash));
+        }
+        self.hash.get()
+    }
+
+    /// Makes the next task carry a hash its workers will not reproduce (tests of the check).
+    pub(crate) fn corrupt_hash(&self) {
+        let hash = self.hash();
+        self.hash.set(hash.map(|h| h ^ 1));
+    }
+
+    /// The image and hash a task is submitted with.
+    pub(crate) fn spec(&self) -> Option<(Arc<ProgramImage>, u64)> {
+        Some((self.image()?, self.hash()?))
+    }
+}
+
+impl TaskSpawner for Launch {
+    fn spawn(
+        &self,
+        request: SpawnRequest,
+        completer: Completer<TaskOutcome>,
+    ) -> Result<u64, TaskFailure> {
+        let Some((image, hash)) = self.spec() else {
+            return Err(TaskFailure::CannotStart(
+                "no program image is loaded that a worker could build its isolate from (a thread task needs a program loaded to run, not a REPL session)".to_string(),
+            ));
+        };
+        let n = self.started.get() + 1;
+        self.started.set(n);
+        self.pool.borrow_mut().submit_with(
+            Submission {
+                image,
+                hash,
+                entry: JobEntry::Closure(request.closure),
+                budget: request.budget,
+                account: request.account,
+                serial: task_serial(0, n),
+            },
+            Reply::Completer(completer),
+        )
+    }
+
+    /// The main `Vm` has nothing to take over: its thread is not one of the pool's.
+    fn steal(&self, _key: u64) -> Option<StolenTask> {
+        None
+    }
+}
+
+/// The program and the serial of the task a worker is running.
+type RunningTask = Option<(Arc<ProgramImage>, u64, u64)>;
+
+/// What a worker submits through: the queue of the pool it belongs to, for the task it runs.
+pub(crate) struct WorkerLaunch {
+    shared: Arc<Shared>,
+    now: Rc<RefCell<RunningTask>>,
+    started: Rc<Cell<u64>>,
+}
+
+impl WorkerLaunch {
+    pub(crate) fn new(shared: Arc<Shared>) -> WorkerLaunch {
+        WorkerLaunch {
+            shared,
+            now: Rc::new(RefCell::new(None)),
+            started: Rc::new(Cell::new(0)),
+        }
+    }
+
+    /// The worker begins the task `serial` of `image`: tasks it starts are queued for the same
+    /// program.
+    pub(crate) fn enter(&self, image: &Arc<ProgramImage>, hash: u64, serial: u64) {
+        *self.now.borrow_mut() = Some((Arc::clone(image), hash, serial));
+        self.started.set(0);
+    }
+}
+
+impl WorkerLaunch {
+    /// The serial of the next task the running task starts: numbered from the running task's own
+    /// serial and from how many it has started. `None` outside of a task.
+    fn next_serial(&self) -> Option<u64> {
+        let parent = self.now.borrow().as_ref()?.2;
+        let n = self.started.get() + 1;
+        self.started.set(n);
+        Some(task_serial(parent, n))
+    }
+}
+
+impl TaskSpawner for WorkerLaunch {
+    fn spawn(
+        &self,
+        request: SpawnRequest,
+        completer: Completer<TaskOutcome>,
+    ) -> Result<u64, TaskFailure> {
+        let Some((image, hash, _)) = self.now.borrow().clone() else {
+            return Err(TaskFailure::Internal(
+                "a worker started a task outside of one".to_string(),
+            ));
+        };
+        let serial = self.next_serial().expect("checked above");
+        let key = self.shared.key();
+        self.shared.enqueue(Job {
+            key,
+            image,
+            hash,
+            entry: JobEntry::Closure(request.closure),
+            budget: request.budget,
+            account: request.account,
+            serial,
+            reply: Reply::Completer(completer),
+        })?;
+        Ok(key)
+    }
+
+    fn steal(&self, key: u64) -> Option<StolenTask> {
+        let stolen = self.shared.steal(key)?;
+        // One program per pool: a job of another program would run on an isolate built for this
+        // one.
+        debug_assert!(
+            self.now
+                .borrow()
+                .as_ref()
+                .is_none_or(|(_, hash, _)| *hash == stolen.hash),
+            "a task of another program was taken over"
+        );
+        Some(stolen)
+    }
+
+    /// The tasks that the task `serial` starts are numbered from it, and the counter of the task
+    /// that was running (the joiner, when `serial` runs inline in its join) comes back after.
+    fn enter_task(&self, serial: u64) -> Box<dyn FnOnce()> {
+        let was = self.now.borrow().clone();
+        let started = self.started.get();
+        if let Some((image, hash, _)) = &was {
+            *self.now.borrow_mut() = Some((Arc::clone(image), *hash, serial));
+        }
+        self.started.set(0);
+        let (now, counter) = (Rc::clone(&self.now), Rc::clone(&self.started));
+        Box::new(move || {
+            *now.borrow_mut() = was;
+            counter.set(started);
+        })
+    }
+}
+
 /// Decrements the count of live threads when the thread's loop ends, after its `Vm` is dropped.
 struct Alive<'a>(&'a PoolStats);
 
@@ -484,7 +727,7 @@ impl Drop for Alive<'_> {
 }
 
 /// The loop of a pool thread.
-fn worker_main(shared: &Shared, cfg: &WorkerCfg, stats: &PoolStats) {
+fn worker_main(shared: &Arc<Shared>, cfg: &WorkerCfg, stats: &PoolStats) {
     let _alive = Alive(stats);
     // The isolate of this thread, and the image it was built from.
     let mut isolate: Option<(Vm, Arc<ProgramImage>, u64)> = None;
@@ -510,11 +753,12 @@ fn worker_main(shared: &Shared, cfg: &WorkerCfg, stats: &PoolStats) {
         let Job {
             image,
             hash,
-            function,
-            args,
+            entry,
             budget,
             account,
+            serial,
             reply,
+            ..
         } = job;
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             let stale = match &isolate {
@@ -534,7 +778,7 @@ fn worker_main(shared: &Shared, cfg: &WorkerCfg, stats: &PoolStats) {
                 // The old isolate goes first: its program and its host state are freed before the
                 // new one is built.
                 isolate = None;
-                match Vm::build_worker(cfg, &image, hash, &shared.cancel) {
+                match Vm::build_worker(cfg, &image, hash, shared) {
                     Ok(vm) => {
                         stats.builds.fetch_add(1, Ordering::SeqCst);
                         failed = None;
@@ -550,7 +794,7 @@ fn worker_main(shared: &Shared, cfg: &WorkerCfg, stats: &PoolStats) {
             let Some((vm, _, _)) = isolate.as_mut() else {
                 return Err(TaskFailure::Internal("no worker".to_string()));
             };
-            vm.run_task(&function, args, budget, account)
+            vm.run_task(entry, budget, account, serial, (&image, hash))
         }));
         let result = match outcome {
             Ok(result) => result,
@@ -565,8 +809,7 @@ fn worker_main(shared: &Shared, cfg: &WorkerCfg, stats: &PoolStats) {
             }
         };
         stats.tasks.fetch_add(1, Ordering::SeqCst);
-        // The submitter may have dropped its handle (a detached task).
-        let _ = reply.send(result);
+        reply.send(result);
     }
 }
 
@@ -614,10 +857,13 @@ mod tests {
             .submit(Submission {
                 image,
                 hash: 0,
-                function: "f".to_string(),
-                args: Vec::new(),
+                entry: JobEntry::Call {
+                    function: "f".to_string(),
+                    args: Vec::new(),
+                },
                 budget: None,
                 account: (0, None),
+                serial: 0,
             })
             .unwrap_err();
         assert_eq!(
@@ -625,6 +871,40 @@ mod tests {
             TaskFailure::CannotStart(colibri_core::external::NO_THREADS.to_string())
         );
         assert_eq!(stats.started.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_tasks_a_task_starts_are_numbered_from_it_and_from_nothing_else() {
+        let shared = Arc::new(Shared {
+            queue: Mutex::new(Queue {
+                jobs: VecDeque::new(),
+                closed: false,
+            }),
+            wake: Condvar::new(),
+            next_key: AtomicU64::new(1),
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        let launch = WorkerLaunch::new(shared);
+        let image = Arc::new(ProgramImage {
+            files: MemoryFs::default(),
+            entry: OwnedEntry::File(PathBuf::from("a.colibri")),
+            cfg: BuildCfg::default(),
+            iface: Vec::new(),
+        });
+        assert_eq!(launch.next_serial(), None);
+        launch.enter(&image, 1, 100);
+        assert_eq!(launch.next_serial(), Some(task_serial(100, 1)));
+        assert_eq!(launch.next_serial(), Some(task_serial(100, 2)));
+        // A task that the worker runs next starts counting again.
+        launch.enter(&image, 1, 200);
+        assert_eq!(launch.next_serial(), Some(task_serial(200, 1)));
+        // A task run inline in a join numbers what it starts from its own serial, and the task that
+        // joined goes on where it was.
+        let back = launch.enter_task(300);
+        assert_eq!(launch.next_serial(), Some(task_serial(300, 1)));
+        assert_eq!(launch.next_serial(), Some(task_serial(300, 2)));
+        back();
+        assert_eq!(launch.next_serial(), Some(task_serial(200, 2)));
     }
 
     #[test]

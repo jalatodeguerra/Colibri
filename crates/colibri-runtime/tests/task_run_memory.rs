@@ -1,0 +1,477 @@
+//! Memory and `task.run` (phase 3 L18, ARCHITECTURE §35.1, §36.4): which account pays for the
+//! copies a task makes, and what the memory limit does to a task and to the program that joins
+//! it. This binary installs the counting allocator, as every host that counts memory must.
+
+use std::alloc::System;
+use std::io::Write;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use colibri_runtime as colibri;
+
+#[global_allocator]
+static ALLOC: colibri::CountingAlloc<System> = colibri::CountingAlloc(System);
+
+const MIB: u64 = 1 << 20;
+
+#[derive(Clone, Default)]
+struct Out(Arc<Mutex<Vec<u8>>>);
+
+impl Out {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl Write for Out {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A gate that a task blocks on until the test opens it (`gate_wait` in the task, `gate_open` in
+/// the program), giving up after half a minute so that a bug fails the test instead of hanging.
+#[derive(Clone)]
+struct Gate {
+    tx: mpsc::Sender<()>,
+    rx: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+fn vm_with(limit: Option<u64>, source: &str) -> (colibri::Vm, Out) {
+    vm_pool(1, limit, source)
+}
+
+thread_local! {
+    /// What `hold` keeps on this thread until `release`.
+    static HELD: std::cell::RefCell<Vec<Vec<u8>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Where the tasks that `meet` wait for each other: two of them, or a timeout.
+static MEETING: (Mutex<u32>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
+
+fn meet() -> i64 {
+    let (lock, cv) = &MEETING;
+    let mut here = lock.lock().unwrap();
+    *here += 1;
+    cv.notify_all();
+    let (here, timeout) = cv
+        .wait_timeout_while(here, Duration::from_secs(30), |n| *n < 2)
+        .unwrap();
+    drop(here);
+    i64::from(timeout.timed_out())
+}
+
+fn register_hold(vm: &mut colibri::Vm) {
+    vm.register_fn("hold", |bytes: i64| -> i64 {
+        HELD.with(|h| h.borrow_mut().push(vec![1_u8; bytes as usize]));
+        bytes
+    })
+    .unwrap();
+    vm.register_fn("release", || -> i64 {
+        HELD.with(|h| h.borrow_mut().clear());
+        0
+    })
+    .unwrap();
+    vm.register_fn("meet", meet).unwrap();
+}
+
+fn vm_pool(workers: usize, limit: Option<u64>, source: &str) -> (colibri::Vm, Out) {
+    let (tx, rx) = mpsc::channel();
+    let gate = Gate {
+        tx,
+        rx: Arc::new(Mutex::new(rx)),
+    };
+    let out = Out::default();
+    let mut builder = colibri::Vm::builder()
+        .worker_threads(workers)
+        .stdout_shared(Box::new(out.clone()));
+    if let Some(limit) = limit {
+        builder = builder.memory_limit(limit);
+    }
+    let wait = gate.clone();
+    let mut vm = builder
+        .worker_setup(move |vm| {
+            let rx = Arc::clone(&wait.rx);
+            vm.register_fn("gate_wait", move || -> i64 {
+                match rx.lock().unwrap().recv_timeout(Duration::from_secs(30)) {
+                    Ok(()) => 1,
+                    Err(_) => -1,
+                }
+            })
+            .unwrap();
+            register_hold(vm);
+        })
+        .build();
+    register_hold(&mut vm);
+    let rx = Arc::clone(&gate.rx);
+    vm.register_fn("gate_wait", move || -> i64 {
+        match rx.lock().unwrap().recv_timeout(Duration::from_secs(30)) {
+            Ok(()) => 1,
+            Err(_) => -1,
+        }
+    })
+    .unwrap();
+    vm.register_fn("gate_open", move || gate.tx.send(()).is_ok())
+        .unwrap();
+    vm.load_source("task_memory.colibri", source).unwrap();
+    (vm, out)
+}
+
+#[test]
+fn a_closure_too_big_to_copy_is_the_senders_memory_limit_not_a_failure_to_send() {
+    let (mut vm, _out) = vm_with(
+        Some(8 * MIB),
+        r#"
+fn main() {
+    let mut items: List[int] = []
+    for i in 0..200_000 {
+        items.push(i)
+    }
+    // The list is 3 MiB; its copy is counted at more than what is left of the limit.
+    let t = task.run(fn() => items.len())
+    print("not reached {t.done()}")
+}
+"#,
+    );
+    let err = vm.run_main().unwrap_err();
+    assert!(
+        matches!(err, colibri::Error::MemoryLimit { limit, .. } if limit == 8 * MIB),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_task_that_passes_the_memory_limit_is_an_err_to_the_joiner_and_main_goes_on() {
+    let (mut vm, out) = vm_with(
+        Some(8 * MIB),
+        r#"
+fn hog() -> int {
+    let mut xs: List[int] = []
+    for i in 0..4_000_000 {
+        xs.push(i)
+    }
+    return xs.len()
+}
+
+fn main() {
+    match task.run(hog).join() {
+        ok(v) => print("value {v}")
+        err(e) => print("err: {e}")
+    }
+    print("main goes on: {task.run(fn() => 3).join().expect("small")}")
+}
+"#,
+    );
+    vm.run_main().unwrap();
+    assert_eq!(
+        out.text(),
+        "err: the task `hog` failed: memory limit of 8 MiB exceeded\nmain goes on: 3\n"
+    );
+    // What the failed task held was freed on its thread and credited to the same account.
+    assert!(
+        vm.memory_used().unwrap() < 4 * MIB,
+        "{:?}",
+        vm.memory_used()
+    );
+}
+
+#[test]
+fn a_result_that_does_not_fit_the_joiners_limit_is_the_joiners_memory_limit() {
+    // The task runs under the limit of the moment it was started; the program lowers its own
+    // before it joins, so the result that the worker could send does not fit when it is
+    // received: the joiner's limit failed, and it is not a failure to send.
+    let (mut vm, _out) = vm_with(
+        Some(64 * MIB),
+        r#"
+let mut pending: Task[List[int]]? = none
+
+fn ints() -> List[int] {
+    let mut xs: List[int] = []
+    for i in 0..200_000 {
+        xs.push(i)
+    }
+    gate_wait()
+    return xs
+}
+
+fn start() {
+    pending = some(task.run(ints))
+}
+
+fn finish() -> int {
+    let t = pending.expect("started")
+    pending = none
+    gate_open()
+    return t.join().expect("the task").len()
+}
+"#,
+    );
+    let start = vm.get_fn::<(), ()>("start").unwrap();
+    start.call(&mut vm, ()).unwrap();
+    vm.set_memory_limit(Some(2 * MIB));
+    let finish = vm.get_fn::<(), i64>("finish").unwrap();
+    let err = finish.call(&mut vm, ()).unwrap_err();
+    assert!(
+        matches!(err, colibri::Error::MemoryLimit { limit, .. } if limit == 2 * MIB),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn what_a_task_receives_is_credited_to_the_senders_account_when_it_is_freed() {
+    // The closure's portable form is made on this thread, freed on the worker's (the rebuild
+    // takes it), and the rebuilt copy dies on the worker: both go back to the account that was
+    // charged, and the program's count is what it was.
+    let (mut vm, _out) = vm_with(
+        None,
+        r#"
+let mut pending: Task[int]? = none
+
+fn start(n: int) {
+    let blob = "x".pad_left(n)
+    pending = some(task.run(fn() -> int {
+        let size = blob.len()
+        gate_wait()
+        return size
+    }))
+}
+
+fn finish() -> int {
+    let t = pending.expect("started")
+    pending = none
+    gate_open()
+    return t.join().expect("the task")
+}
+"#,
+    );
+    let start = vm.get_fn::<(i64,), ()>("start").unwrap();
+    let finish = vm.get_fn::<(), i64>("finish").unwrap();
+    // Warm the worker up (its program and compiled code stay charged to the parent).
+    start.call(&mut vm, (1,)).unwrap();
+    assert_eq!(finish.call(&mut vm, ()).unwrap(), 1);
+    let before = vm.memory_used().expect("the allocator is installed");
+    start.call(&mut vm, (8 * MIB as i64,)).unwrap();
+    // The task holds a copy of its own, and the program holds the string it copied from: the
+    // portable form between them was freed as soon as the worker had rebuilt the closure.
+    let during = vm.memory_used().unwrap();
+    eprintln!("receiver memory: before {before}, during {during}");
+    assert!(during >= before + 8 * MIB, "{before} -> {during}");
+    assert_eq!(finish.call(&mut vm, ()).unwrap(), 8 * MIB as i64);
+    let after = vm.memory_used().unwrap();
+    assert!(after < before + MIB, "{before} -> {after}");
+}
+
+#[test]
+fn a_task_is_rebuilt_while_its_portable_form_is_freed_so_the_peak_is_not_double() {
+    // 2000 distinct strings of 4 KiB are about 8 MiB. While the task is received the program
+    // still holds the strings (one copy), the portable form is the second, and the rebuilt
+    // closure the third: held to the end that is three copies, freed as it is rebuilt it is two
+    // and a node. A limit of 2.4 copies lets the second pass and the first fail.
+    let (mut vm, _out) = vm_with(
+        None,
+        r#"
+fn run_big(n: int) -> int {
+    let mut big: List[str] = []
+    for i in 0..n {
+        big.push("{i}".pad_left(4096))
+    }
+    let t = task.run(fn() -> int { return big.len() })
+    let got = t.join().expect("the task")
+    return got + big.len()
+}
+"#,
+    );
+    let go = vm.get_fn::<(i64,), i64>("run_big").unwrap();
+    // Warm the worker up, so that its program is not part of what is measured.
+    assert_eq!(go.call(&mut vm, (4,)).unwrap(), 8);
+    let before = vm.memory_used().expect("the allocator is installed");
+    let copy = 2000 * 4096_u64;
+    let limit = before + copy * 12 / 5 + MIB;
+    eprintln!("rebuild peak: before {before}, copy {copy}, limit {limit}");
+    vm.set_memory_limit(Some(limit));
+    assert_eq!(go.call(&mut vm, (2000,)).unwrap(), 4000);
+}
+
+#[test]
+fn a_closure_that_does_not_fit_when_the_worker_rebuilds_it_is_a_memory_limit_failure() {
+    // The closure is copied under the limit; before the worker (busy with another task) takes it,
+    // the program fills the room that was left, so the rebuild is what passes the limit. It is the
+    // task's memory limit, an `err` to the joiner, and not a failure to copy.
+    let (mut vm, _out) = vm_with(
+        None,
+        r#"
+let mut first: Task[int]? = none
+let mut second: Task[int]? = none
+let mut filler: List[str] = []
+
+fn start(n: int) {
+    let blob = "x".pad_left(n)
+    first = some(task.run(fn() -> int { return gate_wait() }))
+    second = some(task.run(fn() -> int { return blob.len() }))
+}
+
+fn fill(n: int) {
+    filler.push("{filler.len()}".pad_left(n))
+}
+
+fn finish() -> str {
+    gate_open()
+    let t = second.expect("started")
+    second = none
+    match t.join() {
+        ok(v) => return "ok {v}"
+        err(e) => return e.message()
+    }
+}
+"#,
+    );
+    let start = vm.get_fn::<(i64,), ()>("start").unwrap();
+    let fill = vm.get_fn::<(i64,), ()>("fill").unwrap();
+    let finish = vm.get_fn::<(), String>("finish").unwrap();
+    let before = vm.memory_used().unwrap();
+    let copy = 4 * MIB;
+    let limit = before + 2 * copy + MIB;
+    vm.set_memory_limit(Some(limit));
+    start.call(&mut vm, (copy as i64,)).unwrap();
+    // The program's own string is gone; the copy waits in the queue. Fill the room, in steps
+    // that are a quarter of what is left, until less than a few KiB remain.
+    loop {
+        let room = limit - vm.memory_used().unwrap();
+        if room < 8192 {
+            break;
+        }
+        fill.call(&mut vm, ((room / 4) as i64,)).unwrap();
+    }
+    let message = finish.call(&mut vm, ()).unwrap();
+    assert!(
+        message.contains("failed: memory limit of") && message.ends_with("exceeded"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_task_run_inline_has_a_memory_limit_state_of_its_own() {
+    // `hog` passes the limit and fails; `outer`, which joined it, is not in the grace state
+    // because of that: its own breach later is its first, and its `defer` runs. The same on a
+    // pool of one (`hog` runs inline in the join) and of three.
+    let source = r#"
+fn hog() -> int {
+    let mut xs: List[int] = []
+    while true {
+        xs.push(1)
+    }
+    return 0
+}
+
+fn outer() -> int {
+    defer print("outer cleanup")
+    match task.run(hog).join() {
+        ok(_) => print("b ok")
+        err(e) => print("b err: {e}")
+    }
+    let mut ys: List[int] = []
+    while true {
+        ys.push(1)
+    }
+    return 0
+}
+
+fn main() {
+    match task.run(outer).join() {
+        ok(v) => print("outer {v}")
+        err(e) => print("outer err: {e}")
+    }
+}
+"#;
+    let want = "b err: the task `hog` failed: memory limit of 8 MiB exceeded\nouter cleanup\nouter err: the task `outer` failed: memory limit of 8 MiB exceeded\n";
+    for workers in [1, 3] {
+        for _ in 0..3 {
+            let (mut vm, out) = vm_pool(workers, Some(8 * MIB), source);
+            vm.run_main().unwrap();
+            assert_eq!(out.text(), want, "{workers} workers");
+        }
+    }
+}
+
+#[test]
+fn nested_tasks_count_into_the_total_of_the_vm() {
+    // Each of two tasks holds 6 MiB at the same time under a limit of 10 MiB. Started by the
+    // program they fail alike, one of them; started by two tasks they must not escape the total.
+    let direct = r#"
+fn work() -> str {
+    defer release()
+    hold(6 * 1024 * 1024)
+    if meet() != 0 {
+        return "no meeting"
+    }
+    let mut s = 0
+    for i in 0..100000 {
+        s += i
+    }
+    return "ok"
+}
+
+fn answer(t: Task[str]) -> str {
+    match t.join() {
+        ok(v) => return v
+        err(e) => return e.message()
+    }
+}
+
+fn main() {
+    let a = task.run(work)
+    let b = task.run(work)
+    print("{answer(a)}")
+    print("{answer(b)}")
+}
+"#;
+    let nested = r#"
+fn work() -> str {
+    defer release()
+    hold(6 * 1024 * 1024)
+    if meet() != 0 {
+        return "no meeting"
+    }
+    let mut s = 0
+    for i in 0..100000 {
+        s += i
+    }
+    return "ok"
+}
+
+fn answer(t: Task[str]) -> str {
+    match t.join() {
+        ok(v) => return v
+        err(e) => return e.message()
+    }
+}
+
+fn outer() -> str {
+    return answer(task.run(work))
+}
+
+fn main() {
+    let a = task.run(outer)
+    let b = task.run(outer)
+    print("{a.join().expect("a")}")
+    print("{b.join().expect("b")}")
+}
+"#;
+    for (name, source) in [("direct", direct), ("nested", nested)] {
+        let (mut vm, out) = vm_pool(4, Some(10 * MIB), source);
+        vm.run_main().unwrap();
+        let text = out.text();
+        assert!(
+            text.contains("memory limit of 10 MiB exceeded"),
+            "{name}: both tasks held 6 MiB and none failed: {text}"
+        );
+        assert!(!text.contains("no meeting"), "{name}: {text}");
+        // MEETING is process-wide: start the next program from zero.
+        *MEETING.0.lock().unwrap() = 0;
+    }
+}

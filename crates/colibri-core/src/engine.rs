@@ -178,4 +178,15 @@ pub trait Engine: Sized {
     /// suspended coroutines, so this is a broken invariant: the coroutine ends as a failure with
     /// an internal error.
     fn resume_stack(&mut self, id: u64, slot: EngineSlot, cancel: bool) -> Resumed;
+
+    /// `t.done()` and `t.try_join()` of a thread task. The result of a task is rebuilt on a walk
+    /// stack, which only an engine can map, so an engine that runs thread tasks does this; one
+    /// that does not has no `Task` to ask.
+    fn task_builtin(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        op: colibri_check::hir::Builtin,
+        recv: &Value,
+        span: Span,
+    ) -> Eval;
 }

@@ -103,6 +103,7 @@ impl Core {
             || obj.ty() == colibri_check::types::COROUTINE_TYPE
             || obj.ty() == colibri_check::types::COGROUP_TYPE
             || obj.ty() == colibri_check::types::SIGNAL_TYPE
+            || obj.ty() == colibri_check::types::TASK_TYPE
             || obj.ty() == colibri_check::types::STR_BUILDER_TYPE
         {
             return;
@@ -199,6 +200,9 @@ pub trait Release: Engine {
                 if rc.ty() == colibri_check::types::COGROUP_TYPE {
                     // The group dies: its coroutines are cancelled, newest first.
                     self.group_died(&rc);
+                } else if let Some(op) = crate::taskrun::task_op_of(&rc) {
+                    // The handle of a thread task dies: the task is detached.
+                    self.core_mut().task_died(op);
                 }
                 // The `Drop` hook runs first; if it stores the object somewhere, the object
                 // lives on and dies (without a second hook) when that reference does.
@@ -502,6 +506,15 @@ mod tests {
         fn release_temps(&mut self, _: &mut FiberState, _: usize) {}
         fn resume_stack(&mut self, _: u64, _: EngineSlot, _: bool) -> Resumed {
             Resumed::Gone
+        }
+        fn task_builtin(
+            &mut self,
+            _: &mut FiberState,
+            _: colibri_check::hir::Builtin,
+            _: &Value,
+            _: Span,
+        ) -> Eval {
+            unreachable!("no task runs in these tests")
         }
     }
 

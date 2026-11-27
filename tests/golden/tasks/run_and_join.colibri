@@ -1,0 +1,57 @@
+// A thread task runs its closure on a worker thread. The closure runs on a copy of what it
+// captures, and `join` gives its result as a `Result` (DESIGN §14.1).
+struct Point {
+    x: int
+    y: int
+}
+
+fn square(n: int) -> int => n * n
+
+fn total(points: List[Point]) -> int {
+    let mut sum = 0
+    for p in points {
+        sum += p.x * p.y
+    }
+    return sum
+}
+
+fn main() -> Result[()] {
+    // A function name is a closure too.
+    let a = task.run(fn() => square(9))
+    let n = 7
+    let b = task.run(fn() => square(n) + 1)
+    print("started")
+    print("a = {a.join()?}")
+    print("b = {b.join()?}")
+
+    // Structured values cross as copies, in both directions.
+    let points = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+    let t = task.run(fn() => total(points))
+    points.push(Point { x: 5, y: 6 })
+    print("total = {t.join()?}, the list has {points.len()}")
+
+    let words = ["alpha", "beta"]
+    let up = task.run(fn() -> List[str] {
+        let mut out = []
+        for w in words {
+            out.push(w.to_upper())
+        }
+        return out
+    })
+    print("{up.join()?}")
+
+    // A task can return a result of its own.
+    let r = task.run(fn() -> Result[int] => err("no luck"))
+    match r.join()? {
+        ok(v) => print("value {v}")
+        err(e) => print("inner error: {e}")
+    }
+    return ok(())
+}
+
+// expect: started
+// expect: a = 81
+// expect: b = 50
+// expect: total = 14, the list has 3
+// expect: ["ALPHA", "BETA"]
+// expect: inner error: no luck

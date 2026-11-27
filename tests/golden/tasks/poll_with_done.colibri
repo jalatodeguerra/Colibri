@@ -1,0 +1,45 @@
+// `done` and `try_join` poll without waiting. A program with its own loop drives the scheduler
+// with `task.tick`; here the main fiber just waits for the worker to finish.
+fn slow(n: int) -> int {
+    let mut sum = 0
+    for i in 0..n {
+        sum += i
+    }
+    return sum
+}
+
+fn main() -> Result[()] {
+    let t = task.run(fn() => slow(200000))
+    // `done` turns true once the worker has finished, however long that takes.
+    let mut spins = 0
+    while !t.done() {
+        spins += 1
+        wait(0.001)
+    }
+    print("done: {t.done()}")
+    let first = t.try_join()
+    match first {
+        some(r) => print("try_join: {r?}")
+        none => print("try_join: not ready")
+    }
+    // The result is taken once.
+    print("again: {t.done()}")
+    match t.try_join() {
+        some(r) => match r {
+            ok(v) => print("again gave {v}")
+            err(e) => print("again: {e}")
+        }
+        none => print("not ready")
+    }
+    match t.join() {
+        ok(v) => print("joined {v}")
+        err(e) => print("join: {e}")
+    }
+    return ok(())
+}
+
+// expect: done: true
+// expect: try_join: 19999900000
+// expect: again: true
+// expect: again: the task `<closure in main>` was joined already: its result can be taken once
+// expect: join: the task `<closure in main>` was joined already: its result can be taken once

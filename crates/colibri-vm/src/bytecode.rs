@@ -944,6 +944,8 @@ pub enum JoinKind {
     Join,
     JoinResult,
     JoinAll,
+    /// `join` of a thread task (`Task[T]`), which waits for a worker thread.
+    Task,
 }
 
 /// One range of instructions and the landing pad a panic inside it goes to.

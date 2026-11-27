@@ -1757,7 +1757,11 @@ impl Machine {
             Intrinsic::NewSignal => {
                 Ok(self.new_scheduler_object(colibri_check::types::SIGNAL_TYPE))
             }
-            Intrinsic::TaskRun | Intrinsic::NewChannel | Intrinsic::NewShared => {
+            Intrinsic::TaskRun => {
+                let f = std::mem::replace(&mut fiber.regs[args.start], Value::Unit);
+                self.task_run(fiber, f, span)
+            }
+            Intrinsic::NewChannel | Intrinsic::NewShared => {
                 Err(self.panic(fiber, span, colibri_core::THREADS_NOT_BUILT))
             }
             Intrinsic::HostAlive => Ok(Value::Bool(match &fiber.regs[args.start] {

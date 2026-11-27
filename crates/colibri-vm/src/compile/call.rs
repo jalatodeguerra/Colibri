@@ -617,13 +617,17 @@ impl FnCompiler<'_> {
                 }
             }
             // `join`, `join_result` and `join_all` pause the running coroutine (or drive the
-            // event loop, on the main fiber).
-            Builtin::CoroutineJoin | Builtin::CoroutineJoinResult | Builtin::CoGroupJoinAll
+            // event loop, on the main fiber); so does the `join` of a thread task.
+            Builtin::CoroutineJoin
+            | Builtin::CoroutineJoinResult
+            | Builtin::CoGroupJoinAll
+            | Builtin::TaskJoin
                 if args.len() == 1 =>
             {
                 let kind = match b {
                     Builtin::CoroutineJoin => JoinKind::Join,
                     Builtin::CoroutineJoinResult => JoinKind::JoinResult,
+                    Builtin::TaskJoin => JoinKind::Task,
                     _ => JoinKind::JoinAll,
                 };
                 let d = match dst {

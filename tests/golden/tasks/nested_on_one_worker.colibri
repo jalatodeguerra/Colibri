@@ -1,0 +1,24 @@
+// workers: 1
+// A pool of one thread cannot run a task and, at the same time, the task it waits for. The worker
+// that joins a task nobody has started runs it itself, so nested tasks cannot deadlock: three
+// levels here, each level waiting for the next.
+fn leaf(n: int) -> int => n * 10
+
+fn middle(n: int) -> int {
+    let a = task.run(fn() => leaf(n))
+    let b = task.run(fn() => leaf(n + 1))
+    return a.join().expect("a") + b.join().expect("b")
+}
+
+fn top() -> int {
+    let x = task.run(fn() => middle(1))
+    let y = task.run(fn() => middle(5))
+    return x.join().expect("x") * 1000 + y.join().expect("y")
+}
+
+fn main() -> Result[()] {
+    print("top = {task.run(top).join()?}")
+    return ok(())
+}
+
+// expect: top = 30110

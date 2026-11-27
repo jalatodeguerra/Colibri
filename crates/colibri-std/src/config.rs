@@ -281,8 +281,9 @@ pub type Factory<T> = std::sync::Arc<dyn Fn() -> T + Send + Sync>;
 /// What a worker does not share with the main thread: standard input (a worker reads an empty
 /// one, so it never competes with `main` or a debug adapter for the host's input), and the
 /// state a program changes while it runs (`os.set_env`, the generator's position, a manual
-/// clock's time): each worker has its own. Its seed is the main one's with the worker's number
-/// mixed in, so two workers do not repeat each other.
+/// clock's time): each worker has its own. A task's random numbers do not depend on the worker
+/// that runs it: each task starts a generator of its own, seeded from the main seed and the task's
+/// serial number (see [`task_seed`]), so two tasks do not repeat each other and a run repeats.
 #[derive(Clone)]
 pub struct WorkerStd {
     args: Vec<String>,
@@ -294,7 +295,6 @@ pub struct WorkerStd {
     clock: Factory<Box<dyn Clock>>,
     assets: Option<Factory<Box<dyn crate::AssetSource>>>,
     stderr: Option<Factory<Box<dyn std::io::Write>>>,
-    built: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl WorkerStd {
@@ -311,7 +311,6 @@ impl WorkerStd {
             clock: std::sync::Arc::new(|| Box::new(SystemClock::new())),
             assets: None,
             stderr: None,
-            built: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -339,14 +338,16 @@ impl WorkerStd {
         self
     }
 
-    /// The seed of the next worker: the main seed with the worker's number mixed in; `None` (a
-    /// seed from the clock) stays `None`.
-    fn next_seed(&self) -> Option<u64> {
-        let n = self
-            .built
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-        self.seed.map(|s| s ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+    /// The main seed, which every task's own seed is derived from; `None` (a seed from the clock)
+    /// leaves the generator alone.
+    pub(crate) fn seed(&self) -> Option<u64> {
+        self.seed
+    }
+
+    /// What makes a worker's clock: each task starts with a clock made afresh, so that what a task
+    /// reads from it does not depend on what the worker ran before.
+    pub(crate) fn clock_factory(&self) -> Factory<Box<dyn Clock>> {
+        std::sync::Arc::clone(&self.clock)
     }
 
     /// The configuration of one worker `Vm`.
@@ -356,7 +357,7 @@ impl WorkerStd {
             args: self.args.clone(),
             env: self.env.clone(),
             temp_dir: self.temp_dir.clone(),
-            seed: self.next_seed(),
+            seed: self.seed,
             stdin: Some(Box::new(std::io::empty())),
             local_offset: self.local_offset,
             assets: self.assets.as_ref().map(|make| make()),
@@ -368,6 +369,12 @@ impl WorkerStd {
     pub(crate) fn stderr(&self) -> Option<Box<dyn std::io::Write>> {
         self.stderr.as_ref().map(|make| make())
     }
+}
+
+/// The seed of the generator that the task with this serial number draws from, given the main
+/// seed: the same on every run, whichever worker runs the task.
+pub(crate) fn task_seed(main: u64, serial: u64) -> u64 {
+    main ^ serial.wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
 /// The configuration plus what the modules change while a program runs. It is the host state
@@ -431,25 +438,25 @@ mod tests {
             ..StdConfig::default()
         };
         let worker = WorkerStd::from_config(&main).with_clock(|| Box::new(ManualClock::new(5.0)));
-        let (first, second) = (worker.config(), worker.config());
-        for config in [&first, &second] {
-            assert_eq!(config.args, ["a"]);
-            assert!(matches!(&config.env, EnvSource::Fixed(m) if m["K"] == "v"));
-            assert_eq!(config.temp_dir, Some(PathBuf::from("/tmp/t")));
-            assert_eq!(config.local_offset, Some(3600));
-        }
+        let first = worker.config();
+        assert_eq!(first.args, ["a"]);
+        assert!(matches!(&first.env, EnvSource::Fixed(m) if m["K"] == "v"));
+        assert_eq!(first.temp_dir, Some(PathBuf::from("/tmp/t")));
+        assert_eq!(first.local_offset, Some(3600));
         // The worker's clock is the one the host chose.
         let mut clock = first.clock;
         assert_eq!(clock.unix_seconds(), 5.0);
         // A worker never reads the main thread's input: it has an empty one of its own.
         let mut line = String::new();
         assert_eq!(first.stdin.unwrap().read_line(&mut line).unwrap(), 0);
-        // Each worker has a seed of its own, derived from the main one; an unseeded one stays so.
-        assert!(first.seed.is_some() && second.seed.is_some());
-        assert_ne!(first.seed, second.seed);
-        assert_ne!(first.seed, Some(7));
+        // The seed a task draws from depends on the main seed and the task's serial number, and
+        // on nothing else: not on the worker, not on how many workers were built.
+        assert_eq!(worker.seed(), Some(7));
+        assert_eq!(task_seed(7, 3), task_seed(7, 3));
+        assert_ne!(task_seed(7, 3), task_seed(7, 4));
+        assert_ne!(task_seed(7, 3), task_seed(8, 3));
         let unseeded = WorkerStd::from_config(&StdConfig::default());
-        assert_eq!(unseeded.config().seed, None);
+        assert_eq!(unseeded.seed(), None);
     }
 
     #[test]

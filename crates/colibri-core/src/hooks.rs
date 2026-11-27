@@ -17,6 +17,8 @@ use crate::value::Value;
 pub enum Stop {
     /// The values nest too deeply for the native stack.
     TooDeep,
+    /// A `Task` handle has one owner: it cannot be copied.
+    Task,
     /// A user-written method panicked.
     Ctl(Box<Ctl>),
 }

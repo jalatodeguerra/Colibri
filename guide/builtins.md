@@ -16,6 +16,7 @@ An optional result, `T?`, is `none` when there is nothing to return.
 - [`Bytes` and `BytesBuilder`](#bytes-and-bytesbuilder)
 - [Optionals, `Result` and `Error`](#optionals-result-and-error)
 - [`Coroutine`, `CoGroup` and `Signal`](#coroutine-cogroup-and-signal)
+- [`Task`](#task)
 
 ## Functions you can always call
 
@@ -531,4 +532,34 @@ fn main() {
 true
 2
 woken
+```
+
+## `Task`
+
+`task.run(f)` runs the closure `f` on a worker thread and gives a `Task[T]`, where `T` is what `f`
+returns (see [thread tasks](tour.md#thread-tasks)). The closure runs on a copy of what it captures:
+a write to a captured `let mut` inside it is lost.
+
+| Type | Method | What it does |
+|------|--------|--------------|
+| `Task[T]` | `join() -> Result[T]` | wait for the result; a panic, or a failure of the instruction budget or the memory limit, in the task is an `err`; the result can be taken once |
+| `Task[T]` | `done() -> bool` | whether the task has ended |
+| `Task[T]` | `try_join() -> Result[T]?` | the result if the task has ended, `none` if not; it does not wait |
+
+```colibri
+fn work(n: int) -> int {
+    return n * 2
+}
+
+fn main() -> Result[()] {
+    let t = task.run(fn() => work(21))
+    print(t.join()?)
+    print(t.done())
+    return ok(())
+}
+```
+
+```output
+42
+true
 ```

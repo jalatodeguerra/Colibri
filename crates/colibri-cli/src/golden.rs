@@ -47,6 +47,10 @@ pub struct Directives {
     /// `// caps: fs, os`: the capabilities the test's `Vm` grants (the default is none). Read
     /// from the file that starts the program.
     pub caps: Vec<String>,
+    /// `// workers: 1`: the size of the pool that runs thread tasks (the default is one thread
+    /// per core, which makes a golden's output depend on the machine only when it should not).
+    /// Read from the file that starts the program.
+    pub workers: Option<usize>,
     /// `// features: net, audio`: the feature flags the test's `Vm` turns on for `@when`.
     /// Read from the file that starts the program.
     pub features: Vec<String>,
@@ -184,6 +188,14 @@ pub fn parse_directives(source: &str) -> Directives {
                         None => d.features.push(name.to_string()),
                     }
                 }
+            } else if let Some(v) = comment.strip_prefix("workers:") {
+                match v.trim().parse::<usize>() {
+                    Ok(n) if n > 0 => d.workers = Some(n),
+                    _ => d.malformed.push(format!(
+                        "line {}: `// workers:` needs a number of threads, 1 or more",
+                        i + 1
+                    )),
+                }
             } else if let Some(v) = comment.strip_prefix("caps:") {
                 d.caps.extend(
                     v.split(',')
@@ -260,6 +272,7 @@ pub fn run_golden(path: &Path, source: &str) -> Outcome {
         &name,
         &d.caps,
         &d.features,
+        d.workers,
     )
 }
 
@@ -276,6 +289,7 @@ pub fn run_golden_package(dir: &Path) -> Outcome {
         "",
         &d.caps,
         &d.features,
+        d.workers,
     )
 }
 
@@ -410,6 +424,7 @@ fn golden_vm(
     temp: &Path,
     caps: &[String],
     features: &[String],
+    workers: Option<usize>,
 ) -> (colibri::Vm, FakeClock) {
     // What a thread task's worker sees of the world is what `main` sees.
     let worker_std = hermetic_worker_std(temp);
@@ -426,6 +441,9 @@ fn golden_vm(
             colibri_std::install_worker(worker, &worker_std)
                 .expect("the standard library registers into a new Vm");
         });
+    if let Some(n) = workers {
+        builder = builder.worker_threads(n);
+    }
     for feature in features {
         builder = builder.feature(feature);
     }
@@ -450,7 +468,7 @@ pub fn hermetic_vm(out: &colibri::SyncBuffer) -> (colibri::Vm, impl Drop) {
         .iter()
         .map(|c| c.name().to_string())
         .collect();
-    let (mut vm, _clock) = golden_vm(out, &temp.0, &caps, &[]);
+    let (mut vm, _clock) = golden_vm(out, &temp.0, &caps, &[], None);
     colibri_std::install_with(&mut vm, hermetic_std(&temp.0))
         .expect("the standard library registers into a new Vm");
     (vm, temp)
@@ -462,10 +480,11 @@ fn run_with(
     blank: &str,
     caps: &[String],
     features: &[String],
+    workers: Option<usize>,
 ) -> Outcome {
     let out = colibri::SyncBuffer::new();
     let temp = TempFolder::new();
-    let (mut vm, clock) = golden_vm(&out, &temp.0, caps, features);
+    let (mut vm, clock) = golden_vm(&out, &temp.0, caps, features, workers);
     if count_rc_forced() {
         vm.start_rc_profile();
     }
@@ -588,6 +607,7 @@ impl PackageDirectives {
             if path == "main.colibri" || path.is_empty() {
                 d.caps = files.caps.clone();
                 d.features = files.features.clone();
+                d.workers = files.workers;
             } else {
                 // Every directive that is about the run as a whole counts in main.colibri
                 // alone: say so instead of ignoring it.
@@ -595,6 +615,7 @@ impl PackageDirectives {
                     ("only", files.only.is_some()),
                     ("caps", !files.caps.is_empty()),
                     ("features", !files.features.is_empty()),
+                    ("workers", files.workers.is_some()),
                 ] {
                     if present {
                         d.malformed.push(format!(
@@ -637,6 +658,7 @@ pub fn check(d: &Directives, outcome: &Outcome) -> Result<(), String> {
         malformed: d.malformed.clone(),
         caps: d.caps.clone(),
         features: d.features.clone(),
+        workers: d.workers,
         allow_unused: d.allow_unused,
     };
     check_package(
@@ -847,6 +869,27 @@ fn finish(problems: Vec<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_workers_directive_sets_the_size_of_the_pool() {
+        let d = parse_directives("// workers: 1\nfn main() {}\n");
+        assert_eq!(d.workers, Some(1));
+        assert!(d.malformed.is_empty());
+        let d = parse_directives("// workers: 3\nfn main() {}\n");
+        assert_eq!(d.workers, Some(3));
+        for bad in ["// workers: 0", "// workers: many", "// workers:"] {
+            let d = parse_directives(&format!("{bad}\nfn main() {{}}\n"));
+            assert_eq!(d.workers, None, "{bad}");
+            assert_eq!(d.malformed.len(), 1, "{bad}");
+        }
+        // And what it says reaches the `Vm`.
+        let out = colibri::SyncBuffer::new();
+        let temp = TempFolder::new();
+        for want in [1, 3] {
+            let (vm, _clock) = golden_vm(&out, &temp.0, &[], &[], Some(want));
+            assert_eq!(vm.worker_pool_size(), want);
+        }
+    }
 
     fn compiled(stdout: &str, panic: Option<&str>) -> Outcome {
         Outcome::Compiled {

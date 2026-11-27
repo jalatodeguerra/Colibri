@@ -222,6 +222,14 @@ pub trait Sched: Engine {
             return;
         }
         let entry = self.core_mut().begin_entry();
+        self.cancel_coroutines_since(first);
+        self.core_mut().end_entry(entry, false);
+    }
+
+    /// Cancels the suspended coroutines with an id of `first` or more, newest first, whether or
+    /// not a coroutine is running (a task that its joiner ran inline leaves some behind, and the
+    /// joiner may be a coroutine itself).
+    fn cancel_coroutines_since(&mut self, first: u64) {
         // A `defer` or a `Drop` hook that runs during a cancel may start coroutines, which are
         // cancelled in turn; a few rounds are enough for any program that is not building them
         // forever.
@@ -242,7 +250,6 @@ pub trait Sched: Engine {
                 self.cancel_id(id);
             }
         }
-        self.core_mut().end_entry(entry, false);
     }
 
     // ---- driving the scheduler from the main fiber ----
@@ -475,6 +482,7 @@ pub(crate) trait SchedInternal: Engine {
         }
         let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
         s.in_tick = true;
+        s.ticks += 1;
         s.ext.drain();
         s.time += dt;
         s.frame += 1;
@@ -497,7 +505,9 @@ pub(crate) trait SchedInternal: Engine {
         for i in 0..count {
             let s = &mut self.core_mut().sched;
             let e = &s.entries[i];
-            if e.state != State::Suspended || e.ticked == s.frame {
+            // (`frame` also moves in a nested tick, so the guard compares with this tick's own: a
+            // coroutine resumed from the signalled queue may lie after this index.)
+            if e.state != State::Suspended || e.ticked == frame || e.id < s.floor {
                 continue;
             }
             let due = match &e.wake {
@@ -520,7 +530,12 @@ pub(crate) trait SchedInternal: Engine {
         }
         let s = &mut self.core_mut().sched;
         s.in_tick = false;
-        s.compact();
+        s.ticks -= 1;
+        // A tick that a task run inline in a coroutine's join makes, inside the tick that resumed
+        // that coroutine, must leave the entries where they are: the outer loop goes on by index.
+        if s.ticks == 0 {
+            s.compact();
+        }
         Ok(())
     }
 

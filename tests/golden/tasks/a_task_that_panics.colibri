@@ -1,0 +1,44 @@
+// A panic in a task is not a panic of the program: `join` gives an `err` that says which task
+// panicked and why, and its cause is the stack of the task.
+fn explode(n: int) -> int {
+    let xs = [1, 2, 3]
+    return xs[n]
+}
+
+fn named() -> int {
+    panic("from a named function")
+}
+
+fn main() -> Result[()] {
+    let t = task.run(fn() => explode(7))
+    match t.join() {
+        ok(v) => print("value {v}")
+        err(e) => {
+            print("message: {e.message()}")
+            // The cause is the stack of the task, a frame to a line, innermost first. The
+            // file names depend on where the program is, so only the functions are shown.
+            match e.cause() {
+                some(trace) => {
+                    for frame in "{trace}".split("\n") {
+                        print("frame: {frame.split(" ")[0]}")
+                    }
+                }
+                none => print("no trace")
+            }
+        }
+    }
+    match task.run(named).join() {
+        ok(v) => print("value {v}")
+        err(e) => print("named: {e.message()}")
+    }
+    // The program goes on.
+    let fine = task.run(fn() => 5)
+    print("after: {fine.join()?}")
+    return ok(())
+}
+
+// expect: message: the task `<closure in main>` panicked: index 7 out of bounds for list of length 3
+// expect: frame: explode
+// expect: frame: <closure
+// expect: named: the task `named` panicked: from a named function
+// expect: after: 5

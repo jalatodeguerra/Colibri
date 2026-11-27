@@ -16,6 +16,14 @@ codegen-units = 1
 # No symbols: every built program carries a copy of `colibri`, so its size counts.
 strip = true
 
+# The editor and debugger servers are not on the path of a running program:
+# optimised for size, they keep the `colibri` binary under its 15 MB gate (DESIGN §17.4) now that it
+# carries the worker pool. (A profile that inherits `release` does not take these.)
+[profile.release.package.colibri-lsp]
+opt-level = "s"
+[profile.release.package.colibri-dap]
+opt-level = "s"
+
 # The web runner (`colibri.wasm`) is built with `--profile web`: it is embedded in `colibri`, whose
 # size is gated, and `z` makes it 25% smaller than `3` (3.6 MB against 4.8 MB) with no measurable
 # loss on the engine's own work in a browser's wasm compiler.

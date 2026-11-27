@@ -42,6 +42,7 @@ mod source;
 #[allow(unsafe_code)]
 #[cfg_attr(target_family = "wasm", path = "stacks_web.rs")]
 mod stacks;
+mod tasks;
 #[allow(unsafe_code)]
 mod unchecked;
 mod unwind;

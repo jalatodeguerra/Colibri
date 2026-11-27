@@ -591,6 +591,12 @@ pub fn error_value(message: &str) -> Value {
     new_error(Value::str(message), -1)
 }
 
+/// An `Error` that shows as `message` with `cause` under it, as `cause.context(message)` makes
+/// one: `e.message()` is `message`, and `e.cause()` is `cause`.
+pub fn context_error_value(cause: Value, message: &str) -> Value {
+    crate::error::new_context_error(cause, std::rc::Rc::from(message))
+}
+
 /// An `Error` that keeps the typed `value` (an enum of a host module, say) and shows as
 /// `message`: `e.is[T]()` and `e.as[T]()` find the value, `{e}` prints the message.
 pub fn typed_error_value(value: Value, message: &str) -> Value {

@@ -18,8 +18,8 @@ use crate::prelude::*;
 use crate::show::show;
 use crate::value::Value;
 
-/// What a call of a thread task, a channel or a `Shared` panics with until the worker pool is built.
-pub const THREADS_NOT_BUILT: &str = "thread tasks are not built yet: the program checks, but this build has no worker pool to run `task.run`, `Channel` or `Shared`";
+/// What a call of a channel or a `Shared` panics with until they are built (`task.run` runs).
+pub const THREADS_NOT_BUILT: &str = "channels and `Shared` are not built yet: the program checks, but this build cannot run `Channel` or `Shared`";
 
 /// The receiver of a list method.
 fn list_of(v: &Value) -> Option<Rc<ListObj>> {
@@ -236,13 +236,15 @@ pub trait Builtins: Engine {
                 return self.cogroup_builtin(fiber, op, &recv, span);
             }
             Builtin::SignalEmit => return self.signal_builtin(fiber, &recv, span),
-            // The checker accepts thread tasks, channels and `Shared` (DESIGN §14.1); the worker
-            // pool that runs them is a later step, so a call that gets here stops the program
-            // with a panic instead of doing something else.
-            Builtin::TaskJoin
-            | Builtin::TaskDone
-            | Builtin::TaskTryJoin
-            | Builtin::ChannelSend
+            // `t.done()` and `t.try_join()` of a thread task: the engine's (they rebuild the
+            // result on a walk stack). `join` pauses and is the engine's too.
+            Builtin::TaskDone | Builtin::TaskTryJoin => {
+                return self.task_builtin(fiber, op, &recv, span);
+            }
+            // The checker accepts channels and `Shared` (DESIGN §14.1); they are a later step,
+            // so a call that gets here stops the program with a panic instead of doing
+            // something else.
+            Builtin::ChannelSend
             | Builtin::ChannelRecv
             | Builtin::ChannelTryRecv
             | Builtin::ChannelClose
@@ -251,7 +253,10 @@ pub trait Builtins: Engine {
                 return Err(self.panic(fiber, span, THREADS_NOT_BUILT));
             }
             // These pause the running coroutine: the VM compiles them to `Join`.
-            Builtin::CoroutineJoin | Builtin::CoroutineJoinResult | Builtin::CoGroupJoinAll => {
+            Builtin::CoroutineJoin
+            | Builtin::CoroutineJoinResult
+            | Builtin::CoGroupJoinAll
+            | Builtin::TaskJoin => {
                 return Err(self.internal(
                     fiber,
                     span,

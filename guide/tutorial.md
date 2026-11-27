@@ -1234,6 +1234,56 @@ After `main` returns, `colibri run` keeps going until every coroutine has finish
 program that only starts coroutines needs no loop of its own. `cancel()` stops a coroutine at its
 next wait, running its `defer`s.
 
+### Work on other threads
+
+Coroutines share one thread, so a long computation holds everything else up. To use the other
+cores, run it as a *task*: `task.run(f)` starts the closure `f` on a worker thread and gives a
+`Task`, and `join()` waits for the answer. The answer is a `Result`, because a task that panics
+does not end your program: its `join` gives an `err`.
+
+```colibri
+fn sum_to(n: int) -> int {
+    let mut total = 0
+    for i in 1..=n {
+        total += i
+    }
+    return total
+}
+
+fn main() -> Result[()] {
+    let a = task.run(fn() => sum_to(1000))
+    let b = task.run(fn() => sum_to(2000))
+    print("{a.join()?} {b.join()?}")
+    return ok(())
+}
+```
+
+```output
+500500 2001000
+```
+
+A task has objects of its own. What the closure captures is copied to the task when it starts, and
+the result is copied back, so no two threads ever touch the same object and nothing needs a lock.
+The cost is easy to trip on: **a write to a captured `let mut` inside a task closure is lost**,
+because the closure runs on a copy. This program prints 0, not 1:
+
+```colibri
+fn main() -> Result[()] {
+    let mut n = 0
+    task.run(fn() { n += 1 }).join()?
+    print(n)
+    return ok(())
+}
+```
+
+```output
+0
+```
+
+Return the value instead. The [language tour](tour.md#thread-tasks) says what can be copied, what a
+task may read from the rest of the program, and what happens when a task is dropped without being
+joined.
+
 ## 13. A small HTTP service
 
 The standard library has an HTTP server, `httpd`. It is written in Colibri on top of the `net`

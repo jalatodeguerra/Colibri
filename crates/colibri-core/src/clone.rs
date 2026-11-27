@@ -77,6 +77,9 @@ impl Cloner {
                 val: self.clone_value(&d.val, ov)?,
             })),
             Value::Obj(src) => {
+                if src.ty() == colibri_check::types::TASK_TYPE {
+                    return Err(Stop::Task);
+                }
                 let key = Rc::as_ptr(src) as usize;
                 if let Some(done) = self.memo.get(&key) {
                     return Ok(done.clone());

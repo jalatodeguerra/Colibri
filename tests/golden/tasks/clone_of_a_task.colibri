@@ -1,0 +1,7 @@
+// allow: unused
+// A task has one owner, the one that joins it: a clone would be a second handle whose death
+// takes the task away from the first.
+fn main() {
+    let t = task.run(fn() => 5)
+    let u = t.clone() // error: `Task[{integer}]` cannot be cloned
+}
