@@ -1820,11 +1820,14 @@ impl Vm {
             std_sources: self.source_modules.clone(),
         };
         let names: Vec<String> = self.modules.clone();
-        let loaded = colibri_check::package::load_with(fs, &mut sources, entry, &names, options)
-            .map_err(|e| Error::Io {
-                path: e.path,
-                message: e.message,
-            })?;
+        let mut loaded =
+            colibri_check::package::load_with(fs, &mut sources, entry, &names, options).map_err(
+                |e| Error::Io {
+                    path: e.path,
+                    message: e.message,
+                },
+            )?;
+        refuse_unregistered_bindings(&mut loaded, &names);
         Ok((sources, loaded))
     }
 
@@ -3100,4 +3103,39 @@ mod memory_tests {
         // Lifting a limit that was never set needs nothing.
         vm.set_memory_limit(None);
     }
+}
+
+/// A package that declares a Rust binding can only run in the project runner, which registers
+/// the binding module. A `Vm` that does not have the module says so at the import, instead of
+/// leaving the checker to report an unknown name.
+fn refuse_unregistered_bindings(
+    loaded: &mut colibri_check::package::Loaded,
+    registered: &[String],
+) {
+    use colibri_check::package::ImportTarget;
+    use colibri_syntax::ast::{ItemKind, TopLevel};
+    let mut problems = Vec::new();
+    for (file, meta) in loaded.files.iter().zip(&loaded.metas) {
+        for top in &file.items {
+            let TopLevel::Item(item) = top else { continue };
+            let ItemKind::Import(_) = &item.kind else {
+                continue;
+            };
+            if let Some(ImportTarget::Host(name)) = meta.imports.get(&item.id)
+                && !registered.contains(name)
+                && loaded.rust_bindings.iter().any(|b| b.key == *name)
+            {
+                problems.push(
+                    colibri_syntax::Diagnostic::error(
+                        format!("`{name}` is a Rust binding: a program that uses it runs in the project runner"),
+                        item.span,
+                    )
+                    .with_hint(
+                        "the project runner (built from `[rust-dependencies]`) is not available yet; `colibri check` works without it",
+                    ),
+                );
+            }
+        }
+    }
+    loaded.diagnostics.extend(problems);
 }

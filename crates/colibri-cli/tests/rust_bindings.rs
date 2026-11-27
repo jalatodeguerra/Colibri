@@ -33,10 +33,18 @@ impl Pkg {
         fs::write(full, text).unwrap();
     }
 
+    fn run(&self) -> Out {
+        self.command("run")
+    }
+
     fn check(&self) -> Out {
+        self.command("check")
+    }
+
+    fn command(&self, verb: &str) -> Out {
         // An empty `PATH` and a dead `CARGO`: a check that tried to run cargo would fail.
         let out = Command::new(env!("CARGO_BIN_EXE_colibri"))
-            .args(["check", self.0.to_str().unwrap()])
+            .args([verb, self.0.to_str().unwrap()])
             .env("PATH", "")
             .env("CARGO", "colibri-no-such-cargo")
             .output()
@@ -210,6 +218,8 @@ fn a_dependency_binding_without_its_interface_is_reported_at_its_key() {
     );
     // The snippet is the line of lib's manifest, which the root's manifest does not have.
     assert!(out.stderr.contains("native = { path"), "{}", out.stderr);
+    // One error: the import of the module without an interface adds nothing to it.
+    assert_eq!(out.stderr.matches("Error:").count(), 1, "{}", out.stderr);
 }
 
 #[test]
@@ -244,4 +254,142 @@ fn one_crate_under_two_keys_in_two_packages_is_refused() {
         "{}",
         out.stderr
     );
+}
+
+#[test]
+fn only_the_declaring_package_may_import_a_binding() {
+    // `lib` declares `native`; the root and a sibling `other` import it without declaring it.
+    let pkg = with_lib("visibility", "", LIB_NATIVE);
+    pkg.write("lib/native.cbi", &interface_of("native"));
+    pkg.write("main.colibri", &format!("import native\n{LIB_MAIN}"));
+    let out = pkg.check();
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains(
+            "`native` is a Rust binding declared by the package `lib`, not by this package"
+        ),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr
+            .contains("declares it under `[rust-dependencies]`"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(out.stderr.matches("Error:").count(), 1, "{}", out.stderr);
+
+    let pkg = with_lib("visibility_sibling", "", LIB_NATIVE);
+    pkg.write("lib/native.cbi", &interface_of("native"));
+    pkg.write(
+        "colibri.toml",
+        "[package]\nname = \"app\"\n[dependencies]\nlib = { path = \"lib\" }\nother = { path = \"other\" }\n",
+    );
+    pkg.write("other/colibri.toml", "[package]\nname = \"other\"\n");
+    pkg.write(
+        "other/lib.colibri",
+        "import native\npub fn two() -> int {\n    return native.add(1, 1)\n}\n",
+    );
+    pkg.write(
+        "main.colibri",
+        "import lib\nimport other\nfn main() {\n    print(lib.total() + other.two())\n}\n",
+    );
+    let out = pkg.check();
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("declared by the package `lib`"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn two_packages_each_with_their_own_native_folder_are_two_crates() {
+    let pkg = with_lib(
+        "two_folders",
+        "\n[rust-dependencies]\nfirst = { path = \"native\" }\n",
+        "\n[rust-dependencies]\nnative = { path = \"native\" }\n",
+    );
+    pkg.write("first.cbi", &interface_of("first"));
+    pkg.write("lib/native.cbi", &interface_of("native"));
+    let out = pkg.check();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+}
+
+#[test]
+fn a_malformed_interface_is_reported_at_its_key() {
+    let pkg = Pkg::new("malformed", MANIFEST, CALL);
+    pkg.write("native.cbi", "this is not an interface");
+    let out = pkg.check();
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("`native.cbi` is not a valid interface"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("native = { path"), "{}", out.stderr);
+}
+
+struct Json(i64);
+impl colibri_runtime::HostType for Json {
+    const NAME: &'static str = "Value";
+    fn describe(d: &mut colibri_runtime::TypeBuilder<'_, Self>) {
+        d.method("int", [], |this: &Json| this.0);
+    }
+}
+
+#[test]
+fn an_interface_that_uses_a_missing_module_is_reported_at_its_key() {
+    let mut vm = colibri_runtime::Vm::builder().build();
+    vm.module("json2").register_type::<Json>().unwrap();
+    let mut m = vm.module("native");
+    m.uses("json2").unwrap();
+    m.register_fn_named("parse", ["text"], |t: String| Json(t.len() as i64))
+        .unwrap();
+    let text = vm.module("native").interface_text();
+    let pkg = Pkg::new("uses_missing", MANIFEST, CALL);
+    pkg.write("native.cbi", &text);
+    let out = pkg.check();
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("names types of the module `json2`, which is not available"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("native = { path"), "{}", out.stderr);
+}
+
+#[test]
+fn run_agrees_with_check_about_a_local_file_named_like_the_key() {
+    let pkg = Pkg::new("ambiguous", MANIFEST, CALL);
+    pkg.write("native.cbi", &interface_of("native"));
+    pkg.write(
+        "native.colibri",
+        "pub fn add(a: int, b: int) -> int {\n    return a - b\n}\n",
+    );
+    for out in [pkg.check(), pkg.run()] {
+        assert_eq!(out.code, 1, "{}", out.stderr);
+        assert!(
+            out.stderr.contains("`import native` is ambiguous"),
+            "{}",
+            out.stderr
+        );
+    }
+}
+
+#[test]
+fn run_says_a_binding_needs_the_project_runner() {
+    let pkg = Pkg::new("run_needs_runner", MANIFEST, CALL);
+    pkg.write("native.cbi", &interface_of("native"));
+    let out = pkg.run();
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains(
+            "`native` is a Rust binding: a program that uses it runs in the project runner"
+        ),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("looked for"), "{}", out.stderr);
 }
