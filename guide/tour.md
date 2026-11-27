@@ -1163,8 +1163,9 @@ once: a second `join` or `try_join` of the same task gives an `err` that says it
 already. A task may start tasks and join them. When the pool's threads are all busy, a worker that
 joins a task that has not started runs it itself, so nested tasks cannot deadlock a pool of any
 size. The task runs as it would on a thread of its own: it has its own instruction budget, its own
-memory-limit standing, the tasks it starts are numbered from it, and the coroutines it leaves are
-cancelled when it ends. The one difference is the stack: a deep chain of tasks that each join the
+memory-limit standing, the tasks it starts are numbered from it, it has the scheduler to itself (the
+coroutines of its joiner wait until it ends, and it can start and join coroutines of its own, even
+when the joiner is a coroutine), and the coroutines it leaves are cancelled when it ends. The one difference is the stack: a deep chain of tasks that each join the
 next, all run this way, shares one thread's stack and can hit its limit (a clean panic that says
 so) where separate threads would not. A `Task` has one owner: `t.clone()` is a compile error.
 
