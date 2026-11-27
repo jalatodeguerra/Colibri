@@ -83,6 +83,8 @@ pub unsafe extern "C" fn colibri_free(ptr: *mut u8, len: usize) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn colibri_start(ptr: *const u8, len: usize) -> i32 {
     report_panics();
+    // Before the first table of any program exists (see the function).
+    colibri_std::seed_table_hash();
     // An empty pack may come with a null pointer, which a slice must not have.
     let bytes: &[u8] = if len == 0 || ptr.is_null() {
         &[]

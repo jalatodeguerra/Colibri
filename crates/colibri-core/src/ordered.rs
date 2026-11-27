@@ -13,6 +13,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use crate::compare::equal_or_give_up;
 use crate::value::Value;
@@ -28,21 +29,65 @@ const COMPACT_MIN: usize = 32;
 /// else still hashes without panicking.)
 #[inline]
 pub(crate) fn hash_value(v: &Value) -> u64 {
+    hash_seeded(v, 0)
+}
+
+/// The hash a `Map` or `Set` files a key under: [`hash_value`], started from a seed that is
+/// picked at random once per process. The tables are fed keys that come from outside (the
+/// fields of a decoded JSON object, a query string), and an unseeded hash would let someone
+/// choose keys that all land in one probe run and make every insert linear. `x.hash()` is not
+/// this: it stays the same on every run and every machine, which scripts may rely on. The
+/// order of iteration is not affected either, because entries are kept in insertion order and
+/// the hash only picks a place in the index.
+#[inline]
+pub(crate) fn table_hash(v: &Value) -> u64 {
+    hash_seeded(v, table_seed())
+}
+
+/// The seed of [`table_hash`]: random bytes from the system, fixed for the life of the process
+/// (a hash is stored with each entry, so it may not change while a table exists).
+///
+/// `std`'s `RandomState` takes them from the operating system. On `wasm32-unknown-unknown`
+/// `std` has no source and gives a constant, so the web build asks the host page
+/// (`crypto.getRandomValues`) through [`set_table_seed`] before the first table is made.
+#[inline]
+fn table_seed() -> u64 {
+    *TABLE_SEED.get_or_init(|| {
+        use std::hash::BuildHasher;
+        std::collections::hash_map::RandomState::new().hash_one(0x436f_6c69_6272_69u64)
+    })
+}
+
+static TABLE_SEED: OnceLock<u64> = OnceLock::new();
+
+/// Fixes the seed of the table hash to `seed`, if it has not been used yet. Returns whether it
+/// took: once any table exists the seed stays what it was. For hosts where `std` cannot get
+/// random bytes (the web build); others never need it.
+pub fn set_table_seed(seed: u64) -> bool {
+    TABLE_SEED.set(seed).is_ok()
+}
+
+#[inline]
+fn hash_seeded(v: &Value, seed: u64) -> u64 {
     // The commonest keys, without the walk over a value that aggregates need (same hash).
     match v {
         Value::Int(i) => {
-            let mut h = KeyHasher::default();
+            let mut h = KeyHasher { state: seed };
             std::mem::discriminant(v).hash(&mut h);
             i.hash(&mut h);
             h.finish()
         }
         Value::Str(s) => {
-            let mut h = KeyHasher::default();
+            let mut h = KeyHasher { state: seed };
             std::mem::discriminant(v).hash(&mut h);
             s.hash(&mut h);
             h.finish()
         }
-        _ => hash_value_with(v, &mut |_| None),
+        _ => {
+            let mut h = KeyHasher { state: seed };
+            feed(v, &mut h, 0, &mut |_| None);
+            h.finish()
+        }
     }
 }
 
@@ -65,8 +110,9 @@ pub(crate) fn hash_value_with(v: &Value, host: &mut dyn FnMut(&Value) -> Option<
 /// equal. The index below uses the hash as it is, so [`KeyHasher::finish`] runs a
 /// full-avalanche finalizer (the MurmurHash3 64-bit mix) to spread the low bits that pick an
 /// index slot. The hash is not a secret: `x.hash()` returns it
-/// to scripts, and nothing here defends against keys chosen to collide (a collision only costs
-/// speed, because buckets compare keys with [`values_equal`]). The tests below count full
+/// to scripts, which is why the tables start from a per-process seed ([`table_hash`]) and
+/// `x.hash()` does not. A collision only costs speed, because buckets compare keys with
+/// [`values_equal`]. The tests below count full
 /// 64-bit collisions and slot loads for several families of keys.
 #[derive(Default)]
 struct KeyHasher {
@@ -315,7 +361,7 @@ impl OrderedMap {
     /// walk; `None` (outer) for any other kind of key, which the caller looks up as usual.
     #[inline]
     pub fn get_plain(&self, key: &Value) -> Option<Option<&Value>> {
-        let hash = hash_value(key);
+        let hash = table_hash(key);
         let found = match key {
             Value::Int(i) => self.probe_with(hash, |k| matches!(k, Value::Int(j) if j == i)),
             Value::Str(s) => self.probe_with(hash, |k| matches!(k, Value::Str(t) if **t == **s)),
@@ -332,7 +378,7 @@ impl OrderedMap {
     /// with a clone of `key`. Gives `value` back for any other kind of key.
     #[inline]
     pub fn insert_plain(&mut self, key: &Value, value: Value) -> Result<Option<Value>, Value> {
-        let hash = hash_value(key);
+        let hash = table_hash(key);
         let found = match key {
             Value::Int(i) => self.probe_with(hash, |k| matches!(k, Value::Int(j) if j == i)),
             Value::Str(s) => self.probe_with(hash, |k| matches!(k, Value::Str(t) if **t == **s)),
@@ -355,19 +401,19 @@ impl OrderedMap {
 
     #[inline]
     pub fn get(&self, key: &Value) -> Option<&Value> {
-        let p = self.find(hash_value(key), key)?;
+        let p = self.find(table_hash(key), key)?;
         self.entries[p].kv.as_ref().map(|(_, v)| v)
     }
 
     #[inline]
     pub fn get_mut(&mut self, key: &Value) -> Option<&mut Value> {
-        let p = self.find(hash_value(key), key)?;
+        let p = self.find(table_hash(key), key)?;
         self.entries[p].kv.as_mut().map(|(_, v)| v)
     }
 
     #[inline]
     pub fn contains(&self, key: &Value) -> bool {
-        self.find(hash_value(key), key).is_some()
+        self.find(table_hash(key), key).is_some()
     }
 
     /// Adds or replaces an entry. A replaced entry keeps its position and its original key.
@@ -375,7 +421,7 @@ impl OrderedMap {
     /// caller releases both.
     #[inline]
     pub fn insert(&mut self, key: Value, value: Value) -> (Option<Value>, Option<Value>) {
-        let hash = hash_value(&key);
+        let hash = table_hash(&key);
         self.insert_hashed(hash, key, value)
     }
 
@@ -457,7 +503,7 @@ impl OrderedMap {
     /// Removes an entry, returning its key and value.
     #[inline]
     pub fn remove(&mut self, key: &Value) -> Option<(Value, Value)> {
-        self.remove_hashed(hash_value(key), key)
+        self.remove_hashed(table_hash(key), key)
     }
 
     fn remove_hashed(&mut self, hash: u64, key: &Value) -> Option<(Value, Value)> {
@@ -517,6 +563,34 @@ mod tests {
 
     fn int(i: i64) -> Value {
         Value::Int(i)
+    }
+
+    #[test]
+    fn tables_hash_with_a_seed_and_scripts_hash_without_one() {
+        let keys = [int(1), string("a"), Value::tuple(vec![int(1), int(2)])];
+        for k in &keys {
+            // Stable within the process (a table keeps the hash of each entry), and not the
+            // hash `x.hash()` gives, which is the same on every run.
+            assert_eq!(table_hash(k), table_hash(k));
+            assert_ne!(table_hash(k), hash_value(k));
+            assert_eq!(hash_value(k), hash_value_with(k, &mut |_| None));
+        }
+        // The seed is fixed once it has been used.
+        assert!(!set_table_seed(1));
+        // The seed changes the hash, not the order of iteration.
+        let mut m = OrderedMap::new();
+        for i in [5, 3, 9, 1, 7] {
+            m.insert(int(i), int(i));
+            m.insert(string(&format!("k{i}")), int(i));
+        }
+        let order: Vec<i64> = m
+            .iter()
+            .filter_map(|(k, _)| match k {
+                Value::Int(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(order, [5, 3, 9, 1, 7]);
     }
 
     #[test]
