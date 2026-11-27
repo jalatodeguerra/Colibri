@@ -112,17 +112,13 @@ impl Machine {
             if self.core.cancelled() {
                 return Err(self.budget_exhausted(fiber, span));
             }
-            // Nobody has started it, and a worker is the one waiting: run it here. Not when the
-            // joiner has coroutines of its own (other than the one that joins): the inline task
-            // would set them aside until it ends, and one of them may be what the task waits
-            // for. Then the joiner waits and goes on running them, and a thread is started for
-            // the task if every one of the pool's is busy.
-            let others = self
-                .core
-                .sched
-                .coroutine_count()
-                .saturating_sub(usize::from(fiber.state.coro.is_some()));
-            if others == 0 {
+            // Nobody has started it, and a worker is the one waiting: run it here. Only the main
+            // fiber of an isolate with no coroutines does: the inline task would set the
+            // coroutines aside until it ends, and so it would the main fiber under a coroutine
+            // that joins, and one of them may be what the task waits for. Any other joiner waits
+            // (parked, or driving its coroutines) and asks the pool for a thread for the task
+            // if every one of the pool's is busy.
+            if fiber.state.coro.is_none() && self.core.sched.coroutine_count() == 0 {
                 if let Some(stolen) = self.take_over(op) {
                     self.run_stolen(fiber, stolen, span)?;
                     continue;

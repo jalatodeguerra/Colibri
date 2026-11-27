@@ -628,3 +628,33 @@ fn main() {
     // The temporary clone is dropped (once), as is the original and the received copy.
     assert_eq!(plain.matches("drop 1").count(), 3, "{plain}");
 }
+
+#[test]
+fn a_coroutine_that_joins_never_runs_the_task_inline_under_the_main_fiber_that_feeds_it() {
+    // The coroutine `joiner` is the only coroutine of `body`, and the main fiber of `body` is
+    // what answers the task. If the join ran the task inline, the main fiber would be set aside
+    // under it and the task's wait for the answer could never end.
+    let source = r#"
+fn joiner(req: Channel[int], resp: Channel[int]) -> int {
+    let t = task.run(fn() {
+        req.send(1)
+        return resp.recv().expect("resp")
+    })
+    return t.join().expect("t")
+}
+
+fn body() -> int {
+    let req = Channel[int]()
+    let resp = Channel[int]()
+    let c = go joiner(req, resp)
+    let v = req.recv().expect("req")
+    resp.send(v + 1)
+    return c.join()
+}
+
+fn main() {
+    print("got {task.run(body).join().expect("body")}")
+}
+"#;
+    same_on_one_and_three(source, "got 2\n");
+}
