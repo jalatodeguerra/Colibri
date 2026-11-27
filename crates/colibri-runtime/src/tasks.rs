@@ -246,6 +246,10 @@ pub struct PoolStats {
     pub failed_builds: AtomicUsize,
     /// Threads that were joined: counted when `join` of the thread returned.
     pub joined: AtomicUsize,
+    /// The most temporary threads that were alive at one time. The limit on them bounds this, not
+    /// `started`: a temporary thread that finds the queue empty (another thread took its job
+    /// first) ends, and a later wait may start another in its place.
+    pub peak_extra: AtomicUsize,
 }
 
 /// What every worker needs from the `Vm` that owns the pool.
@@ -427,6 +431,7 @@ impl Shared {
             Ok(handle) => {
                 stats.started.fetch_add(1, Ordering::SeqCst);
                 extras.push(handle);
+                stats.peak_extra.fetch_max(extras.len(), Ordering::SeqCst);
                 Ok(())
             }
             Err(e) => {

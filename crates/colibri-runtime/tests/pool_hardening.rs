@@ -47,7 +47,11 @@ fn within_a_minute<R: Send + 'static>(body: impl FnOnce() -> R + Send + 'static)
 
 /// Runs `source` on a pool of `workers` and says what it printed with how many threads the pool
 /// started (the pool's own and the temporary ones), after the `Vm` is gone and every thread joined.
-fn run_counting(workers: usize, cap: Option<usize>, source: &str) -> (String, usize, usize, usize) {
+fn run_counting(
+    workers: usize,
+    cap: Option<usize>,
+    source: &str,
+) -> (String, usize, usize, usize, usize) {
     let source = source.to_string();
     within_a_minute(move || {
         let out = Out::default();
@@ -68,6 +72,7 @@ fn run_counting(workers: usize, cap: Option<usize>, source: &str) -> (String, us
             stats.started.load(Ordering::SeqCst),
             stats.joined.load(Ordering::SeqCst),
             stats.alive.load(Ordering::SeqCst),
+            stats.peak_extra.load(Ordering::SeqCst),
         )
     })
 }
@@ -89,7 +94,7 @@ fn main() {
 #[test]
 fn a_task_blocked_on_a_channel_while_its_feeder_is_queued_gets_a_temporary_thread() {
     for workers in [1, 3] {
-        let (out, started, joined, alive) = run_counting(workers, None, FEEDER_BEHIND);
+        let (out, started, joined, alive, _) = run_counting(workers, None, FEEDER_BEHIND);
         assert_eq!(out, "b 1\na 5\n", "{workers} workers");
         assert!(
             started >= workers,
@@ -99,8 +104,9 @@ fn a_task_blocked_on_a_channel_while_its_feeder_is_queued_gets_a_temporary_threa
         assert_eq!((joined, alive), (started, 0), "{workers} workers");
     }
     // On one thread the feeder has no thread but a lent one: it is always started.
-    let (_, started, _, _) = run_counting(1, None, FEEDER_BEHIND);
-    assert_eq!(started, 2);
+    let (_, started, _, _, peak) = run_counting(1, None, FEEDER_BEHIND);
+    assert!(started >= 2, "{started}");
+    assert_eq!(peak, 1);
 }
 
 #[test]
@@ -120,7 +126,7 @@ fn main() {
 }
 "#;
     for workers in [1, 3] {
-        let (out, _, joined, alive) = run_counting(workers, None, source);
+        let (out, _, joined, alive, _) = run_counting(workers, None, source);
         assert_eq!(out, "fed 11\nheld 1\n", "{workers} workers");
         assert_eq!(alive, 0);
         assert!(joined >= workers);
@@ -152,7 +158,7 @@ fn main() {
 }
 "#;
     for workers in [1, 3] {
-        let (out, _, joined, alive) = run_counting(workers, None, source);
+        let (out, _, joined, alive, _) = run_counting(workers, None, source);
         assert_eq!(out, "got [12]\nheld 1\n", "{workers} workers");
         assert_eq!(alive, 0);
         assert!(joined >= workers);
@@ -185,7 +191,7 @@ fn main() {
 }
 "#;
     for workers in [1, 3] {
-        let (out, started, joined, alive) = run_counting(workers, None, source);
+        let (out, started, joined, alive, _) = run_counting(workers, None, source);
         assert!(out.starts_with("total "), "{out}");
         assert_eq!(started, workers, "a busy pool lent threads");
         assert_eq!((joined, alive), (started, 0));
@@ -225,13 +231,18 @@ fn main() {
     }
 }
 "#;
-    let (out, started, joined, alive) = run_counting(1, Some(3), source);
+    let (out, started, joined, alive, peak) = run_counting(1, Some(3), source);
     assert_eq!(out, "stopped: true\n");
-    assert_eq!(
-        started, 4,
-        "the pool's thread and the 3 it was allowed to lend"
+    // The limit bounds the temporary threads alive at one time. How many were started in all is
+    // not fixed: a temporary thread that finds the queue empty (its job was taken by another
+    // thread) ends, and a later wait may start another one.
+    eprintln!("nested waits: {started} threads started, at most {peak} temporary ones at once");
+    assert_eq!(peak, 3, "the pool lent its limit and no more");
+    assert!(
+        started >= 4,
+        "the pool's thread and the 3 it lent: {started}"
     );
-    assert_eq!((joined, alive), (4, 0));
+    assert_eq!((joined, alive), (started, 0));
 }
 
 #[test]
@@ -265,7 +276,7 @@ fn main() {
     }
 }
 "#;
-    let (out, _, _, _) = run_counting(1, Some(12), source);
+    let (out, _, _, _, _) = run_counting(1, Some(12), source);
     assert!(out.contains("nested levels]"), "{out}");
     assert!(out.contains("limit of 12 temporary threads"), "{out}");
     assert!(out.len() < 1500, "{} bytes: {out}", out.len());
