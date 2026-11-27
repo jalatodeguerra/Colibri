@@ -63,7 +63,12 @@ function startLanguageClient(context) {
   const config = vscode.workspace.getConfiguration("colibri");
   const serverOptions = { command: colibriPath(), args: ["lsp"] };
   const clientOptions = {
-    documentSelector: [{ scheme: "file", language: "colibri" }],
+    // The server reads an open `colibri.toml` as the editor's unsaved buffer when it loads the
+    // package, and only hears about it (open, change) when it is selected here.
+    documentSelector: [
+      { scheme: "file", language: "colibri" },
+      { scheme: "file", pattern: "**/colibri.toml" },
+    ],
     // `.cbi` files describing what the host program provides, so host functions check.
     initializationOptions: { interfaces: config.get("interfaces") || [] },
   };
