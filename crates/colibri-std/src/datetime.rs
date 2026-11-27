@@ -683,6 +683,53 @@ fn system_offset(unix: i64) -> i64 {
     }
 }
 
+/// Windows converts the instant itself: `SystemTimeToTzSpecificLocalTime` applies the zone's
+/// daylight saving rules as they apply at that instant, and the offset is how far the local
+/// reading is from the UTC one. Both are read as `FILETIME`s (100 ns ticks since 1601) so that
+/// no calendar arithmetic is needed here.
+#[cfg(windows)]
+fn system_offset(unix: i64) -> i64 {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{
+        FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime,
+    };
+
+    const TICKS_PER_SECOND: i64 = 10_000_000;
+    // Seconds from 1601-01-01 to 1970-01-01.
+    const UNIX_EPOCH: i64 = 11_644_473_600;
+    fn seconds_of(ft: &FILETIME) -> i64 {
+        ((i64::from(ft.dwHighDateTime) << 32) | i64::from(ft.dwLowDateTime)) / TICKS_PER_SECOND
+    }
+    let Some(seconds) = unix.checked_add(UNIX_EPOCH).filter(|s| *s >= 0) else {
+        // Before 1601 Windows has no time at all.
+        return 0;
+    };
+    let Some(raw) = seconds.checked_mul(TICKS_PER_SECOND) else {
+        return 0;
+    };
+    let utc = FILETIME {
+        dwLowDateTime: raw as u32,
+        dwHighDateTime: (raw >> 32) as u32,
+    };
+    // SAFETY: all of these read from and write to plain structs that live on this stack; a null
+    // time zone means the one the machine is set to. Each call reports failure with 0.
+    unsafe {
+        let mut utc_time: SYSTEMTIME = std::mem::zeroed();
+        let mut local_time: SYSTEMTIME = std::mem::zeroed();
+        let mut local = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        if FileTimeToSystemTime(&utc, &mut utc_time) == 0
+            || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc_time, &mut local_time) == 0
+            || SystemTimeToFileTime(&local_time, &mut local) == 0
+        {
+            return 0;
+        }
+        seconds_of(&local) - seconds
+    }
+}
+
 /// On the web the page knows the time zone (`host_utc_offset`, from `Date`).
 #[cfg(target_family = "wasm")]
 fn system_offset(unix: i64) -> i64 {
@@ -690,7 +737,7 @@ fn system_offset(unix: i64) -> i64 {
 }
 
 /// Without a way to ask the machine, local time is UTC.
-#[cfg(not(any(unix, target_family = "wasm")))]
+#[cfg(not(any(unix, windows, target_family = "wasm")))]
 fn system_offset(_unix: i64) -> i64 {
     0
 }
@@ -959,5 +1006,23 @@ mod tests {
         assert_eq!(parse_iso("2024-01-01").unwrap(), dt(2024, 1, 1, 0, 0, 0));
         assert!(parse_iso("2024-1-1").is_err());
         assert!(parse_iso("2024-01-01T25:00:00Z").is_err());
+    }
+
+    /// Windows only (it asks the machine's zone, so the answer cannot be fixed): the offset is a
+    /// plausible one, is the same for an instant read twice, and lies on a whole quarter hour.
+    #[cfg(windows)]
+    #[test]
+    fn windows_local_offset_is_a_zone_offset() {
+        // A winter and a summer instant of 2024: a zone with daylight saving differs by an
+        // hour between them, any other by nothing.
+        for unix in [1_705_000_000, 1_720_000_000, 0, -1] {
+            let offset = system_offset(unix);
+            assert_eq!(offset, system_offset(unix));
+            assert!(offset.abs() <= 14 * 3600, "{offset}");
+            assert_eq!(offset % (15 * 60), 0, "{offset}");
+        }
+        let (winter, summer) = (system_offset(1_705_000_000), system_offset(1_720_000_000));
+        // (Lord Howe Island is the one zone whose daylight saving is half an hour.)
+        assert!([0, 1800, 3600].contains(&(summer - winter).abs()));
     }
 }
