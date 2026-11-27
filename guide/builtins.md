@@ -18,6 +18,8 @@ An optional result, `T?`, is `none` when there is nothing to return.
 - [`Coroutine`, `CoGroup` and `Signal`](#coroutine-cogroup-and-signal)
 - [`Task`](#task)
 - [`Channel`](#channel)
+- [`Shared`](#shared)
+- [`Mutex`](#mutex)
 
 ## Functions you can always call
 

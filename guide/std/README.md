@@ -10,7 +10,7 @@ One page for each module of the standard library. A page lists the constants, ty
 | [`assets`](assets.md) | The files that ship with the program, listed under `[build] assets` in `colibri.toml`: read from the package folder by `run` and `test`, and from the executable that `colibri build` writes. | Rust | nothing |
 | [`base64`](base64.md) | Base64 encoding and decoding of text and of `Bytes`. | Rust | nothing |
 | [`csv`](csv.md) | CSV text to records or to rows with a header, and back. | Rust | nothing |
-| [`datetime`](datetime.md) | Dates, times and their formatting. | Rust | `os` (some functions) |
+| [`datetime`](datetime.md) | Dates, times and their formatting. On Windows, local time is currently UTC. | Rust | `os` (some functions) |
 | [`fs`](fs.md) | Files and folders: whole-file reads and writes, listing, metadata, and `File` handles that read or write piece by piece. The whole-file functions hold the thread until they finish and give other coroutines no turn; the methods of `File` wait without blocking. | Rust | `fs` |
 | [`hash`](hash.md) | SHA-256 of text and of `Bytes`. | Rust | nothing |
 | [`hex`](hex.md) | Hexadecimal encoding and decoding of text and of `Bytes`. | Rust | nothing |

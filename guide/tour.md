@@ -1467,10 +1467,13 @@ test sample::clamp keeps values in range ... ok
 | `colibri test [file or folder]` | run the tests (`--filter`, `--nocapture`) |
 | `colibri fmt [paths]` | format in place (`--check` only reports) |
 | `colibri build [file or folder] [-o FILE]` | one executable that holds the program |
+| `colibri build --web [file or folder]` | a folder for a static web server instead: the program runs in the page |
 | `colibri new <name>` | create a package |
 | `colibri update` | re-resolve git dependencies |
 | `colibri repl` | interactive session |
 | `colibri lsp` | language server for editors |
+| `colibri debug` | debug adapter (DAP) on stdin and stdout, for an editor to set breakpoints and step |
+| `colibri run --profile[=FILE]` | sample the program and write a flame graph (`--profile-rc` counts reference-count traffic) |
 
 `colibri run --leaks` reports reference cycles that were never freed. `colibri build` writes
 one executable that holds the program and runs it like `colibri run`; it is a copy of `colibri`
