@@ -1077,7 +1077,7 @@ when called outside a coroutine started with `go`, `main` included.
 Coroutines never run at the same time, so they share objects without locks, and a coroutine runs
 until it waits. `net`, `http`, `process` and `fs.File` calls pause only the calling coroutine. The
 whole-file functions (`fs.read`, `fs.write`, ...) and `time.sleep` hold the thread until they
-finish. Thread tasks, channels and `Shared` are in the next sections; `Mutex` is **planned**.
+finish. Thread tasks, channels, `Shared` and `Mutex` are in the next sections.
 
 ## Thread tasks
 
@@ -1314,7 +1314,68 @@ Things to know:
   can see it), but what the object holds stays frozen: a hook that pushes to a list in a field
   panics. That panic is the result of `main` when the copy is main's, and is lost when the copy is
   a worker's.
-- `Shared` is for data that is read. `Mutex`, for data that tasks change, is not built yet.
+- `Shared` is for data that is read. `Mutex`, for data that tasks change, is the next section.
+
+## Mutex
+
+`Mutex(x)` holds a value that threads change one at a time, and gives a `Mutex[T]` handle. Like a
+`Channel` or a `Shared`, the handle is sent to tasks as it is, and `.clone()` of it is the same
+handle. The value is kept in a form that belongs to no thread: every operation copies it out of the
+mutex or into it, so a thread never holds an object that another thread can see.
+
+- `m.get()` gives a copy of the value.
+- `m.set(v)` puts a copy of `v` in.
+- `m.with(fn(mut x) { ... })` takes the lock, gives the callback a copy of the value, and puts the
+  copy back when the callback returns. What the callback returns is the result of `with`.
+
+```colibri
+fn add(m: Mutex[int], n: int) {
+    for _ in 0..n {
+        m.with(fn(mut x) { x += 1 })
+    }
+}
+
+fn main() {
+    let m = Mutex(0)
+    let a = task.run(fn() => add(m, 500))
+    let b = task.run(fn() => add(m, 500))
+    a.join().expect("a")
+    b.join().expect("b")
+    print("count {m.get()}")
+    let old = m.with(fn(mut x) {
+        let before = x
+        x = 7
+        return before
+    })
+    print("was {old}, now {m.get()}")
+}
+```
+
+```output
+count 1000
+was 1000, now 7
+```
+
+`get` followed by `set` is two operations, and another task can run between them; use `with` for a
+change that depends on the value it replaces.
+
+Things to know:
+
+- **The callback may not use any `Mutex`.** A `get`, `set` or `with` of the same mutex or another
+  one, inside a `with`, panics with a message that says so. A thread that holds one lock and asks for
+  another is how locks deadlock, and this rule leaves no way to do it.
+- **The callback may not wait.** `wait` of a coroutine, `join` of a task that has not finished, and a
+  channel `send` or `recv` that would have to wait panic inside a `with`. A lock is never held while
+  a thread waits for something else.
+- **A panic in the callback leaves the value as it was.** The lock is released and nothing is
+  poisoned: the copy the callback changed is dropped, and the next `get` sees the value from before
+  the call. The panic goes on to the caller of `with`, in a task it is the task's result. The same
+  holds when the program is stopped while the callback runs.
+- A value is copied by the rules of a task's closure, so a `Mutex` can hold what a task can be sent,
+  and a closure that captures a `let mut` that is written somewhere is refused.
+- A struct in a `Mutex` is a value as ever: the `mut x` of the callback is a copy that is stored
+  back. A class object is copied too (with what it holds), and identity does not survive the trip.
+- Each operation costs a copy of the whole value. Keep the value small, or keep many small mutexes.
 
 ## Bytes and JSON
 

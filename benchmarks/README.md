@@ -26,6 +26,11 @@ benchmarks/run.sh
 The script checks that Colibri and Python print the same result, then reports the best of three
 wall-clock times. Times include start-up and type checking.
 
+`tasks.colibri` has no Python version either: it counts primes in slices that run as thread tasks.
+`benchmarks/tasks.sh` runs it as one task and as one task per core and prints the speed-up (the
+target is 3x or more on 4 cores; it is not a CI gate and needs a quiet machine). On a 4-core Linux
+box, release build: 2074 ms with one task, 593 ms with four, 3.5x.
+
 The two programs in `coroutines/` (`many`: many short coroutines; `pingpong`: two coroutines
 that hand control back and forth) have no Python version and are not run by `run.sh`. Count their
 instructions with `valgrind --tool=cachegrind --cache-sim=no target/release/colibri run benchmarks/coroutines/many.colibri`.
