@@ -1224,20 +1224,24 @@ is **copied**, as the closure of a task is (the same rules say what can be copie
 refused), and the receiver gets the copy; a send of something that is more than plain data has to
 be written as a visible copy, `ch.send(x.clone())`, and that clone is the copy (the value is not
 copied a second time unless the program has an `impl Clone` or an `impl Drop` of its own, which then
-run as for any `.clone()`). A
-`Channel` can be a value of a channel: `Channel[Channel[str]]` is how a request carries the
-channel that its answer comes back on.
+run as for any `.clone()`). A `Channel` can be a value of a channel: `Channel[Channel[str]]` is how
+a request carries the channel that its answer comes back on.
 
 Waiting fits where it happens, as `join` does: a coroutine that waits pauses and the others go on,
 the main fiber runs the event loop, and anywhere else the thread blocks. Several receivers are
 served in the order they began to wait, and a value goes straight to a receiver that is waiting. A
 coroutine that is cancelled while it waits does not take a value with it. Things to know:
 
-- A task that waits on a channel keeps its worker thread, so give the pool enough threads for the
-  tasks that wait on each other. (A task that joins a task while it has coroutines of its own waits
-  for it and goes on running them; if every thread of the pool is busy, the pool lends a temporary
-  thread for the task you join, which ends when it has nothing to run.) A `recv` that nothing will ever satisfy is not detected: a
-  coroutine that waits on a channel nobody closes keeps the event loop running.
+- A task that waits on a channel (`recv`, or a `send` on a full channel) keeps its worker thread,
+  so give the pool enough threads for the tasks that wait on each other. A `join` is different:
+  the main fiber of a task with no coroutines runs the task it joins itself if nobody has started
+  it, and a coroutine that joins, or a task that has coroutines, waits for it instead and goes on
+  running them, because the task may be waiting for one of them (or for the fiber that is joining).
+  If every thread of the pool is busy then, the pool lends a temporary thread for the task, which
+  ends when it has nothing to run. At most 256 such threads exist at once; a program that nests
+  more joins than that waits for ever.
+- A `recv` that nothing will ever satisfy is not detected: a coroutine that waits on a channel
+  nobody closes keeps the event loop running.
 - The order of values from several senders is not fixed, but the values of one sender arrive in the
   order it sent them.
 - A `send` on a closed channel panics with `cannot send on a closed channel`, also for a sender

@@ -588,14 +588,15 @@ fn main() {
         vm.run_event_loop().unwrap();
         assert_eq!(out.text(), "got 7\n");
         let stats = vm.worker_stats();
-        // The pool's one thread, and the one that the join asked for.
-        assert_eq!(stats.started.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // The pool's one thread, and at least the one that the join asked for (a slow start may
+        // make it ask again; the spare ends at once).
+        assert!(stats.started.load(std::sync::atomic::Ordering::SeqCst) >= 2);
         drop(vm);
         stats
     });
     let n = |a: &std::sync::atomic::AtomicUsize| a.load(std::sync::atomic::Ordering::SeqCst);
     assert_eq!(n(&stats.alive), 0);
-    assert_eq!(n(&stats.joined), 2);
+    assert_eq!(n(&stats.joined), n(&stats.started));
 }
 
 #[test]

@@ -2232,8 +2232,10 @@ impl Vm {
     }
 
     /// A flag that stops the program from another thread: once it is set, the program ends at its
-    /// next safepoint, or in the wait (`join`, a channel) it is in, with the panic that an
-    /// exhausted instruction budget raises. For a host's watchdog; call it before running.
+    /// next safepoint, or in the `join` or channel wait it is in, with `Error::BudgetExhausted`
+    /// (what an exhausted instruction budget gives). A `wait(seconds)`, `time.sleep` or other
+    /// timer wait does not observe the flag: it ends when its time is up. For a host's watchdog;
+    /// call it before running.
     #[doc(hidden)]
     pub fn stop_handle(&mut self) -> Arc<std::sync::atomic::AtomicBool> {
         let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
