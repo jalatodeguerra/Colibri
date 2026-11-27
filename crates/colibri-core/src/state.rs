@@ -53,6 +53,8 @@ pub struct Core {
     pub tasks: crate::taskrun::TaskTable,
     /// The channels this engine holds a handle of (DESIGN §14.1).
     pub chans: crate::chan::ChanTable,
+    /// The `Shared`s this engine holds a handle of, and its frozen copies of them (DESIGN §14.1).
+    pub shareds: crate::shared::SharedTable,
     /// The registry of the leak detector, when it is on (ARCHITECTURE §18).
     pub leaks: Option<Box<LeakTracker>>,
     /// The coroutine scheduler (ARCHITECTURE §16). Last, so it drops last: dropping it cancels
@@ -103,6 +105,7 @@ impl Core {
             host: HostSide::default(),
             tasks: crate::taskrun::TaskTable::default(),
             chans: crate::chan::ChanTable::default(),
+            shareds: crate::shared::SharedTable::default(),
             leaks: None,
             sched: Scheduler::new(),
             none: Value::option(None),

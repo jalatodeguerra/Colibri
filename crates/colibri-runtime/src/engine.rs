@@ -197,6 +197,10 @@ pub(crate) trait RuntimeEngine: HostCx {
     /// Releases a value outside any call, with a budget of its own for the `Drop` hooks.
     fn release_in_entry(&mut self, value: CoreValue);
 
+    /// Frees the frozen copies of `Shared`s that no handle holds any more (a worker does this
+    /// between tasks: the last handle may have died in another isolate).
+    fn free_dead_shared_copies(&mut self);
+
     // ---- coroutines ----
 
     fn cancel_all_coroutines(&mut self);

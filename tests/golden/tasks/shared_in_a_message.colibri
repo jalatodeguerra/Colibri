@@ -1,0 +1,39 @@
+// workers: 2
+// A `Shared` is a handle: it crosses a channel (or a closure, or a result) as it is, so sending
+// one copies nothing and needs no `.clone()`. The worker reads the table it was sent.
+struct Job {
+    table: Shared[List[str]]
+    index: int
+}
+
+fn main() -> Result[()] {
+    let words = Shared(["alpha", "beta", "gamma", "delta"])
+    let jobs = Channel[Job]()
+    let out = Channel[str]()
+    let worker = task.run(fn() {
+        for job in jobs {
+            out.send("{job.index}: {job.table.get()[job.index].to_upper()}")
+        }
+        out.close()
+    })
+    for i in 0..4 {
+        jobs.send(Job { table: words, index: i })
+    }
+    jobs.close()
+    for line in out {
+        print(line)
+    }
+    worker.join()?
+    // The same handle twice in one message is one handle.
+    let pairs = Channel[(Shared[List[str]], Shared[List[str]])]()
+    pairs.send((words, words))
+    let (a, b) = pairs.recv().expect("a pair")
+    print("one copy behind both: {a.get() == b.get()}")
+    return ok(())
+}
+
+// expect: 0: ALPHA
+// expect: 1: BETA
+// expect: 2: GAMMA
+// expect: 3: DELTA
+// expect: one copy behind both: true

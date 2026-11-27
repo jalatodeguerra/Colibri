@@ -172,6 +172,18 @@ pub trait BytesOps: Engine {
         let Some(Value::ByteBuf(buf)) = obj.field(0) else {
             return Err(self.internal(fiber, span, "a malformed byte builder"));
         };
+        // A builder in a `Shared`'s copy is frozen: it can be read, not added to or cleared.
+        if obj.is_frozen()
+            && matches!(
+                op,
+                Builtin::BytesBuilderPush
+                    | Builtin::BytesBuilderPushBytes
+                    | Builtin::BytesBuilderPushStr
+                    | Builtin::BytesBuilderClear
+            )
+        {
+            return Err(self.panic(fiber, span, crate::heap::FROZEN_MESSAGE));
+        }
         // What the builder grows by, or what `to_bytes` copies: asked for before it is made.
         let growth = match (op, args.get(1)) {
             (Builtin::BytesBuilderPushBytes, Some(Value::Bytes(b))) => b.len(),

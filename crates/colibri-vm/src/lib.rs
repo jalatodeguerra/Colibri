@@ -39,6 +39,7 @@ mod profile;
 mod rc;
 mod run;
 mod safepoint;
+mod shared;
 mod source;
 #[allow(unsafe_code)]
 #[cfg_attr(target_family = "wasm", path = "stacks_web.rs")]

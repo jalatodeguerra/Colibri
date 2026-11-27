@@ -255,6 +255,12 @@ impl Machine {
                 }
             }
         }
+        // The frozen copies of `Shared`s go after the module's values, which may hold handles.
+        if self.refused {
+            std::mem::forget(self.core.take_shared_copies());
+        } else {
+            self.free_shared_copies();
+        }
         // A `Drop` hook that panics while the program is shutting down has nobody to tell.
         self.core.hook_panics.clear();
         self.core.end_entry(entry, false);

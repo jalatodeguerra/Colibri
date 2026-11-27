@@ -399,6 +399,8 @@ impl<'t> Writer<'t> {
             self.out.push_str("<Task>");
         } else if ty == colibri_check::types::CHANNEL_TYPE {
             self.out.push_str("<Channel>");
+        } else if ty == colibri_check::types::SHARED_TYPE {
+            self.out.push_str("<Shared>");
         } else {
             return false;
         }

@@ -105,6 +105,7 @@ impl Core {
             || obj.ty() == colibri_check::types::SIGNAL_TYPE
             || obj.ty() == colibri_check::types::TASK_TYPE
             || obj.ty() == colibri_check::types::CHANNEL_TYPE
+            || obj.ty() == colibri_check::types::SHARED_TYPE
             || obj.ty() == colibri_check::types::STR_BUILDER_TYPE
         {
             return;
@@ -208,6 +209,14 @@ pub trait Release: Engine {
                     // A channel handle dies: the channel lives on while another handle holds it,
                     // and a channel is closed only by `close()`.
                     self.core_mut().chan_died(id);
+                } else if let Some(id) = crate::shared::shared_id_of(&rc) {
+                    // A `Shared` handle dies: the graph lives on while another handle holds it.
+                    // This isolate's frozen copies of graphs that no handle holds any more die
+                    // with it (the last handle may be in another isolate: the next sweep, at a
+                    // `get` or at the start of a task, finds those).
+                    self.core_mut().shared_died(id);
+                    let dead = self.core_mut().sweep_shared();
+                    self.release_all(dead);
                 }
                 // The `Drop` hook runs first; if it stores the object somewhere, the object
                 // lives on and dies (without a second hook) when that reference does.
@@ -529,6 +538,9 @@ mod tests {
             _: Span,
         ) -> Eval {
             unreachable!("no channel is used in these tests")
+        }
+        fn shared_get(&mut self, _: &mut FiberState, _: &Value, _: Span) -> Eval {
+            unreachable!("no shared value is used in these tests")
         }
         fn channel_next(&mut self, _: &mut FiberState, _: &Value, _: Span) -> Eval<Option<Value>> {
             unreachable!("no channel is used in these tests")
