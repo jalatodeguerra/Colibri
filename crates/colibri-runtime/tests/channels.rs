@@ -145,10 +145,13 @@ fn main() -> Result[()] {
     print("{b.recv()}")
     ch.send(8)
     print("{a.recv()}")
+    // A close through one is seen through the other, and through the original.
+    a.close()
+    print("{b.recv()} {ch.try_recv()} {ch.recv()}")
     return ok(())
 }
 "#,
-        "some(7)\nsome(8)\n",
+        "some(7)\nsome(8)\nnone none none\n",
     );
 }
 
@@ -451,4 +454,170 @@ fn a_user_clone_runs_once_when_its_value_is_sent_with_clone_and_a_plain_clone_is
     // once: the walk that copies the result does not run it again.
     assert_eq!(run_on(1, &plain), "1\n1\n");
     assert_eq!(run_on(1, &own), "2\n2\n");
+}
+
+#[test]
+fn a_joiner_with_coroutines_of_its_own_does_not_run_the_task_inline_and_they_keep_running() {
+    // `outer` starts a coroutine that sends after a pause, and joins a task that receives. If the
+    // join ran the task inline it would set the sender aside, and nothing could end the wait.
+    // The join waits instead, and a thread is started for the task when every one of the pool's
+    // is busy (a pool of one is: `outer` is on it).
+    let source = r#"
+fn sender(ch: Channel[int]) {
+    wait(0.01)
+    ch.send(7)
+}
+
+fn outer() -> int {
+    let ch = Channel[int]()
+    let c = go sender(ch)
+    let t = task.run(fn() => ch.recv().expect("a value"))
+    let v = t.join().expect("the task")
+    c.join()
+    return v
+}
+
+fn main() {
+    print("got {task.run(outer).join().expect("outer")}")
+}
+"#;
+    for workers in [1, 3, 8] {
+        for _ in 0..3 {
+            assert_eq!(run_on(workers, source), "got 7\n", "{workers} workers");
+        }
+    }
+}
+
+#[test]
+fn the_joiner_that_is_a_coroutine_with_a_sibling_coroutine_gets_a_thread_for_its_task_too() {
+    // The joiner is a coroutine and another coroutine feeds the task: same wait, parked.
+    let source = r#"
+fn sender(ch: Channel[int]) {
+    wait(0.01)
+    ch.send(9)
+}
+
+fn joiner(ch: Channel[int]) {
+    let t = task.run(fn() => ch.recv().expect("a value"))
+    print("joiner got {t.join().expect("the task")}")
+}
+
+fn outer() {
+    let ch = Channel[int]()
+    let a = go sender(ch)
+    let b = go joiner(ch)
+    a.join()
+    b.join()
+}
+
+fn main() {
+    task.run(outer).join().expect("outer")
+}
+"#;
+    for workers in [1, 3] {
+        for _ in 0..3 {
+            assert_eq!(
+                run_on(workers, source),
+                "joiner got 9\n",
+                "{workers} workers"
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_joins_that_wait_for_each_other_do_not_exhaust_a_pool_of_one() {
+    // Each level has a coroutine, so none of them runs the next inline: every join needs a
+    // thread of its own, which the pool of one lends for as long as the level waits.
+    let source = r#"
+fn level(n: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    let tick = go fn() { wait(0.001) }()
+    let r = task.run(fn() => level(n - 1)).join().expect("level")
+    tick.join()
+    return r + 1
+}
+
+fn main() {
+    print("depth {task.run(fn() => level(4)).join().expect("top")}")
+}
+"#;
+    assert_eq!(run_on(1, source), "depth 4\n");
+}
+
+#[test]
+fn the_thread_started_for_a_waiting_joiner_is_temporary_and_is_joined_with_the_pool() {
+    let stats = within_a_minute(|| {
+        let out = Out::default();
+        let mut vm = colibri::Vm::builder()
+            .worker_threads(1)
+            .stdout_shared(Box::new(out.clone()))
+            .build();
+        vm.load_source(
+            "channels.colibri",
+            r#"
+fn sender(ch: Channel[int]) {
+    wait(0.01)
+    ch.send(7)
+}
+
+fn outer() -> int {
+    let ch = Channel[int]()
+    let c = go sender(ch)
+    let v = task.run(fn() => ch.recv().expect("a value")).join().expect("the task")
+    c.join()
+    return v
+}
+
+fn main() {
+    print("got {task.run(outer).join().expect("outer")}")
+}
+"#,
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        vm.run_event_loop().unwrap();
+        assert_eq!(out.text(), "got 7\n");
+        let stats = vm.worker_stats();
+        // The pool's one thread, and the one that the join asked for.
+        assert_eq!(stats.started.load(std::sync::atomic::Ordering::SeqCst), 2);
+        drop(vm);
+        stats
+    });
+    let n = |a: &std::sync::atomic::AtomicUsize| a.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(n(&stats.alive), 0);
+    assert_eq!(n(&stats.joined), 2);
+}
+
+#[test]
+fn the_drop_of_the_clone_that_send_was_given_does_not_depend_on_an_unrelated_clone() {
+    // `Res` has a `Drop` that prints; the temporary clone is dropped after the send, whether or
+    // not some other type in the program has its own `impl Clone`.
+    let body = r#"
+class Res {
+    id: int
+}
+
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.id}")
+    }
+}
+
+fn main() {
+    let ch = Channel[Res](capacity: 2)
+    let r = Res { id: 1 }
+    ch.send(r.clone())
+    print("sent")
+    let got = ch.recv().expect("one")
+    print("got {got.id}")
+}
+"#;
+    let other = "struct Other { n: int }\nimpl Clone for Other {\n    fn clone(self) -> Other => Other { n: self.n }\n}\n";
+    let plain = run_on(1, body);
+    assert_eq!(run_on(1, &format!("{other}{body}")), plain);
+    // The temporary clone is dropped (once), as is the original and the received copy.
+    assert_eq!(plain.matches("drop 1").count(), 3, "{plain}");
 }

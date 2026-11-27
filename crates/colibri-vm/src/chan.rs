@@ -49,7 +49,7 @@ const BLOCK_POLL: Duration = Duration::from_millis(50);
 
 /// How long the event loop of a worker sleeps at most: it looks at the pool's cancel flag
 /// between sleeps (the main `Vm` has no flag and sleeps until a completion comes).
-const DRIVE_POLL: f64 = 0.05;
+pub(crate) const DRIVE_POLL: f64 = 0.05;
 
 impl Machine {
     /// `Channel[T]()` and `Channel[T](capacity: n)`.
@@ -288,8 +288,9 @@ impl Machine {
     /// The portable form of a value to send: copied on a walk stack (a part that cannot cross, or
     /// a copy that would pass the memory limit, is a panic of the sender). With `clone`, the value
     /// is the operand of the `.clone()` that the program wrote: a user `impl Clone` anywhere in
-    /// the program could run in that clone and must not be skipped, so then it is made; without
-    /// one, the clone is a structural deep copy, and so is the walk (the second copy is left out).
+    /// the program could run in that clone, and a `Drop` hook would run on the temporary clone, so
+    /// neither must be skipped: then the clone is made. Without either, the clone is a structural
+    /// deep copy that nothing can observe, and so is the walk (the second copy is left out).
     fn copy_for_send(
         &mut self,
         fiber: &mut VmFiber,
@@ -297,7 +298,9 @@ impl Machine {
         clone: bool,
         span: Span,
     ) -> Result<Portable, Ctl> {
-        let cloned = if clone && self.core.dispatch.has_user_clone() {
+        let cloned = if clone
+            && (self.core.dispatch.has_user_clone() || self.core.dispatch.has_user_drop())
+        {
             Some(self.clone_deep(fiber, value, span)?)
         } else {
             None

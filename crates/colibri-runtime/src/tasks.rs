@@ -330,9 +330,70 @@ pub(crate) struct Shared {
     /// Set when the pool shuts down: the task that runs stops at its next safepoint, like the
     /// debugger's pause request (`SafepointKind::Cancel`).
     pub(crate) cancel: Arc<AtomicBool>,
+    /// How many pool threads wait for a job (not running one).
+    idle: AtomicUsize,
+    /// The temporary threads a join started because every pool thread was busy.
+    extras: Mutex<Vec<JoinHandle<()>>>,
+    cfg: Arc<WorkerCfg>,
+    stats: Arc<PoolStats>,
 }
 
+/// The most temporary threads at a time: they are bounded by the depth of nested joins, and this
+/// keeps a program that nests without end from starting threads without end.
+const MAX_EXTRA_THREADS: usize = 256;
+
 impl Shared {
+    /// A joiner that does not run the queued task `key` itself waits for it: if no thread is
+    /// free to take it, starts a temporary one, which runs jobs until the queue is empty and then
+    /// ends. So a pool of a fixed size cannot be deadlocked by tasks that wait for tasks.
+    fn make_room(self: &Arc<Self>, key: u64) {
+        {
+            let queue = lock(&self.queue);
+            if queue.closed
+                || !queue.jobs.iter().any(|j| j.key == key)
+                || queue.jobs.len() <= self.idle.load(Ordering::SeqCst)
+            {
+                return;
+            }
+        }
+        let mut extras = lock(&self.extras);
+        // The finished ones are joined as they are found.
+        let mut i = 0;
+        while i < extras.len() {
+            if extras[i].is_finished() {
+                let _ = extras.swap_remove(i).join();
+                self.stats.joined.fetch_add(1, Ordering::SeqCst);
+            } else {
+                i += 1;
+            }
+        }
+        if extras.len() >= MAX_EXTRA_THREADS || lock(&self.queue).closed {
+            return;
+        }
+        let (shared, cfg, stats) = (
+            Arc::clone(self),
+            Arc::clone(&self.cfg),
+            Arc::clone(&self.stats),
+        );
+        stats.alive.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new()
+            .name("colibri-task-extra".to_string())
+            .stack_size(WORKER_STACK)
+            .spawn({
+                let stats = Arc::clone(&stats);
+                move || worker_main(&shared, &cfg, &stats, true)
+            });
+        match spawned {
+            Ok(handle) => {
+                stats.started.fetch_add(1, Ordering::SeqCst);
+                extras.push(handle);
+            }
+            Err(_) => {
+                stats.alive.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
+
     fn key(&self) -> u64 {
         self.next_key.fetch_add(1, Ordering::Relaxed)
     }
@@ -381,8 +442,9 @@ pub(crate) struct TaskPool {
 impl TaskPool {
     /// A pool that has started nothing: the threads start with the first task.
     pub(crate) fn new(cfg: WorkerCfg, stats: Arc<PoolStats>) -> Self {
+        let cfg = Arc::new(cfg);
         TaskPool {
-            cfg: Arc::new(cfg),
+            cfg: Arc::clone(&cfg),
             shared: Arc::new(Shared {
                 queue: Mutex::new(Queue {
                     jobs: VecDeque::new(),
@@ -391,6 +453,10 @@ impl TaskPool {
                 wake: Condvar::new(),
                 next_key: AtomicU64::new(1),
                 cancel: Arc::new(AtomicBool::new(false)),
+                idle: AtomicUsize::new(0),
+                extras: Mutex::new(Vec::new()),
+                cfg,
+                stats: Arc::clone(&stats),
             }),
             stats,
             handles: Vec::new(),
@@ -452,7 +518,7 @@ impl TaskPool {
                 .stack_size(WORKER_STACK)
                 .spawn({
                     let stats = Arc::clone(&stats);
-                    move || worker_main(&shared, &cfg, &stats)
+                    move || worker_main(&shared, &cfg, &stats, false)
                 });
             match spawned {
                 Ok(handle) => {
@@ -498,7 +564,8 @@ impl TaskPool {
     pub(crate) fn shutdown(&mut self) {
         self.shared.cancel.store(true, Ordering::Release);
         self.close();
-        for handle in self.handles.drain(..) {
+        let extras = std::mem::take(&mut *lock(&self.shared.extras));
+        for handle in self.handles.drain(..).chain(extras) {
             // A worker that panicked outside a task has nothing more to say.
             let _ = handle.join();
             self.stats.joined.fetch_add(1, Ordering::SeqCst);
@@ -686,6 +753,10 @@ impl TaskSpawner for WorkerLaunch {
         Ok(key)
     }
 
+    fn make_room(&self, key: u64) {
+        self.shared.make_room(key);
+    }
+
     fn steal(&self, key: u64) -> Option<StolenTask> {
         let stolen = self.shared.steal(key)?;
         // One program per pool: a job of another program would run on an isolate built for this
@@ -727,7 +798,8 @@ impl Drop for Alive<'_> {
 }
 
 /// The loop of a pool thread.
-fn worker_main(shared: &Arc<Shared>, cfg: &WorkerCfg, stats: &PoolStats) {
+/// A `temporary` thread (started by a join, see [`Shared::make_room`]) ends when it finds no job.
+fn worker_main(shared: &Arc<Shared>, cfg: &WorkerCfg, stats: &PoolStats, temporary: bool) {
     let _alive = Alive(stats);
     // The isolate of this thread, and the image it was built from.
     let mut isolate: Option<(Vm, Arc<ProgramImage>, u64)> = None;
@@ -744,10 +816,15 @@ fn worker_main(shared: &Arc<Shared>, cfg: &WorkerCfg, stats: &PoolStats) {
                 if let Some(job) = queue.jobs.pop_front() {
                     break job;
                 }
+                if temporary {
+                    return;
+                }
+                shared.idle.fetch_add(1, Ordering::SeqCst);
                 queue = shared
                     .wake
                     .wait(queue)
                     .unwrap_or_else(PoisonError::into_inner);
+                shared.idle.fetch_sub(1, Ordering::SeqCst);
             }
         };
         let Job {

@@ -2231,6 +2231,20 @@ impl Vm {
         self.engine.core().sched.waiter_count()
     }
 
+    /// A flag that stops the program from another thread: once it is set, the program ends at its
+    /// next safepoint, or in the wait (`join`, a channel) it is in, with the panic that an
+    /// exhausted instruction budget raises. For a host's watchdog; call it before running.
+    #[doc(hidden)]
+    pub fn stop_handle(&mut self) -> Arc<std::sync::atomic::AtomicBool> {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let core = self.engine.core_mut();
+        core.set_cancel_flag(Some(Arc::clone(&flag)));
+        if let Some(every) = std::num::NonZeroU32::new(4096) {
+            core.want_safepoints(colibri_core::safepoint::SafepointKind::Cancel, every);
+        }
+        flag
+    }
+
     /// Cancels every live coroutine, newest first, running their `defer`s and drops. Done
     /// automatically by [`Vm::shutdown`] and when the `Vm` is dropped.
     pub fn cancel_coroutines(&mut self) {

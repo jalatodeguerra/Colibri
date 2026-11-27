@@ -1758,3 +1758,55 @@ fn one_channel_reached_twice_in_a_value_is_one_handle_on_the_receiver() {
     assert_eq!(receiver.chan_count(), 1);
     dispose(vec![root, Value::Tuple(out)]);
 }
+
+#[test]
+fn two_kinds_of_handle_at_one_address_are_not_one_handle() {
+    #[derive(Debug)]
+    struct A;
+    #[derive(Debug)]
+    struct B;
+    impl CrossesAsIs for A {
+        fn materialise(&self, _core: &mut Core) -> Value {
+            Value::Int(1)
+        }
+        fn address(&self) -> usize {
+            7
+        }
+    }
+    impl CrossesAsIs for B {
+        fn materialise(&self, _core: &mut Core) -> Value {
+            Value::Int(2)
+        }
+        fn address(&self) -> usize {
+            7
+        }
+    }
+    struct Both;
+    impl SendEnv for Both {
+        fn crosses_as_is(&self, v: &Value) -> Option<Arc<dyn CrossesAsIs>> {
+            match v {
+                Value::Host(r) if r.ty == CONN => Some(Arc::new(A)),
+                Value::Host(r) if r.ty == MSG => Some(Arc::new(B)),
+                _ => None,
+            }
+        }
+    }
+    let root = Value::tuple(vec![host(CONN), host(MSG), host(CONN)]);
+    let p = to_portable(&root, &Both, stack()).unwrap();
+    let Portable::Tuple { items, .. } = &p else {
+        panic!("{p:?}")
+    };
+    assert!(matches!(items[0], Portable::Handle { .. }));
+    assert!(matches!(items[1], Portable::Handle { .. }));
+    // The third is a second visit of the first kind at that address: `A` made afresh by the
+    // environment is another `Arc`, but the same kind and address.
+    assert!(matches!(items[2], Portable::Ref(_)));
+    let mut c = core();
+    let Value::Tuple(out) = from_portable(p, &mut c, stack()).unwrap() else {
+        panic!()
+    };
+    assert!(matches!(
+        (&out[0], &out[1], &out[2]),
+        (Value::Int(1), Value::Int(2), Value::Int(1))
+    ));
+}

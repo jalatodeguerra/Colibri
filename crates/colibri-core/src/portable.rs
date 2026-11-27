@@ -186,8 +186,21 @@ pub trait CrossesAsIs: Send + Sync + fmt::Debug {
     fn materialise(&self, core: &mut Core) -> Value;
 
     /// What the handle names, as an address: two handles with the same address are the same
-    /// thing, and a graph that reaches it twice crosses it once.
-    fn address(&self) -> usize;
+    /// thing (of the same Rust type), and a graph that reaches it twice crosses it once. The
+    /// default is the address of the value itself, which is right for a handle that is one `Arc`
+    /// allocation; a handle that is a view of something else gives the address of that.
+    fn address(&self) -> usize {
+        (self as *const Self).cast::<()>() as usize
+    }
+
+    /// The Rust type of the handle: part of what makes two handles one, so that two types that
+    /// happen to report the same address are not merged.
+    fn kind(&self) -> std::any::TypeId
+    where
+        Self: 'static,
+    {
+        std::any::TypeId::of::<Self>()
+    }
 }
 
 // A `Portable` is `Send`. This is the whole point of the type, so it is a compile-time fact, and no
@@ -628,7 +641,7 @@ struct ToPortable<'e> {
     /// The class objects, by address.
     objs: HashMap<usize, ObjSlot>,
     /// The handles that cross as they are, by what they name: a handle reached twice is one.
-    handles: HashMap<usize, u32>,
+    handles: HashMap<(std::any::TypeId, usize), u32>,
     next: u32,
     path: Vec<Seg>,
     /// Bytes copied since the memory limit was last asked.
@@ -679,12 +692,12 @@ impl ToPortable<'_> {
     /// names is a `Ref` to it, so the receiver ends with one handle (and one object) for it.
     fn handle(&mut self, v: &Value) -> Option<Portable> {
         let handle = self.env.crosses_as_is(v)?;
-        let address = handle.address();
-        if let Some(&id) = self.handles.get(&address) {
+        let key = (handle.kind(), handle.address());
+        if let Some(&id) = self.handles.get(&key) {
             return Some(Portable::Ref(id));
         }
         let id = self.fresh_id();
-        self.handles.insert(address, id);
+        self.handles.insert(key, id);
         Some(Portable::Handle { id, handle })
     }
 
