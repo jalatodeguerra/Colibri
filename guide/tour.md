@@ -1077,7 +1077,7 @@ when called outside a coroutine started with `go`, `main` included.
 Coroutines never run at the same time, so they share objects without locks, and a coroutine runs
 until it waits. `net`, `http`, `process` and `fs.File` calls pause only the calling coroutine. The
 whole-file functions (`fs.read`, `fs.write`, ...) and `time.sleep` hold the thread until they
-finish. Thread tasks and channels are in the next sections; `Shared` and `Mutex` are **planned**.
+finish. Thread tasks, channels and `Shared` are in the next sections; `Mutex` is **planned**.
 
 ## Thread tasks
 
@@ -1249,6 +1249,68 @@ coroutine that is cancelled while it waits does not take a value with it. Things
 - A value that does not fit in the memory limit when it is copied into the channel, or rebuilt out
   of it, is that limit failing, as for a task. The receive that fails has taken the value out of
   the channel, so the value is lost with the receiver that could not hold it.
+
+## Shared
+
+`Shared(x)` copies `x` once into a frozen value that every thread task can read, and gives a
+`Shared[T]` handle for it. The handle is sent to tasks like a `Channel`: it is not copied, and
+`.clone()` of it is the same handle. `s.get()` gives the calling thread its own copy of the value,
+built the first time that thread asks and kept after that, so a second `get()` is the same object
+(a class compares by identity) and costs nothing.
+
+```colibri
+class Table {
+    rows: List[int]
+}
+
+fn total(s: Shared[Table]) -> int {
+    let mut sum = 0
+    for r in s.get().rows {
+        sum += r
+    }
+    return sum
+}
+
+fn main() {
+    let s = Shared(Table { rows: [1, 2, 3, 4] })
+    let t = task.run(fn() => total(s))
+    print("total {t.join().expect("task")}")
+    print("same copy twice: {s.get() == s.get()}")
+    let r = task.run(fn() => s.get().rows.push(5)).join()
+    print(r.is_err())
+}
+```
+
+```output
+total 10
+same copy twice: true
+true
+```
+
+The copy is **frozen**: lists, maps, sets and class objects in it cannot be written, in the main
+thread as much as in a task. Every way of changing them (an index or field assignment, `+=`, `push`,
+`pop`, `insert`, `remove`, `clear`, `sort`, `reverse`, `for mut`, a `mut` method of an element, a
+`StrBuilder` or `BytesBuilder` that is in it, ...) panics with ``cannot modify a frozen value (it
+came from `Shared`)``. Reading is free. A struct is a value, so a struct you took out of the copy
+is yours to change, as it is anywhere.
+
+To change the data, make a new value from it. A `clone()` of a frozen value, a value that you send
+back through a task result or a channel, and a result of `sorted`, `map` and the like are ordinary
+copies and are not frozen. The copy is built by the same rules as a task's closure, so a `Shared`
+can hold what a task can be sent. One more thing is refused: a closure that captures a `let mut`
+variable (even only to read it), because that variable would have to be changed by every copy.
+Strings are copied, not frozen, as they are never changed in place.
+
+Things to know:
+
+- Each thread that calls `get()` holds its own copy of the whole value, so a `Shared` of N bytes costs
+  about N bytes for each thread that reads it, plus the one frozen original. The copies count in the
+  memory limit of the program.
+- The copies are freed when the last handle is gone. A worker thread that is idle keeps its copy
+  until its next task begins, and the end of the program frees everything.
+- A type with an `impl Drop` in a `Shared` has its hook run once for each copy that is freed, not
+  once for the value, and a hook that changes the (frozen) object panics.
+- `Shared` is for data that is read. `Mutex`, for data that tasks change, is not built yet.
 
 ## Bytes and JSON
 

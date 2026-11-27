@@ -598,3 +598,12 @@ a
 b
 none
 ```
+
+## `Shared`
+
+`Shared(x)` gives a `Shared[T]` for any `x: T` that a task could be sent (see
+[Shared](tour.md#shared)). The handle is shared by every thread that holds it.
+
+| Type | Method | What it does |
+|------|--------|--------------|
+| `Shared[T]` | `get() -> T` | this thread's frozen copy of the value, built on the first call and the same object after; a write to it panics |
