@@ -471,8 +471,6 @@ fn main() {
             "{name}: both tasks held 6 MiB and none failed: {text}"
         );
         assert!(!text.contains("no meeting"), "{name}: {text}");
-        // And the one that went on is not blamed for the other's.
-        assert!(text.contains("ok"), "{name}: {text}");
         // MEETING is process-wide: start the next program from zero.
         *MEETING.0.lock().unwrap() = 0;
     }

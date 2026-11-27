@@ -1162,13 +1162,18 @@ possible (a `Drop` hook, a callback of the host) it blocks the thread. Its resul
 once: a second `join` or `try_join` of the same task gives an `err` that says it was joined
 already. A task may start tasks and join them. When the pool's threads are all busy, a worker that
 joins a task that has not started runs it itself, so nested tasks cannot deadlock a pool of any
-size.
+size. The task runs as it would on a thread of its own: it has its own instruction budget, its own
+memory-limit standing, the tasks it starts are numbered from it, and the coroutines it leaves are
+cancelled when it ends. The one difference is the stack: a deep chain of tasks that each join the
+next, all run this way, shares one thread's stack and can hit its limit (a clean panic that says
+so) where separate threads would not. A `Task` has one owner: `t.clone()` is a compile error.
 
 Dropping the `Task` without joining it **detaches** it: the task goes on, and its result is thrown
 away. There is no `cancel()`. A task that has not ended when the program does is stopped (at its
 next safepoint, with its `defer`s run), so `join` what the program needs. The random numbers of a
-task (`rand`) come from a generator of its own, seeded from the program's seed and the task, so a
-run repeats whichever thread runs the task. Thread tasks do not exist in the web build: `task.run`
+task (`rand`) come from a generator of its own, seeded from the program's seed and from where
+the task was started (which task started it, and as its how-manyth), so a run repeats whichever
+thread runs the task, nested tasks included. A task also starts with a clock of its own. Thread tasks do not exist in the web build: `task.run`
 is a compile error there.
 
 ## Bytes and JSON

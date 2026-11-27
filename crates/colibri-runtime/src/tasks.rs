@@ -621,10 +621,13 @@ impl TaskSpawner for Launch {
     }
 }
 
+/// The program and the serial of the task a worker is running.
+type RunningTask = Option<(Arc<ProgramImage>, u64, u64)>;
+
 /// What a worker submits through: the queue of the pool it belongs to, for the task it runs.
 pub(crate) struct WorkerLaunch {
     shared: Arc<Shared>,
-    now: Rc<RefCell<Option<(Arc<ProgramImage>, u64, u64)>>>,
+    now: Rc<RefCell<RunningTask>>,
     started: Rc<Cell<u64>>,
 }
 
