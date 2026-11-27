@@ -21,7 +21,14 @@
 //!
 //! No root has to be enumerated, so a reference the detector cannot see (a Rust local, a
 //! host-held value) is simply an outside reference: the detector can miss a leak but cannot
-//! report a live object. `weak` references are not counted by `Rc` and are not edges.
+//! report a live object.
+//!
+//! **What is reported.** Only class objects and closures are registered, so the detector starts
+//! from them: a cycle is reported when it goes through at least one class object or closure
+//! (the lists, maps, sets and structs on the way are followed as part of it). A cycle made only
+//! of `List`, `Map` and `Set` values, with no class object or closure in it, is never reported.
+//!
+//! `weak` references are not counted by `Rc` and are not edges.
 
 use std::collections::HashMap;
 use std::fmt;
