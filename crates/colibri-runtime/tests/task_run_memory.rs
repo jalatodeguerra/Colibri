@@ -256,3 +256,60 @@ fn run_big(n: int) -> int {
     vm.set_memory_limit(Some(limit));
     assert_eq!(go.call(&mut vm, (2000,)).unwrap(), 4000);
 }
+
+#[test]
+fn a_closure_that_does_not_fit_when_the_worker_rebuilds_it_is_a_memory_limit_failure() {
+    // The closure is copied under the limit; before the worker (busy with another task) takes it,
+    // the program fills the room that was left, so the rebuild is what passes the limit. It is the
+    // task's memory limit, an `err` to the joiner, and not a failure to copy.
+    let (mut vm, _out) = vm_with(
+        None,
+        r#"
+let mut first: Task[int]? = none
+let mut second: Task[int]? = none
+let mut filler: List[str] = []
+
+fn start(n: int) {
+    let blob = "x".pad_left(n)
+    first = some(task.run(fn() -> int { return gate_wait() }))
+    second = some(task.run(fn() -> int { return blob.len() }))
+}
+
+fn fill(n: int) {
+    filler.push("{filler.len()}".pad_left(n))
+}
+
+fn finish() -> str {
+    gate_open()
+    let t = second.expect("started")
+    second = none
+    match t.join() {
+        ok(v) => return "ok {v}"
+        err(e) => return e.message()
+    }
+}
+"#,
+    );
+    let start = vm.get_fn::<(i64,), ()>("start").unwrap();
+    let fill = vm.get_fn::<(i64,), ()>("fill").unwrap();
+    let finish = vm.get_fn::<(), String>("finish").unwrap();
+    let before = vm.memory_used().unwrap();
+    let copy = 4 * MIB;
+    let limit = before + 2 * copy + MIB;
+    vm.set_memory_limit(Some(limit));
+    start.call(&mut vm, (copy as i64,)).unwrap();
+    // The program's own string is gone; the copy waits in the queue. Fill the room, in steps
+    // that are a quarter of what is left, until less than a few KiB remain.
+    loop {
+        let room = limit - vm.memory_used().unwrap();
+        if room < 8192 {
+            break;
+        }
+        fill.call(&mut vm, ((room / 4) as i64,)).unwrap();
+    }
+    let message = finish.call(&mut vm, ()).unwrap();
+    assert!(
+        message.contains("failed: memory limit of") && message.ends_with("exceeded"),
+        "{message}"
+    );
+}

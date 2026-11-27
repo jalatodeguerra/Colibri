@@ -430,3 +430,33 @@ fn main() {
         "`closure.x` is a `Task`, which cannot be sent to another thread"
     );
 }
+
+#[test]
+fn done_sees_a_finished_task_with_nothing_else_running_the_scheduler() {
+    // Only `done` is called, again and again, from the host: no `wait`, no join and no event
+    // loop. The poll itself must collect what the worker delivered.
+    let (mut vm, _out, gate) = vm_with(
+        1,
+        r#"
+let mut pending: Task[int]? = none
+
+fn start() {
+    pending = some(task.run(fn() => gate_wait()))
+}
+
+fn finished() -> bool {
+    return pending.expect("started").done()
+}
+"#,
+    );
+    let start = vm.get_fn::<(), ()>("start").unwrap();
+    let finished = vm.get_fn::<(), bool>("finished").unwrap();
+    start.call(&mut vm, ()).unwrap();
+    assert!(!finished.call(&mut vm, ()).unwrap());
+    gate.tx.send(()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !finished.call(&mut vm, ()).unwrap() {
+        assert!(std::time::Instant::now() < deadline, "done never turned true");
+        std::thread::yield_now();
+    }
+}
