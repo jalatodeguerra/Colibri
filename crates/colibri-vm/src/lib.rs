@@ -29,7 +29,6 @@ mod fiber;
 mod heap;
 mod host;
 mod host_async;
-mod tasks;
 mod leaf;
 mod load;
 mod machine;
@@ -43,6 +42,7 @@ mod source;
 #[allow(unsafe_code)]
 #[cfg_attr(target_family = "wasm", path = "stacks_web.rs")]
 mod stacks;
+mod tasks;
 #[allow(unsafe_code)]
 mod unchecked;
 mod unwind;

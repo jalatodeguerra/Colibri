@@ -28,8 +28,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::JoinHandle;
 
 use colibri_check::package::{BuildCfg, MemoryFs};
-pub use colibri_core::portable::Portable;
 use colibri_core::external::Completer;
+pub use colibri_core::portable::Portable;
 use colibri_core::taskrun::{SpawnRequest, StolenTask, TaskOutcome, TaskSpawner};
 
 use crate::cap::CapSet;

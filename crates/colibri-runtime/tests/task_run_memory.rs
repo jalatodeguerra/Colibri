@@ -133,7 +133,11 @@ fn main() {
         "err: the task `hog` failed: memory limit of 8 MiB exceeded\nmain goes on: 3\n"
     );
     // What the failed task held was freed on its thread and credited to the same account.
-    assert!(vm.memory_used().unwrap() < 4 * MIB, "{:?}", vm.memory_used());
+    assert!(
+        vm.memory_used().unwrap() < 4 * MIB,
+        "{:?}",
+        vm.memory_used()
+    );
 }
 
 #[test]

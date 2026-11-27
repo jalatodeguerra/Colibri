@@ -191,11 +191,9 @@ impl Machine {
                 self.release(value);
                 match copied {
                     Ok(value) => Ok(TaskDone { value, steps: 0 }),
-                    Err(e) if e.refused == Refused::MemoryLimit => {
-                        Err(TaskFailure::MemoryLimit {
-                            limit: self.core.memory_limit().unwrap_or(0),
-                        })
-                    }
+                    Err(e) if e.refused == Refused::MemoryLimit => Err(TaskFailure::MemoryLimit {
+                        limit: self.core.memory_limit().unwrap_or(0),
+                    }),
                     Err(e) => Err(TaskFailure::Copy(e.to_string())),
                 }
             }
@@ -264,7 +262,11 @@ impl Machine {
                 Ok(self.core.option(Some(result)))
             }
             Builtin::TaskTryJoin => Ok(self.core.option(None)),
-            _ => Err(self.internal(fiber, span, "a task method that is not `done` or `try_join`")),
+            _ => Err(self.internal(
+                fiber,
+                span,
+                "a task method that is not `done` or `try_join`",
+            )),
         }
     }
 }

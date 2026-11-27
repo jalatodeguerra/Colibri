@@ -29,12 +29,12 @@ use crate::host::{HostFn, Registration, payload_message};
 use crate::iface::{self, ConstEntry, ConstValue, HostFnEntry, Rendered};
 use crate::reload::{Fingerprint, OwnedEntry, ReloadOptions, ReloadOutcome, ReloadState, reads_of};
 use crate::tasks::{
-    Launch, LineWriter, PendingTask, PoolStats, ProgramImage, SharedOut, Submission,
-    TaskDone, TaskFailure, TaskPool, WorkerCfg, WorkerLaunch, WorkerOut, WorkerSetup,
+    Launch, LineWriter, PendingTask, PoolStats, ProgramImage, SharedOut, Submission, TaskDone,
+    TaskFailure, TaskPool, WorkerCfg, WorkerLaunch, WorkerOut, WorkerSetup,
 };
-use colibri_core::taskrun::TaskSpawner;
 use crate::types::{TypeDesc, TypeRegistry};
 use colibri_core::leaks::Leak;
+use colibri_core::taskrun::TaskSpawner;
 
 /// The default limit on nested Colibri calls (DESIGN §10.4 leaves the number open).
 pub const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
