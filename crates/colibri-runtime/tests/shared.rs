@@ -474,15 +474,21 @@ fn main() {
 fn a_clone_of_a_shared_is_the_same_handle_and_a_clone_of_its_value_is_mutable() {
     same_on_one_and_three(
         r#"
+fn lend(s: Shared[List[int]]) -> int {
+    // The clone is the same handle, and it dies here without taking the graph with it.
+    let t = s.clone()
+    return t.get().len()
+}
+
 fn main() {
     let s = Shared([1, 2, 3])
     let t = s.clone()
     let mut c = t.get().clone()
     c.push(4)
-    print("{c} {s.get()} {t.get() == s.get()}")
+    print("{c} {s.get()} {t.get() == s.get()} {lend(s)} {lend(s)} {s.get()}")
 }
 "#,
-        "[1, 2, 3, 4] [1, 2, 3] true\n",
+        "[1, 2, 3, 4] [1, 2, 3] true 3 3 [1, 2, 3]\n",
     );
 }
 
@@ -503,11 +509,14 @@ fn main() {
 }
 
 #[test]
-fn a_closure_that_changes_a_captured_variable_cannot_be_shared() {
+fn a_closure_that_captures_a_mutable_variable_cannot_be_shared() {
+    // Whether it changes the variable or only reads it: the variable is a cell the closure shares
+    // with its function, and a frozen copy cannot have one.
     let source = r#"
 fn main() {
     let mut n = 0
-    let s = Shared(fn() { n += 1 })
+    n += 1
+    let s = Shared(fn() => n + 1)
     print("not reached")
 }
 "#;
@@ -519,7 +528,7 @@ fn main() {
     let err = vm.run_main().unwrap_err();
     assert!(
         err.to_string()
-            .contains("a `Shared` cannot hold a closure that changes a variable it captured"),
+            .contains("a `Shared` cannot hold a closure that captures a `let mut` variable"),
         "{err}"
     );
     assert_eq!(out.text(), "");

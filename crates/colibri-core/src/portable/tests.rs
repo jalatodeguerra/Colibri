@@ -2003,8 +2003,10 @@ fn a_shared_handle_inside_a_graph_crosses_as_the_arc_and_is_one_handle_when_reac
     let inner = crate::shared::SharedInner::new(Portable::Int(5));
     let one = sender.shared_handle(Arc::clone(&inner));
     let two = sender.shared_handle(Arc::clone(&inner));
+    // A handle of another graph is not merged with them.
+    let other = sender.shared_handle(crate::shared::SharedInner::new(Portable::Int(6)));
     // Two handles of one graph, and one handle twice: the graph crosses once in each case.
-    let root = Value::tuple(vec![one.clone(), one, two]);
+    let root = Value::tuple(vec![one.clone(), one, two, other]);
     let p = to_portable(&root, &sender, stack()).unwrap();
     let Portable::Tuple { items, .. } = &p else {
         panic!("{p:?}")
@@ -2012,18 +2014,49 @@ fn a_shared_handle_inside_a_graph_crosses_as_the_arc_and_is_one_handle_when_reac
     assert!(matches!(items[0], Portable::Handle { .. }));
     assert!(matches!(items[1], Portable::Ref(_)));
     assert!(matches!(items[2], Portable::Ref(_)));
+    assert!(matches!(items[3], Portable::Handle { .. }));
     // The `Arc` is shared, not copied: the sender's two handles and the one in flight.
     assert_eq!(Arc::strong_count(&inner), 4);
     let mut receiver = core();
     let Value::Tuple(out) = from_portable(p, &mut receiver, stack()).unwrap() else {
         panic!()
     };
-    let (Value::Obj(a), Value::Obj(b), Value::Obj(c)) = (&out[0], &out[1], &out[2]) else {
+    let (Value::Obj(a), Value::Obj(b), Value::Obj(c), Value::Obj(d)) =
+        (&out[0], &out[1], &out[2], &out[3])
+    else {
         panic!()
     };
-    assert!(Rc::ptr_eq(a, b) && Rc::ptr_eq(b, c));
-    assert_eq!(receiver.shared_count(), 1);
+    assert!(Rc::ptr_eq(a, b) && Rc::ptr_eq(b, c) && !Rc::ptr_eq(c, d));
+    assert_eq!(receiver.shared_count(), 2);
     // The one in flight is the receiver's now: this test, the sender's two and the receiver's one.
     assert_eq!(Arc::strong_count(&inner), 4);
     dispose(vec![root, Value::Tuple(out)]);
+}
+
+#[test]
+fn a_shared_handle_made_for_a_copy_that_fails_lets_go_of_its_graph() {
+    let mut sender = core();
+    let inner = crate::shared::SharedInner::new(Portable::Int(5));
+    let handle = sender.shared_handle(Arc::clone(&inner));
+    let mut chain = Value::Unit;
+    for _ in 0..100 {
+        chain = Value::list(vec![chain]);
+    }
+    let root = Value::tuple(vec![handle, chain]);
+    let p = to_portable(&root, &sender, StackGuard::here(1 << 20)).unwrap();
+    assert_eq!(Arc::strong_count(&inner), 3);
+    let mut receiver = core();
+    let err = from_portable(p, &mut receiver, StackGuard::here(64 * 1024)).unwrap_err();
+    assert_eq!(err, RebuildError::TooDeep);
+    // Whatever the failed copy made is gone: no handle in the receiver, and no `Arc` left of it.
+    assert_eq!(receiver.shared_count(), 0);
+    assert_eq!(Arc::strong_count(&inner), 2);
+    // The same holds for the frozen rebuild of a graph that holds a handle.
+    let p = to_portable(&root, &sender, StackGuard::here(1 << 20)).unwrap();
+    let err = from_portable_frozen(&p, &mut receiver, StackGuard::here(64 * 1024)).unwrap_err();
+    assert_eq!(err, RebuildError::TooDeep);
+    assert_eq!(receiver.shared_count(), 0);
+    drop(p);
+    assert_eq!(Arc::strong_count(&inner), 2);
+    dispose(vec![root]);
 }

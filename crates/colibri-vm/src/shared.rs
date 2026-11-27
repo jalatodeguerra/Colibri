@@ -43,7 +43,7 @@ impl Machine {
             return Err(self.panic(
                 fiber,
                 span,
-                "a `Shared` cannot hold a closure that changes a variable it captured: its copy is frozen",
+                "a `Shared` cannot hold a closure that captures a `let mut` variable: its copy is frozen",
             ));
         }
         Ok(self.core.new_shared(root))

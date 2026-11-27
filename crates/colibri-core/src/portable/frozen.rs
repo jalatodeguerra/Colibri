@@ -37,7 +37,7 @@ pub fn from_portable_frozen(
 impl Rebuild<'_> {
     /// Freezes what the walk built that can be changed. An object that came from a handle (a
     /// channel, another `Shared`) is frozen too, which changes nothing: its state is not in it.
-    fn freeze_built(&mut self) {
+    pub(super) fn freeze_built(&mut self) {
         for v in self.built.values() {
             match v {
                 Value::List(l) => l.freeze(),
