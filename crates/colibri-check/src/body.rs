@@ -978,6 +978,43 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         }
     }
 
+    /// The lint for a statement that only computes a plain value and throws it away
+    /// (`-b`, `a + 1`, `x`). It is most often a line that was meant to continue the one above:
+    /// a line that starts with `-` is a new statement, because a statement ends at the end of its
+    /// line (`let c = a` and then `- b` is `let c = a` and an unused `-b`).
+    ///
+    /// Narrow on purpose: only numbers, `bool`, `char` and `str` built from literals, names, fields
+    /// and the operators on them. A call, an assignment, an index (which may panic) or an
+    /// operator on a user's type (which runs their `impl`) can have an effect, and the tail of a
+    /// block is its value, so none of those warn.
+    fn warn_discarded_value(&mut self, e: &ast::Expr, ty: &Ty) {
+        if self.defer_depth != 0 || !self.ck.mods[self.ck.cur_mod.0 as usize].root {
+            return;
+        }
+        let plain = matches!(
+            self.infer.shallow(ty),
+            Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Bool | Ty::Char | Ty::Str | Ty::Infer(_)
+        );
+        if !plain || !is_plain_value(e) {
+            return;
+        }
+        let starts_with_operator = matches!(
+            &e.kind,
+            ExprKind::Unary {
+                op: ast::UnOp::Neg,
+                ..
+            }
+        );
+        let hint = if starts_with_operator {
+            "a line that starts with `-` is a new statement, not a continuation of the line above: put the operator at the end of the previous line, or use parentheses"
+        } else {
+            "the value is not used; remove the statement, or use it (`let _ = ...` ignores a value on purpose)"
+        };
+        let diag = Diagnostic::warning("unused value: this expression has no effect", e.span)
+            .with_hint(hint);
+        self.ck.report_lint(diag);
+    }
+
     /// The lint for code after `return`, `break`, `continue` or a call that never returns: one
     /// warning per block, at the first statement that cannot run. Dependencies are not linted.
     fn warn_unreachable(&mut self, span: Span) {
@@ -1004,6 +1041,9 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             }
             StmtKind::Expr(e) => {
                 let (stmt, never) = self.expr_stmt(e);
+                if let hir::StmtKind::Expr(value) = &stmt.kind {
+                    self.warn_discarded_value(e, &value.ty);
+                }
                 out.push(stmt);
                 never
             }
@@ -1599,5 +1639,25 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 Some(VarKind::IntLit | VarKind::FloatLit)
             ),
         }
+    }
+}
+
+/// Whether `e` only computes a value from literals, names, fields and the operators on them, with
+/// nothing in it that could run a user's code. See `FnCtx::warn_discarded_value`.
+fn is_plain_value(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Char(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Ident(_)
+        | ExprKind::SelfValue => true,
+        // A string with a hole shows the value of the hole, which may run a user's `Show`.
+        ExprKind::Str(segs) => segs.iter().all(|s| matches!(s, ast::StrSeg::Lit(_))),
+        ExprKind::Paren(inner) => is_plain_value(inner),
+        ExprKind::Unary { expr, .. } => is_plain_value(expr),
+        ExprKind::Binary { lhs, rhs, .. } => is_plain_value(lhs) && is_plain_value(rhs),
+        ExprKind::Field { base, .. } | ExprKind::TupleIndex { base, .. } => is_plain_value(base),
+        _ => false,
     }
 }

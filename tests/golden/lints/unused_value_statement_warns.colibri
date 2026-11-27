@@ -1,0 +1,40 @@
+// A statement that only computes a plain value and drops it does nothing. The usual cause is
+// a line that was meant to continue the one above: a statement ends at the end of its line, so
+// a line starting with `-` is a new statement (here an unused `-b`) and `c` is just `a`.
+fn total() -> int {
+    let a = 5
+    let b = 2
+    let c = a
+    - b // warning: unused value: this expression has no effect
+    return c
+}
+
+fn bump(n: int) -> int {
+    return n + 1
+}
+
+struct Money { cents: int }
+
+fn main() {
+    print(total())
+    let a = 1
+    let b = 2
+    a + b // warning: unused value: this expression has no effect
+    a // warning: unused value: this expression has no effect
+    "text" // warning: unused value: this expression has no effect
+    // None of these warn: calls, assignments, an index, `let _`,
+    // and the value of a block.
+    let mut m = 0
+    m = m + 1
+    m += a
+    bump(m)
+    let _ = a + b
+    let v = [1, 2, 3]
+    v[0]
+    let n = if a > b { a } else { b }
+    print(n)
+    print(Money { cents: 3 }.cents)
+}
+// expect: 5
+// expect: 2
+// expect: 3
