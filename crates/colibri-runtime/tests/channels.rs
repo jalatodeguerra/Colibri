@@ -530,13 +530,20 @@ fn nested_joins_that_wait_for_each_other_do_not_exhaust_a_pool_of_one() {
     // Each level has a coroutine, so none of them runs the next inline: every join needs a
     // thread of its own, which the pool of one lends for as long as the level waits.
     let source = r#"
+fn hold(gate: Channel[int]) {
+    gate.recv()
+}
+
 fn level(n: int) -> int {
     if n == 0 {
         return 0
     }
-    let tick = go fn() { wait(0.001) }()
+    // A coroutine that stays alive until this level has its answer.
+    let gate = Channel[int]()
+    let held = go hold(gate)
     let r = task.run(fn() => level(n - 1)).join().expect("level")
-    tick.join()
+    gate.close()
+    held.join()
     return r + 1
 }
 
