@@ -1,6 +1,6 @@
 // A key that is not ordered stops the sort at the comparison, and the list stays as it was.
 fn main() {
-    let mut xs = [3.0, 1.0, 2.0]
+    let xs = [3.0, 1.0, 2.0]
     xs.sort_by_key(fn(x) => if x == 2.0 { 0.0 / 0.0 } else { x })
 }
 

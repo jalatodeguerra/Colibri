@@ -1,5 +1,5 @@
 fn main() {
-    let mut xs = [1, 2, 3]
+    let xs = [1, 2, 3]
     print(xs.map(fn(x) => x + 1))
     xs.push(4)
     print(xs)

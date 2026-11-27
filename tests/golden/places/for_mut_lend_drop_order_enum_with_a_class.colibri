@@ -9,7 +9,7 @@ impl Drop for Res {
 enum Slot { Empty, Full(Res) }
 
 fn main() {
-    let mut xs = [Slot.Full(Res { name: "old0" }), Slot.Full(Res { name: "old1" })]
+    let xs = [Slot.Full(Res { name: "old0" }), Slot.Full(Res { name: "old1" })]
     let mut n = 0
     for mut s in xs {
         s = Slot.Empty

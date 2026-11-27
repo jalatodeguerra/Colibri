@@ -1,5 +1,5 @@
 fn main() {
-    let mut ops: Map[str, fn(int, int) -> int] = {:}
+    let ops: Map[str, fn(int, int) -> int] = {:}
     ops["add"] = fn(a, b) => a + b
     ops["mul"] = fn(a, b) => a * b
     print(ops["add"](3, 4))

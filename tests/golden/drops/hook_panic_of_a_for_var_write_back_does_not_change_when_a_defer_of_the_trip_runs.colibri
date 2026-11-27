@@ -13,7 +13,7 @@ impl Drop for Bad {
 fn mk(n: str) -> Bad => Bad { name: n }
 
 fn main() {
-    let mut xs = [mk("a"), mk("b")]
+    let xs = [mk("a"), mk("b")]
     for mut x in xs {
         defer print("deferred {x.name}")
         x = mk(x.name + "2")

@@ -31,7 +31,7 @@ fn main() {
     print("same copy twice in a task: {same}, total {sum}")
     print("nested: {task.run(fn() => outer(s)).join().expect("outer")}")
     // A thing that was sent back is an ordinary copy, not the frozen one.
-    let mut back = task.run(fn() => s.get()).join().expect("back")
+    let back = task.run(fn() => s.get()).join().expect("back")
     back.rows.push(5)
     print("changed copy: {back.rows}, shared: {s.get().rows}")
 }

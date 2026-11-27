@@ -4,7 +4,7 @@ struct Card {
 }
 
 fn main() {
-    let mut cards = [
+    let cards = [
         Card { rank: 2, suit: "a" },
         Card { rank: 1, suit: "b" },
         Card { rank: 2, suit: "c" },

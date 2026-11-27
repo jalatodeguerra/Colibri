@@ -1,4 +1,4 @@
 fn main() {
-    let mut xs = [1, 2]
+    let xs = [1, 2]
     xs.push("three") // error: expected `{integer}`, found `str`
 }

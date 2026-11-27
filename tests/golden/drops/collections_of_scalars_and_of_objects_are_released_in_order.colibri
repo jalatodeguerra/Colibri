@@ -10,7 +10,7 @@ impl Drop for Res {
 fn scalars() {
     let a = [1, 2, 3]
     let b = {"x": 1, "y": 2}
-    let mut c = Set[int]()
+    let c = Set[int]()
     c.add(4)
     c.add(5)
     let d = {1: "one", 2: "two"}
@@ -22,7 +22,7 @@ fn objects() {
     let a = [Res { name: "l1" }, Res { name: "l2" }]
     let b = {1: Res { name: "m1" }, 2: Res { name: "m2" }}
     let c = {"k": [Res { name: "n1" }]}
-    let mut s = Set[Res]()
+    let s = Set[Res]()
     s.add(Res { name: "s1" })
     print("objects {a.len() + b.len() + c.len() + s.len()}")
 }

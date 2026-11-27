@@ -13,7 +13,7 @@ impl Drop for Res {
 }
 
 fn main() {
-    let mut items: List[Named] = [Res { label: "a" }, Res { label: "b" }]
+    let items: List[Named] = [Res { label: "a" }, Res { label: "b" }]
     print(items[0].name())
     items.clear()
     print("cleared")

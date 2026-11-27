@@ -1,7 +1,7 @@
 struct E { hp: int }
 
 fn main() {
-    let mut es = [E { hp: 1 }, E { hp: 2 }, E { hp: 3 }]
+    let es = [E { hp: 1 }, E { hp: 2 }, E { hp: 3 }]
     for mut e in es {
         if e.hp == 2 {
             e.hp = 20

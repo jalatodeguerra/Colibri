@@ -1,6 +1,6 @@
 // Closures through `map` and `filter`.
 fn main() {
-    let mut xs: List[int] = []
+    let xs: List[int] = []
     for i in 0..200000 {
         xs.push(i)
     }

@@ -103,7 +103,11 @@ shadowed
 ```
 
 `let` stops rebinding, not mutation of what a class or a list holds (see
-[classes](#classes-and-weak-references)).
+[classes](#classes-and-weak-references)). So `let mut` is needed only to assign to the variable
+(`x = 1`, `x += 1`) or to change a struct held in it (`p.x = 1`, a `mut self` method). A list, map or
+set is a reference, so `let xs = []` followed by `xs.push(1)` is fine, and a `let mut xs` that is
+never assigned gets an `unused mut` warning: remove the `mut`. The same goes for a `mut` parameter
+that the function never changes.
 
 ## Types and numbers
 
@@ -318,7 +322,7 @@ fn main() {
     let next = make_counter()
     print(next())
     print(next())
-    let mut fs: List[fn() -> int] = []
+    let fs: List[fn() -> int] = []
     for i in 0..3 {
         fs.push(fn() => i * 10)
     }
@@ -354,7 +358,7 @@ fn main() {
             print("{a}{b}")
         }
     }
-    let mut xs = [1, 2, 3]
+    let xs = [1, 2, 3]
     while let some(x) = xs.pop() {
         print(x)
     }
@@ -596,10 +600,10 @@ struct Version {
 }
 
 fn main() {
-    let mut vs = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
+    let vs = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
     vs.sort()
     print(vs)
-    let mut seen = Set[Version]()
+    let seen = Set[Version]()
     seen.add(vs[0])
     print(seen.contains(Version { major: 1, minor: 2 }))
     print(compare(vs[0], vs[1]))
@@ -845,14 +849,14 @@ gives an optional.
 
 ```colibri
 fn main() {
-    let mut xs = [3, 1, 2]
+    let xs = [3, 1, 2]
     xs.push(4)
     xs.sort()
     print(xs)
     print(xs.map(fn(x) => x * x).filter(fn(x) => x > 1))
     print(xs.fold(0, fn(a, b) => a + b))
     print(xs[1..3])
-    let mut m = Map[str, int]()
+    let m = Map[str, int]()
     m["a"] = 1
     m["b"] = m.get_or("b", 0) + 5
     print(m)
@@ -863,7 +867,7 @@ fn main() {
     s.add(1)
     s.add(1)
     print(s.len())
-    let mut e = [Version { n: 2 }, Version { n: 1 }]
+    let e = [Version { n: 2 }, Version { n: 1 }]
     e.sort_by_key(fn(v) => v.n)
     print(e)
 }

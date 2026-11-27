@@ -23,9 +23,9 @@ fn main() {
         if w.starts_with("b") { n += 100 }
     }
     print(n)
-    let mut parts: List[str] = []
-    let mut nums: List[int] = []
-    let mut pairs: List[(int, str)] = []
+    let parts: List[str] = []
+    let nums: List[int] = []
+    let pairs: List[(int, str)] = []
     for i in 0..5 {
         parts.push("p{i}")
         parts.push("{i}" + "!")

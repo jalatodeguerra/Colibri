@@ -1,5 +1,5 @@
 fn main() {
-    let mut xs = [4, 3, 2, 1]
+    let xs = [4, 3, 2, 1]
     let mut calls = 0
     xs.sort_by(fn(a, b) {
         calls += 1

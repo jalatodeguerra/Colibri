@@ -1,5 +1,5 @@
 fn main() {
-    let mut xs = [1.0, 0.0 / 0.0, 2.0]
+    let xs = [1.0, 0.0 / 0.0, 2.0]
     xs.sort()
 }
 

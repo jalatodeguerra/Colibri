@@ -21,14 +21,14 @@ struct WordCount {
 
 fn count_words(path: str) -> Result[List[WordCount]] {
     let text = fs.read(path).context("reading {path}")?
-    let mut counts = Map[str, int]()
+    let counts = Map[str, int]()
     for word in text.to_lower().split(" ") {
         let w = word.trim()
         if w != "" {
             counts[w] = counts.get_or(w, 0) + 1
         }
     }
-    let mut words = counts.entries().map(fn(e) => WordCount { word: e.0, count: e.1 })
+    let words = counts.entries().map(fn(e) => WordCount { word: e.0, count: e.1 })
     words.sort_by_key(fn(w) => -w.count)
     return ok(words)
 }
@@ -131,7 +131,7 @@ fn area(s: Shape) -> float {
 }
 
 fn main() {
-    let mut a = Point { x: 1, y: 2 }
+    let a = Point { x: 1, y: 2 }
     let mut b = a
     b.x = 10
     print("{a.x} {b.x}") // 1.0 10.0
@@ -246,7 +246,7 @@ fn main() {
     print(vec.vec3(v.z, v.y, v.x)) // not v.zyx
     print(vec.vec3(7.0, 7.0, 7.0)) // not vec3(7)
     print(vec.ivec3(1, 2, 3).to_vec()) // not vec3(iv); and v.to_ivec() the other way
-    let mut ks: List[float] = [] // not `let mut ks = []`: its type decides which `*` is meant
+    let ks: List[float] = [] // not `let ks = []`: its type decides which `*` is meant
     let mut w = v
     for i in 0..3 {
         if ks.len() > 0 {
@@ -289,7 +289,7 @@ impl[T] Sorted[T] {
 }
 
 fn main() {
-    let mut versions = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
+    let versions = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
     versions.sort()
     print(versions) // [Version { major: 1, minor: 2 }, Version { major: 1, minor: 10 }]
     print(Level.Mid(5) < Level.Mid(7)) // true

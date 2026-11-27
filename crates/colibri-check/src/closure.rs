@@ -62,7 +62,10 @@ impl FnCtx<'_, '_> {
                 self.ck
                     .unsupported("a default value for a closure parameter", p.span);
             }
-            self.declare(&p.name.name, p.name.span, ty.clone(), kind);
+            let local = self.declare(&p.name.name, p.name.span, ty.clone(), kind);
+            if p.mutable {
+                self.note_mut_binding(vec![local], p.name.span);
+            }
         }
         self.declare_explicit_captures(c);
         let outer_unsafe = std::mem::take(&mut self.unsafe_depth);
@@ -489,6 +492,7 @@ impl FnCtx<'_, '_> {
                 self.mark_assigned_in(parent, outer);
             }
         }
+        self.lint_unused_muts();
         // Storage follows from the flags; closures take it from the variable they capture, so
         // enclosing frames are decided first.
         let decide = |locals: &mut [LocalInfo], flags: &[LocalFlags], skip: &[LocalId]| {

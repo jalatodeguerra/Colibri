@@ -9,7 +9,7 @@ impl Drop for Res {
 struct Bag { items: List[Res], n: int }
 
 fn main() {
-    let mut xs = [Bag { items: [Res { name: "old0" }], n: 0 }, Bag { items: [Res { name: "old1" }], n: 1 }]
+    let xs = [Bag { items: [Res { name: "old0" }], n: 0 }, Bag { items: [Res { name: "old1" }], n: 1 }]
     for mut b in xs {
         b.items = []
         print("end of trip {b.n}")

@@ -4,7 +4,7 @@ class Res { name: str }
 impl Drop for Res { fn drop(self) { print("drop {self.name}") } }
 class H { a: Res, b: Res, k: int }
 fn main() {
-    let mut h = H { a: Res { name: "A" }, b: Res { name: "B" }, k: 2 }
+    let h = H { a: Res { name: "A" }, b: Res { name: "B" }, k: 2 }
     match h {
         H { a: x, b: y, k: 1 } | H { a: y, b: x, k: 2 } => {
             h.a = Res { name: "A2" }

@@ -22,13 +22,13 @@ fn main() {
     player.pos += player.vel * 2
     print(player.pos)
 
-    let mut tiles = [Tile { cell: vec.ivec2(1, 1) }, Tile { cell: vec.ivec2(2, 2) }]
+    let tiles = [Tile { cell: vec.ivec2(1, 1) }, Tile { cell: vec.ivec2(2, 2) }]
     tiles[1].cell.y = 9
     tiles[0].cell += vec.ivec2(10, 10)
     print(tiles[0].cell)
     print(tiles[1].cell)
 
-    let mut grid: Map[vec.ivec2, str] = {:}
+    let grid: Map[vec.ivec2, str] = {:}
     grid[vec.ivec2(1, 2)] = "a"
     print(grid[vec.ivec2(1, 2)])
     print(vec.ivec2(1, 2) == vec.ivec2(1, 2))

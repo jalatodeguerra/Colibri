@@ -1,5 +1,5 @@
 fn main() {
-    let mut groups: Map[str, List[int]] = {:}
+    let groups: Map[str, List[int]] = {:}
     groups["even"] = []
     groups["odd"] = []
     for i in 0..6 {

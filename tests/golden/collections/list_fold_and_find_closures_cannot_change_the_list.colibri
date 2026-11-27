@@ -1,5 +1,5 @@
 fn main() {
-    let mut xs = [3, 1, 2]
+    let xs = [3, 1, 2]
     let total = xs.fold(0, fn(acc, x) => acc + x)
     print(total)
     print(xs.find(fn(x) => x == 1))

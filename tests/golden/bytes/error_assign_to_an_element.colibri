@@ -1,5 +1,5 @@
 fn main() {
     let b = Bytes([1, 2])
-    let mut c = b
+    let c = b
     c[0] = 9 // error: cannot assign to an element of a `Bytes`: it is immutable
 }

@@ -7,7 +7,7 @@ fn main() {
     print(mixed)
     // The list that was passed is not changed, and nothing is lost.
     print(items)
-    let mut sorted = mixed.clone()
+    let sorted = mixed.clone()
     sorted.sort()
     print(sorted == items)
 

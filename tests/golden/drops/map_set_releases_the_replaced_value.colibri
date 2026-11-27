@@ -1,7 +1,7 @@
 class T { name: str }
 
 fn main() {
-    let mut m: Map[int, T] = {1: T { name: "old" }}
+    let m: Map[int, T] = {1: T { name: "old" }}
     m[1] = T { name: "new" }
     print("replaced")
     m[2] = T { name: "two" }

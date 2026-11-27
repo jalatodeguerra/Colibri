@@ -2,7 +2,7 @@ struct Pos { x: int, y: int }
 struct Enemy { pos: Pos, hp: int }
 
 fn main() {
-    let mut enemies = [Enemy { pos: Pos { x: 0, y: 0 }, hp: 1 }]
+    let enemies = [Enemy { pos: Pos { x: 0, y: 0 }, hp: 1 }]
     enemies[0].pos.x += 1
     enemies[0].pos.y = 7
     print(enemies[0].pos)

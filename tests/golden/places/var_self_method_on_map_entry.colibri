@@ -7,7 +7,7 @@ impl Counter {
 }
 
 fn main() {
-    let mut m = {"a": Counter { n: 0 }}
+    let m = {"a": Counter { n: 0 }}
     m["a"].bump()
     m["a"].bump()
     print(m)

@@ -71,7 +71,7 @@ fn answer(store: Store, line: str) -> str {
         return "{store.data.len()}"
     }
     if command == "KEYS" && parts.len() == 1 {
-        let mut keys = store.data.keys()
+        let keys = store.data.keys()
         keys.sort()
         return "KEYS {keys.join(" ")}"
     }

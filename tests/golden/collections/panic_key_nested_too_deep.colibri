@@ -15,7 +15,7 @@ fn main() {
     let s = Set([build(300), build(300)])
     print(s.len())
     print(s.contains(build(300)))
-    let mut m = {build(300): 1}
+    let m = {build(300): 1}
     m[build(300)] = 2
     print(m.len())
     print(Set([build(300)]) == Set([build(300)]))

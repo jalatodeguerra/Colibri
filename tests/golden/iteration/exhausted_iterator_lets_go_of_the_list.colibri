@@ -1,5 +1,5 @@
 fn main() {
-    let mut xs = [1, 2]
+    let xs = [1, 2]
     let mut it = xs.iter()
     print(it.next())
     print(it.next())

@@ -1,6 +1,6 @@
 class Opaque { n: int }
 
 fn main() {
-    let mut xs = [Opaque { n: 1 }]
+    let xs = [Opaque { n: 1 }]
     xs.sort() // error: `sort` needs values that can be ordered with `<`, but `Opaque` cannot
 }

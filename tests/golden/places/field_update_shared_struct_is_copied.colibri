@@ -4,7 +4,7 @@ struct Pair { a: P, b: P }
 
 fn main() {
     let mut a = P { x: 1.5, n: 1 }
-    let mut ps = [a, a]
+    let ps = [a, a]
     a.x += 1.0
     a.n += 1
     print("{a.x} {a.n} {ps[0].x} {ps[1].n}")

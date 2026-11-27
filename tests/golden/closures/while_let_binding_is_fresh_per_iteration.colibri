@@ -1,6 +1,6 @@
 fn main() {
-    let mut stack = [1, 2, 3]
-    let mut fns: List[fn() -> int] = []
+    let stack = [1, 2, 3]
+    let fns: List[fn() -> int] = []
     while let some(x) = stack.pop() {
         fns.push(fn() => x)
     }

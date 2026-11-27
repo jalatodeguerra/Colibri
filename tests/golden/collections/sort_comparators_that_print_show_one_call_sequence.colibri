@@ -1,7 +1,7 @@
 // The order in which a sort asks its comparator is part of what a program can see, so every
 // engine asks in the same order: pairs of neighbours first, then merges of growing runs.
 fn main() {
-    let mut a = [5, 3, 4, 1, 2, 6, 0]
+    let a = [5, 3, 4, 1, 2, 6, 0]
     a.sort_by(fn(x, y) {
         print("by {x} {y}")
         return x - y
@@ -12,7 +12,7 @@ fn main() {
         return y - x
     })
     print(b)
-    let mut c = ["pear", "fig", "apple", "kiwi"]
+    let c = ["pear", "fig", "apple", "kiwi"]
     c.sort_by_key(fn(s) {
         print("key {s}")
         return s.len()

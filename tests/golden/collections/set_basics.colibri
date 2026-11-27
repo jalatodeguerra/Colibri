@@ -1,5 +1,5 @@
 fn main() {
-    let mut s = Set[int]()
+    let s = Set[int]()
     s.add(3)
     s.add(1)
     s.add(3)

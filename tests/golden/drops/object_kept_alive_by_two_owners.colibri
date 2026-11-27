@@ -1,7 +1,7 @@
 class T { name: str }
 
 fn main() {
-    let mut xs = [T { name: "a" }]
+    let xs = [T { name: "a" }]
     let kept = xs[0]
     xs.clear()
     print("list cleared, object lives")

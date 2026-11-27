@@ -449,7 +449,7 @@ fn a_name_left_out_by_when_says_so() {
 #[test]
 fn a_type_with_its_own_eq_says_to_write_ord_too() {
     let r = run(
-        "struct V { a: int }\nimpl Eq for V { fn eq(self, o: V) -> bool => true }\nfn main() {\n    let x = V { a: 1 }\n    print(x < x)\n    let mut l = [x]\n    l.sort()\n}\n",
+        "struct V { a: int }\nimpl Eq for V { fn eq(self, o: V) -> bool => true }\nfn main() {\n    let x = V { a: 1 }\n    print(x < x)\n    let l = [x]\n    l.sort()\n}\n",
     );
     assert_eq!(r.errors.len(), 2, "{:?}", r.errors);
     assert!(

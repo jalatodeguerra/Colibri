@@ -25,7 +25,7 @@ fn main() {
     print(vec.vec2(1, "x")) // error: expected `float`, found `str`
     print(i.to_vec().foo()) // error: `vec2` has no method `foo`
     print(a.to_ivec().normalize()) // error: `ivec2` has no method `normalize`
-    let mut m = a
+    let m = a
     m.xy = a // error: the struct `vec2` has no field `xy`
     let k = vec.vec2(0, 0)
     k.x = 1 // error: cannot assign

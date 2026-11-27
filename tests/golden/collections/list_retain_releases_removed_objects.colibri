@@ -3,7 +3,7 @@ class Item {
 }
 
 fn main() {
-    let mut xs = [Item { name: "a" }, Item { name: "b" }, Item { name: "c" }]
+    let xs = [Item { name: "a" }, Item { name: "b" }, Item { name: "c" }]
     xs.retain(fn(i) => i.name != "b")
     print("retained")
     print(xs.len())

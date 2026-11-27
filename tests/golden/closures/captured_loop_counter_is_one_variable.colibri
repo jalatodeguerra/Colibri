@@ -1,5 +1,5 @@
 fn main() {
-    let mut fns: List[fn() -> int] = []
+    let fns: List[fn() -> int] = []
     let mut i = 0
     while i < 3 {
         fns.push(fn() => i)

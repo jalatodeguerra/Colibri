@@ -1,5 +1,5 @@
 fn main() {
-    let mut m: Map[str, int] = {"a": 1, "b": 2}
+    let m: Map[str, int] = {"a": 1, "b": 2}
     for e in m {
         print(e)
         m["a"] = 5

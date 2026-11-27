@@ -1,6 +1,6 @@
 fn repeat[T](x: T, n: int) -> List[T] {
     if n == 0 { return [] }
-    let mut rest = repeat(x, n - 1)
+    let rest = repeat(x, n - 1)
     rest.push(x)
     return rest
 }

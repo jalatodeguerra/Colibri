@@ -9,7 +9,7 @@ impl Drop for Res {
 }
 
 fn main() {
-    let mut xs = [(0, Res { name: "old0" }), (1, Res { name: "old1" })]
+    let xs = [(0, Res { name: "old0" }), (1, Res { name: "old1" })]
     for mut t in xs {
         t.1 = Res { name: "new{t.0}" }
         print("end of trip {t.0}")

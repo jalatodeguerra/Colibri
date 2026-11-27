@@ -9,7 +9,7 @@ fn reader(xs: List[P]) {
 }
 
 fn main() {
-    let mut ps = [P { x: 1 }, P { x: 2 }]
+    let ps = [P { x: 1 }, P { x: 2 }]
     go reader(ps)
     for mut p in ps {
         p.x += 10

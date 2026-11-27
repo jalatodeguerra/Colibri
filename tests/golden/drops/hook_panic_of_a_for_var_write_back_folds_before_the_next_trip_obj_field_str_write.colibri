@@ -16,8 +16,8 @@ class Holder {
 }
 
 fn main() {
-    let mut h = Holder { name: "h", n: 0 }
-    let mut xs = [Bad { name: "a" }, Bad { name: "b" }]
+    let h = Holder { name: "h", n: 0 }
+    let xs = [Bad { name: "a" }, Bad { name: "b" }]
     for mut x in xs {
         h.name = "z"
         print("trip {x.name}")

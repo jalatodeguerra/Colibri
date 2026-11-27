@@ -13,7 +13,7 @@ impl Iter[int] for Counter {
 }
 
 fn main() {
-    let mut c = Counter { n: 0 }
+    let c = Counter { n: 0 }
     for x in c {
         print(x)
     }

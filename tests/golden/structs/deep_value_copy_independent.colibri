@@ -3,7 +3,7 @@ struct Mid { leaf: Leaf }
 struct Top { mid: Mid }
 
 fn main() {
-    let mut a = Top { mid: Mid { leaf: Leaf { v: 1 } } }
+    let a = Top { mid: Mid { leaf: Leaf { v: 1 } } }
     let mut b = a
     let mut c = b
     c.mid.leaf.v = 3

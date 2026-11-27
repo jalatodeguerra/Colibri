@@ -11,7 +11,7 @@ fn produce(ch: Channel[int]) {
 fn main() -> Result[()] {
     let ch = Channel[int](capacity: 2)
     let t = task.run(fn() => produce(ch))
-    let mut seen: List[int] = []
+    let seen: List[int] = []
     for v in ch {
         seen.push(v)
     }

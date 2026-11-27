@@ -10,7 +10,7 @@ impl Ord for Gate {
 }
 
 fn worker() {
-    let mut gates = [Gate { n: 2 }, Gate { n: 1 }]
+    let gates = [Gate { n: 2 }, Gate { n: 1 }]
     gates.sort()
 }
 

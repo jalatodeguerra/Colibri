@@ -60,7 +60,7 @@ fn load_rules(file: str) -> Result[Map[str, List[str]]] {
 
 // extension (lower case) -> category
 fn by_extension(rules: Map[str, List[str]]) -> Map[str, str] {
-    let mut table: Map[str, str] = {:}
+    let table: Map[str, str] = {:}
     for (bucket, exts) in rules {
         for e in exts {
             table.insert(e.to_lower(), bucket)
@@ -82,7 +82,7 @@ fn date_bucket(full: str) -> Result[str] {
 // Every file under `root`, as paths relative to it, in name order. Anything inside a hidden
 // name (a leading dot) is left alone.
 fn walk(root: str) -> Result[List[str]] {
-    let mut found: List[str] = []
+    let found: List[str] = []
     for rel in fs.walk(root)? {
         if rel.split("/").any(fn(part) => part.starts_with(".")) {
             continue
@@ -114,10 +114,10 @@ fn plan(
     only: Option[regex.Regex],
 ) -> Result[List[Move]] {
     let files = walk(root)?
-    let mut moves: List[Move] = []
-    let mut taken: Set[str] = Set[str]()
+    let moves: List[Move] = []
+    let taken: Set[str] = Set[str]()
     // Files that stay where they are keep their names reserved.
-    let mut pending: List[(str, str, str)] = []
+    let pending: List[(str, str, str)] = []
     for rel in files {
         let name = path.file_name(rel) or rel
         if let some(re) = only {
@@ -165,7 +165,7 @@ fn apply(root: str, moves: List[Move]) -> Result[()] {
 // `remove_dir` refuses a folder that still holds anything, so nothing else is lost;
 // a refusal just means the folder stays.
 fn prune(root: str, moves: List[Move]) {
-    let mut dirs: List[str] = []
+    let dirs: List[str] = []
     for m in moves {
         let mut dir = path.parent(m.src)
         while dir != none {
@@ -187,7 +187,7 @@ fn prune(root: str, moves: List[Move]) {
 }
 
 fn summarize(moves: List[Move]) {
-    let mut totals: List[Totals] = []
+    let totals: List[Totals] = []
     for m in moves {
         let mut found = false
         for i in 0..totals.len() {

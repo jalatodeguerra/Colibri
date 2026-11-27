@@ -2,7 +2,7 @@
 struct P { x: int }
 
 fn main() {
-    let mut ps = [P { x: 1 }, P { x: 2 }]
+    let ps = [P { x: 1 }, P { x: 2 }]
     let peek = fn() => ps[0].x * 100 + ps[1].x
     for mut p in ps {
         p.x += 10

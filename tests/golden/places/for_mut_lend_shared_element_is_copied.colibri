@@ -3,7 +3,7 @@ struct P { x: int, y: int }
 
 fn main() {
     let a = P { x: 1, y: 1 }
-    let mut ps = [a, a, a]
+    let ps = [a, a, a]
     for mut p in ps {
         p.x += 10
         p.y *= 3

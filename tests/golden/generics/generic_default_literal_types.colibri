@@ -1,5 +1,5 @@
 fn add_all[T: Ord](xs: List[T], extra: T) -> List[T] {
-    let mut out = xs.clone()
+    let out = xs.clone()
     out.push(extra)
     return out
 }

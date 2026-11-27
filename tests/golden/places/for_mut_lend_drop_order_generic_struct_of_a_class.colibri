@@ -9,7 +9,7 @@ impl Drop for Res {
 struct Cell2[T] { v: T, n: int }
 
 fn main() {
-    let mut xs = [Cell2 { v: Res { name: "old0" }, n: 0 }, Cell2 { v: Res { name: "old1" }, n: 1 }]
+    let xs = [Cell2 { v: Res { name: "old0" }, n: 0 }, Cell2 { v: Res { name: "old1" }, n: 1 }]
     for mut c in xs {
         c.v = Res { name: "new{c.n}" }
         print("end of trip {c.n}")

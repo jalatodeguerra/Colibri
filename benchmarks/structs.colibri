@@ -14,7 +14,7 @@ impl P {
 }
 
 fn main() {
-    let mut ps: List[P] = []
+    let ps: List[P] = []
     for i in 0..1000 {
         ps.push(P { x: 0.0, y: 0.0, vx: 1.0, vy: 2.0 })
     }

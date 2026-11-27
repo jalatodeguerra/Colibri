@@ -9,7 +9,7 @@ impl Acc {
 }
 
 fn main() {
-    let mut xs = [Acc { n: 0 }]
+    let xs = [Acc { n: 0 }]
     xs[0].add_then_fail()
 }
 

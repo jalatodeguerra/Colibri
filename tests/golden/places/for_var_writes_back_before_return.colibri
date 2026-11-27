@@ -11,7 +11,7 @@ fn first_dead(es: List[E]) -> int {
 }
 
 fn main() {
-    let mut es = [E { hp: 5 }, E { hp: 1 }, E { hp: 5 }]
+    let es = [E { hp: 5 }, E { hp: 1 }, E { hp: 5 }]
     print(first_dead(es))
     print(es)
 }

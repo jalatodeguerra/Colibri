@@ -3,20 +3,20 @@
 // the new lists that `sorted()`, `map` and `filter` make are ordinary values that can be changed.
 // The value that was shared is not frozen either: `Shared(x)` copies `x`, and `x` stays yours.
 fn main() {
-    let mut mine = [3, 1, 2]
+    let mine = [3, 1, 2]
     let s = Shared(mine)
     mine.push(4)
-    let mut clone = s.get().clone()
+    let clone = s.get().clone()
     clone.push(10)
-    let mut sorted = s.get().sorted()
+    let sorted = s.get().sorted()
     sorted.push(11)
-    let mut mapped = s.get().map(fn(x) => x * 2)
+    let mapped = s.get().map(fn(x) => x * 2)
     mapped.push(12)
-    let mut returned = task.run(fn() => s.get()).join().expect("task")
+    let returned = task.run(fn() => s.get()).join().expect("task")
     returned.push(13)
     let ch = Channel[List[int]]()
     ch.send(s.get().clone())
-    let mut received = ch.recv().expect("a list")
+    let received = ch.recv().expect("a list")
     received.push(14)
     print("mine {mine}")
     print("clone {clone}")

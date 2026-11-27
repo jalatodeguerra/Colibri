@@ -1,7 +1,7 @@
 class T { name: str }
 
 fn main() {
-    let mut xs = [T { name: "a" }, T { name: "b" }, T { name: "c" }, T { name: "d" }]
+    let xs = [T { name: "a" }, T { name: "b" }, T { name: "c" }, T { name: "d" }]
     xs.remove(1)
     print("removed one")
     xs.pop()

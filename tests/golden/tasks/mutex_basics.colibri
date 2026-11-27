@@ -34,12 +34,12 @@ fn main() {
     print("list {xs.get()}, counter {c.get().hits}")
 
     // `get` gives a copy of its own: changing it does not change the mutex.
-    let mut copy = xs.get()
+    let copy = xs.get()
     copy.push(99)
     print("copy {copy}, stored {xs.get()}")
 
     // `set` copies the value in: the caller's list is its own afterwards.
-    let mut mine = [7, 8]
+    let mine = [7, 8]
     xs.set(mine)
     mine.push(9)
     print("mine {mine}, stored {xs.get()}")

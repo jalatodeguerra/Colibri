@@ -1,10 +1,10 @@
 fn main() {
-    let mut xs = [1, 2, 3]
+    let xs = [1, 2, 3]
     for mut x in xs {
         x *= 10
     }
     print(xs)
-    let mut ps = [(1, 1), (2, 2)]
+    let ps = [(1, 1), (2, 2)]
     for mut p in ps {
         p.1 += 5
     }

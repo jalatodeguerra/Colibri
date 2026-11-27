@@ -7,7 +7,7 @@ fn main() {
     print(__list_map(1))
     print(__merge_order(1))
     print([1, 2].map(fn(x) => x * 2))
-    let mut xs = [3, 1, 2]
+    let xs = [3, 1, 2]
     xs.sort_by(fn(a, b) => compare(a, b))
     print(xs)
 }

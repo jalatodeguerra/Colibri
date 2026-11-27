@@ -3,14 +3,14 @@ import rand
 fn main() {
     let a = rand.Rng.new(7)
     let b = rand.Rng.new(7)
-    let mut dice: List[int] = []
+    let dice: List[int] = []
     for _ in 0..10 {
         dice.push(a.int(1, 7))
     }
     print(dice)
     // Another generator with the same seed repeats it, and the module's own is not touched.
     rand.seed(99)
-    let mut again: List[int] = []
+    let again: List[int] = []
     for _ in 0..10 {
         again.push(b.int(1, 7))
     }
