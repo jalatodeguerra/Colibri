@@ -860,6 +860,55 @@ fn interface_files_make_host_functions_check() {
 }
 
 #[test]
+fn a_rust_binding_key_gets_hover_completion_and_the_missing_file_hint() {
+    let dir = temp_dir("rust_binding");
+    let mut vm = colibri_runtime::Vm::builder().build();
+    vm.module("native")
+        .register_fn("add", |a: i64, b: i64| a + b)
+        .unwrap();
+    write(
+        &dir,
+        "colibri.toml",
+        "[package]\nname = \"demo\"\n\n[rust-dependencies]\nnative = { path = \"native/\" }\n",
+    );
+    let main = dir.join("main.colibri");
+    let text = "import native\nfn main() {\n    print(native.add(1, 2))\n}\n";
+
+    // The interface file is not there yet: the manifest says what to run.
+    let manifest = dir.join("colibri.toml");
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, text);
+    let hint = c
+        .diagnostics
+        .get(&uri(&manifest))
+        .map(|d| d.to_vec())
+        .unwrap_or_default();
+    let all = format!("{hint:?}{:?}", c.diags(&main));
+    assert!(
+        all.contains("`native` is a Rust binding: run `colibri bindings` to generate `native.cbi`"),
+        "{all}"
+    );
+    c.shutdown();
+
+    // With `native.cbi` next to the manifest the module checks, hovers and completes.
+    write(&dir, "native.cbi", &vm.module("native").interface_text());
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, text);
+    assert!(c.diags(&main).is_empty(), "{:?}", c.diags(&main));
+    let (l, col) = pos_of(text, "add(1");
+    assert!(
+        hover_text(&c.hover(&main, l, col)).contains("fn add(a: int, b: int) -> int"),
+        "{}",
+        hover_text(&c.hover(&main, l, col))
+    );
+    let typing = "import native\nfn main() {\n    native.\n}\n";
+    c.change(&main, typing);
+    let items = c.complete_after(&main, typing, "    native.");
+    assert!(labels(&items).contains(&"add"), "{:?}", labels(&items));
+    c.shutdown();
+}
+
+#[test]
 fn unknown_requests_get_an_error_and_the_server_survives() {
     let mut c = Client::start(None, Value::Null);
     let err = c

@@ -92,6 +92,39 @@ pub fn check_on(
             }
         }
     }
+    // Each key of `[rust-dependencies]` is a binding module, described by `<key>.cbi` next to
+    // `colibri.toml` (and by no other `.cbi` there). A missing file is reported by the loader,
+    // at the key; nothing here calls cargo.
+    let package_dir = if file.is_dir() {
+        Some(file.to_path_buf())
+    } else {
+        file.parent().map(Path::to_path_buf)
+    };
+    for (key, cbi) in package_dir
+        .iter()
+        .flat_map(|dir| colibri::rust_binding_files(fs, dir))
+    {
+        if !fs.is_file(&cbi) {
+            continue;
+        }
+        match colibri::Interface::read(&cbi) {
+            Ok(interface) if interface.module_names().contains(&key) => interfaces.push(interface),
+            Ok(_) => {
+                let e = colibri::Error::Interface {
+                    path: cbi.display().to_string(),
+                    message: format!(
+                        "this is the interface of the Rust binding `{key}`: its `@interface` header must say `module = \"{key}\"`"
+                    ),
+                };
+                eprint!("{}", e.render(color));
+                return Err(ExitCode::from(1));
+            }
+            Err(e) => {
+                eprint!("{}", e.render(color));
+                return Err(ExitCode::from(1));
+            }
+        }
+    }
     let config = colibri::CheckConfig {
         stack_budget: crate::NATIVE_STACK_BUDGET,
         interfaces,

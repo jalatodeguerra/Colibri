@@ -1055,6 +1055,52 @@ fn a_git_dependency_with_ffi_must_be_allowed_by_the_root() {
 }
 
 #[test]
+fn a_git_dependency_with_rust_dependencies_must_be_allowed_by_the_root() {
+    let sb = Sandbox::new("allow_rust");
+    let repo = sb.repo("bound");
+    repo.commit(
+        &lib_files(
+            "bound",
+            "b",
+            "\n[rust-dependencies]\nnative = { path = \"native/\" }\n",
+        ),
+        "bound",
+    );
+    let dep = format!("bound = {{ git = \"{}\" }}", repo.url());
+    let app_with = |folder: &str, package_extra: &str| {
+        let app = sb.app(folder, &dep, &["bound"]);
+        fs::write(
+            app.join("colibri.toml"),
+            format!("[package]\nname = \"app\"\n{package_extra}[dependencies]\n{dep}\n"),
+        )
+        .unwrap();
+        app
+    };
+    let app = app_with("app", "");
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    for want in [
+        "the git dependency `bound` declares `[rust-dependencies]`",
+        "needed by `app`",
+        "allow-rust = [\"bound\"]",
+    ] {
+        assert!(out.stderr.contains(want), "{want}: {}", out.stderr);
+    }
+    // `allow-ffi` is another capability: it does not allow this one.
+    let app = app_with("app2", "allow-ffi = [\"bound\"]\n");
+    assert_eq!(sb.colibri(&["check", app.to_str().unwrap()]).code, 1);
+    let app = app_with("app3", "allow-rust = [\"other\", \"bound\"]\n");
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    // A name that matches no dependency is a warning, as for `allow-ffi`.
+    assert!(
+        out.stderr.contains("`allow-rust` lists `other`") && !out.stderr.contains("lists `bound`"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
 fn loading_never_fetches_it_says_to_run_the_tool() {
     // This is what the language server does: it loads through the library, which has no
     // network code, so a dependency that is not in the cache is a diagnostic.

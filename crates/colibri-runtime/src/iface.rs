@@ -321,6 +321,11 @@ impl Interface {
     pub fn path(&self) -> &str {
         &self.path
     }
+
+    /// The names of the modules the file describes (the `module` of each header).
+    pub fn module_names(&self) -> Vec<String> {
+        self.env.module_names()
+    }
 }
 
 #[cfg(test)]

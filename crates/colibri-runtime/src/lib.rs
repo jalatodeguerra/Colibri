@@ -188,7 +188,7 @@ pub use colibri_check::package::{
 };
 pub use colibri_check::package::{
     BuildCfg, COMPLETE_MARKER, DiskFs, Entry, MemoryFs, Recorded, RecordingFs, SourceFs, WEB_OS,
-    WEB_UNAVAILABLE_STD, cache_root, checkout_dir, feature_name_problem,
+    WEB_UNAVAILABLE_STD, cache_root, checkout_dir, feature_name_problem, rust_binding_files,
 };
 /// Git dependencies and `colibri.lock`: what the command line tool does before it loads a
 /// program (the loader itself never uses the network).

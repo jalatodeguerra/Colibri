@@ -29,14 +29,15 @@ pub use fs::{
 };
 pub use git::{COMPLETE_MARKER, HOME_VAR, cache_root, checkout_dir, redact, redact_url};
 pub use loader::{
-    CACHE_TAG_FILE, Entry, LoadError, LoadOptions, MANIFEST_FILE, is_hidden_or_cache, load,
-    load_with, not_a_script, not_a_script_plainly, skipped_folder,
+    CACHE_TAG_FILE, Entry, LoadError, LoadOptions, MANIFEST_FILE, binding_interface_name,
+    is_hidden_or_cache, load, load_with, not_a_script, not_a_script_plainly, rust_binding_files,
+    skipped_folder,
 };
 pub use lock::{LOCK_FILE, Lock, LockEntry};
 pub use manifest::parse as parse_manifest;
 pub use manifest::{
-    Build, Dependency, Features, GitSource, GitSpec, Manifest, Source, feature_name_problem,
-    is_name as is_package_name,
+    Build, Dependency, Features, GitSource, GitSpec, Manifest, RustDependency, RustSource, Source,
+    feature_name_problem, is_name as is_package_name,
 };
 pub use sync::{SyncOptions, SyncReport, Update, sync};
 
