@@ -225,7 +225,7 @@ fn the_interface_text_has_the_class_its_impl_and_real_names() {
     for wanted in [
         "struct Vec3 { x: f32, y: f32, z: f32 }\n",
         "enum Material { Wood, Steel }\n",
-        "@host class World {}\nimpl World {\n    fn new(gravity: Vec3) -> World\n    fn step(self, dt: f32)\n    fn position(self, body: RigidBody) -> Vec3\n    fn describe(self, label: str, weights: List[f32], offset: Vec3) -> str\n    fn describe_owned(self, label: str, weights: List[f32], offset: Vec3) -> str\n    fn push(self, body: RigidBody, by: f32)\n    fn swap_with(self, other: World)\n    fn depth(self) -> u32\n    fn time(self) -> f32\n    fn find(self, which: int) -> Option[RigidBody]\n}\n",
+        "@host class World {}\nimpl World {\n    fn new(gravity: Vec3) -> World\n    fn step(self, dt: f32)\n    fn position(self, body: RigidBody) -> Vec3\n    fn depth(self) -> u32\n    fn time(self) -> f32\n    fn describe(self, label: str, weights: List[f32], offset: Vec3) -> str\n    fn describe_owned(self, label: str, weights: List[f32], offset: Vec3) -> str\n    fn push(self, body: RigidBody, by: f32)\n    fn swap_with(self, other: World)\n    fn find(self, which: int) -> Option[RigidBody]\n}\n",
         "@host class RigidBody {}\nimpl RigidBody {\n    fn new(pos: Vec3, mass: f32, material: Material) -> RigidBody\n    fn mass(self) -> f32\n    fn material(self) -> Material\n}\n",
         "fn spawn_body(x: f32, y: f32, z: f32) -> RigidBody\n",
         "fn total_mass(first: RigidBody, second: RigidBody) -> f32\n",
