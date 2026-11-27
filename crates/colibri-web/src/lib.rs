@@ -24,11 +24,12 @@
 //! | `host_now_real() -> f64` | milliseconds on a monotonic clock, any origin (`performance.now()`) |
 //! | `host_now_unix() -> f64` | seconds since 1970 (`Date.now() / 1000`) |
 //! | `host_utc_offset(unix) -> f64` | the page's time zone at that instant, in seconds east of UTC (`-new Date(unix * 1000).getTimezoneOffset() * 60`); anything that is not a number of seconds within a day is read as UTC |
-//! | `host_random(ptr, len)` | fills the memory with random bytes (`crypto.getRandomValues`) |
+//! | `host_random(ptr, len)` | fills the memory with random bytes (`crypto.getRandomValues`); called by `colibri_start` (the seed of the hashing of maps and sets) and by the program's `rand` |
 //!
 //! **Imports must not call back into the module.** Every import runs while the runner is borrowed
 //! (`host_write` and `host_random` inside `colibri_tick`, the clocks inside `tick` and
-//! `colibri_next_deadline`): an import that calls an export makes the module panic, which traps. A
+//! `colibri_next_deadline`; `host_random` is also called once at the top of `colibri_start`, to
+//! seed the hashing of maps and sets, before the runner exists): an import that calls an export makes the module panic, which traps. A
 //! host that wants to react to output does so after the export returns. The exports are not
 //! re-entrant either, and the module is single-threaded.
 //!
