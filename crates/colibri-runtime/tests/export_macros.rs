@@ -67,7 +67,7 @@ impl World {
         self.time += dt;
     }
 
-    pub fn position(&self, body: Ref<RigidBody>) -> Vec3 {
+    pub fn position(&self, body: &RigidBody) -> Vec3 {
         Vec3 {
             x: body.pos.x + self.gravity.x * self.time,
             y: body.pos.y + self.gravity.y * self.time,
@@ -81,6 +81,30 @@ impl World {
 
     pub fn time(&self) -> f32 {
         self.time
+    }
+
+    /// Borrows the same kinds of parameter the DESIGN lists, one of each.
+    pub fn describe(&self, label: &str, weights: &[f32], offset: &Vec3) -> String {
+        format!(
+            "{label}:{}:{}:{}",
+            weights.iter().sum::<f32>(),
+            offset.x,
+            self.time
+        )
+    }
+
+    /// Same interface text as `describe`, with owned parameters.
+    pub fn describe_owned(&self, label: String, weights: Vec<f32>, offset: Vec3) -> String {
+        self.describe(&label, &weights, &offset)
+    }
+
+    /// `&self` and `&mut` of the same object conflict.
+    pub fn push(&self, body: &mut RigidBody, by: f32) {
+        body.mass += by;
+    }
+
+    pub fn swap_with(&mut self, other: &mut World) {
+        std::mem::swap(&mut self.time, &mut other.time);
     }
 
     pub fn find(&self, which: i64) -> Option<Handle<RigidBody>> {
@@ -97,6 +121,27 @@ pub fn spawn_body(x: f32, y: f32, z: f32) -> RigidBody {
 #[colibri::export]
 pub fn total_mass(first: Ref<RigidBody>, second: Ref<RigidBody>) -> f32 {
     first.mass + second.mass
+}
+
+#[colibri::export]
+pub fn shout(text: &str, times: i64) -> String {
+    text.to_uppercase().repeat(times as usize)
+}
+
+#[colibri::export]
+pub fn shout_owned(text: String, times: i64) -> String {
+    shout(&text, times)
+}
+
+#[colibri::export]
+pub fn grow(body: &mut RigidBody, by: f32) -> f32 {
+    body.mass += by;
+    body.mass
+}
+
+#[colibri::export]
+pub fn merge_into(target: &mut RigidBody, source: &RigidBody) {
+    target.mass += source.mass;
 }
 
 #[colibri::export]
@@ -117,6 +162,10 @@ fn engine() -> (colibri::Vm, colibri::SharedBuffer) {
     spawn_body::register(&mut vm).unwrap();
     total_mass::register(&mut vm).unwrap();
     needs_cx::register(&mut vm).unwrap();
+    shout::register(&mut vm).unwrap();
+    shout_owned::register(&mut vm).unwrap();
+    grow::register(&mut vm).unwrap();
+    merge_into::register(&mut vm).unwrap();
     (vm, out)
 }
 
@@ -176,7 +225,7 @@ fn the_interface_text_has_the_class_its_impl_and_real_names() {
     for wanted in [
         "struct Vec3 { x: f32, y: f32, z: f32 }\n",
         "enum Material { Wood, Steel }\n",
-        "@host class World {}\nimpl World {\n    fn new(gravity: Vec3) -> World\n    fn step(self, dt: f32)\n    fn position(self, body: RigidBody) -> Vec3\n    fn depth(self) -> u32\n    fn time(self) -> f32\n    fn find(self, which: int) -> Option[RigidBody]\n}\n",
+        "@host class World {}\nimpl World {\n    fn new(gravity: Vec3) -> World\n    fn step(self, dt: f32)\n    fn position(self, body: RigidBody) -> Vec3\n    fn describe(self, label: str, weights: List[f32], offset: Vec3) -> str\n    fn describe_owned(self, label: str, weights: List[f32], offset: Vec3) -> str\n    fn push(self, body: RigidBody, by: f32)\n    fn swap_with(self, other: World)\n    fn depth(self) -> u32\n    fn time(self) -> f32\n    fn find(self, which: int) -> Option[RigidBody]\n}\n",
         "@host class RigidBody {}\nimpl RigidBody {\n    fn new(pos: Vec3, mass: f32, material: Material) -> RigidBody\n    fn mass(self) -> f32\n    fn material(self) -> Material\n}\n",
         "fn spawn_body(x: f32, y: f32, z: f32) -> RigidBody\n",
         "fn total_mass(first: RigidBody, second: RigidBody) -> f32\n",
@@ -278,4 +327,96 @@ fn a_host_class_is_passed_by_handle_to_get_fn() {
             .contains("`RigidBody` was destroyed by the host"),
         "{err}"
     );
+}
+
+fn run_main(src: &str) -> (Result<(), colibri::Error>, String) {
+    let (mut vm, out) = engine();
+    vm.load_source("game.colibri", src).unwrap();
+    let r = vm.run_main();
+    (r, out.contents())
+}
+
+#[test]
+fn reference_parameters_are_borrowed_from_converted_arguments() {
+    let (r, out) = run_main(
+        r#"
+fn main() {
+let w = World.new(Vec3 { x: 0.0, y: 0.0, z: 0.0 })
+print(shout("ab", 2))
+print(shout_owned("ab", 2))
+print(w.describe("l", [1.0, 2.5], Vec3 { x: 4.0, y: 0.0, z: 0.0 }))
+print(w.describe_owned("l", [1.0, 2.5], Vec3 { x: 4.0, y: 0.0, z: 0.0 }))
+}
+"#,
+    );
+    r.unwrap();
+    assert_eq!(out, "ABAB\nABAB\nl:3.5:4:0\nl:3.5:4:0\n");
+}
+
+#[test]
+fn a_str_parameter_and_a_string_parameter_have_the_same_interface_text() {
+    let (vm, _) = engine();
+    let text = vm.interface_text();
+    assert!(text.contains("fn shout(text: str, times: int) -> str\n"), "{text}");
+    assert!(text.contains("fn shout_owned(text: str, times: int) -> str\n"), "{text}");
+    assert!(text.contains("fn grow(body: RigidBody, by: f32) -> f32\n"), "{text}");
+    assert!(text.contains("fn merge_into(target: RigidBody, source: RigidBody)\n"), "{text}");
+    assert!(
+        text.contains("fn describe(self, label: str, weights: List[f32], offset: Vec3) -> str\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_mutable_reference_is_the_object_the_script_holds() {
+    let (r, out) = run_main(
+        r#"
+fn main() {
+let a = spawn_body(0.0, 0.0, 0.0)
+let b = spawn_body(1.0, 1.0, 1.0)
+print(grow(a, 2.0))
+print(a.mass())
+merge_into(a, b)
+print(a.mass())
+print(b.mass())
+let w = World.new(Vec3 { x: 0.0, y: 0.0, z: 0.0 })
+w.push(a, 0.5)
+print(a.mass())
+}
+"#,
+    );
+    r.unwrap();
+    assert_eq!(out, "3.0\n3.0\n4.0\n1.0\n4.5\n");
+}
+
+fn panic_message(r: Result<(), colibri::Error>) -> String {
+    match r.unwrap_err() {
+        colibri::Error::Panic { message, .. } => message,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_mutable_conflict_is_the_already_in_use_panic() {
+    // `&mut` and `&` of one object in one call.
+    let (r, _) = run_main(
+        "fn main() {\nlet a = spawn_body(0.0, 0.0, 0.0)\nmerge_into(a, a)\n}\n",
+    );
+    let message = panic_message(r);
+    assert!(message.contains("already in use"), "{message}");
+    // `&mut self` and `&mut` of the same world.
+    let (r, _) = run_main(
+        "fn main() {\nlet w = World.new(Vec3 { x: 0.0, y: 0.0, z: 0.0 })\nw.swap_with(w)\n}\n",
+    );
+    let message = panic_message(r);
+    assert!(
+        message.contains("host object `World` is already in use by an enclosing call (`World.swap_with`)"),
+        "{message}"
+    );
+    // Two different objects are fine.
+    let (r, out) = run_main(
+        "fn main() {\nlet w = World.new(Vec3 { x: 0.0, y: 0.0, z: 0.0 })\nlet v = World.new(Vec3 { x: 0.0, y: 0.0, z: 0.0 })\nv.step(1.0)\nw.swap_with(v)\nprint(w.time())\n}\n",
+    );
+    r.unwrap();
+    assert_eq!(out, "1.0\n");
 }
