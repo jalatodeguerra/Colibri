@@ -496,3 +496,53 @@ fn check_still_finds_errors_in_a_script_modules_statements_and_initialisers() {
 fn colibri_command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_colibri"))
 }
+
+#[test]
+fn stderr_is_shown_only_for_failing_tests_unless_nocapture() {
+    let source = "import io\n\ntest \"quiet\" {\n    io.eprintln(\"err from the passing test\")\n}\n\ntest \"loud\" {\n    io.eprintln(\"err from the failing test\")\n    assert(false)\n}\n";
+    let out = test_script("capture-err", source, &[]);
+    let (text, err) = (stdout(&out), stderr(&out));
+    assert!(!text.contains("err from the passing test"), "{text}");
+    assert!(!err.contains("err from"), "{err}");
+    let at_failure = text.find("---- t::loud ----").expect(&text);
+    let printed = text.find("err from the failing test").expect(&text);
+    assert!(printed > at_failure, "{text}");
+
+    let out = test_script("nocapture-err", source, &["--nocapture"]);
+    let (text, err) = (stdout(&out), stderr(&out));
+    assert!(err.contains("err from the passing test"), "{err}");
+    assert!(err.contains("err from the failing test"), "{err}");
+    assert!(!text.contains("err from"), "{text}");
+}
+
+#[test]
+fn run_refuses_leaks_with_watch() {
+    let dir = folder("leaks-watch", &[("p.colibri", "fn main() {}\n")]);
+    let mut child = colibri_command()
+        .args(["run", "--watch", "--leaks"])
+        .arg(dir.join("p.colibri"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the colibri binary runs");
+    // The refusal is immediate. A `--watch` that was accepted waits for an edit forever, so
+    // give it a generous limit and call that the failure instead of hanging the suite.
+    let limit = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let finished = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if std::time::Instant::now() > limit {
+            let _ = child.kill();
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        finished,
+        "`run --watch --leaks` was accepted and kept waiting"
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("--leaks"), "{}", stderr(&out));
+}
