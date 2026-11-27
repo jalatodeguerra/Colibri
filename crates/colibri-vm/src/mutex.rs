@@ -119,7 +119,11 @@ impl Machine {
         span: Span,
     ) -> Eval {
         let Some(inner) = args.first().and_then(|r| self.core.mutex_of(r)) else {
-            return Err(self.internal(fiber, span, "a `Mutex` method on something that is not one"));
+            return Err(self.internal(
+                fiber,
+                span,
+                "a `Mutex` method on something that is not one",
+            ));
         };
         match op {
             Builtin::MutexGet => {

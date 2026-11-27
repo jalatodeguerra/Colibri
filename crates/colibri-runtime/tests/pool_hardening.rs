@@ -45,22 +45,6 @@ fn within_a_minute<R: Send + 'static>(body: impl FnOnce() -> R + Send + 'static)
         .expect("the program deadlocked")
 }
 
-/// What `source` prints on a pool of `workers` threads, main and event loop run to the end.
-fn run_on(workers: usize, source: &str) -> String {
-    let source = source.to_string();
-    within_a_minute(move || {
-        let out = Out::default();
-        let mut vm = colibri::Vm::builder()
-            .worker_threads(workers)
-            .stdout_shared(Box::new(out.clone()))
-            .build();
-        vm.load_source("channels.colibri", &source).unwrap();
-        vm.run_main().unwrap();
-        vm.run_event_loop().unwrap();
-        out.text()
-    })
-}
-
 /// Runs `source` on a pool of `workers` and says what it printed with how many threads the pool
 /// started (the pool's own and the temporary ones), after the `Vm` is gone and every thread joined.
 fn run_counting(workers: usize, cap: Option<usize>, source: &str) -> (String, usize, usize, usize) {
@@ -107,7 +91,10 @@ fn a_task_blocked_on_a_channel_while_its_feeder_is_queued_gets_a_temporary_threa
     for workers in [1, 3] {
         let (out, started, joined, alive) = run_counting(workers, None, FEEDER_BEHIND);
         assert_eq!(out, "b 1\na 5\n", "{workers} workers");
-        assert!(started >= workers, "{started} threads for {workers} workers");
+        assert!(
+            started >= workers,
+            "{started} threads for {workers} workers"
+        );
         // Whatever the pool lent is joined with the pool.
         assert_eq!((joined, alive), (started, 0), "{workers} workers");
     }
@@ -135,6 +122,38 @@ fn main() {
     for workers in [1, 3] {
         let (out, _, joined, alive) = run_counting(workers, None, source);
         assert_eq!(out, "fed 11\nheld 1\n", "{workers} workers");
+        assert_eq!(alive, 0);
+        assert!(joined >= workers);
+    }
+}
+
+#[test]
+fn the_main_thread_blocked_in_native_code_gets_a_thread_for_the_task_that_feeds_it() {
+    // As above, but the `recv` is in the callback of `map`: native code cannot run other tasks
+    // meanwhile, so the thread blocks and only a lent thread can run the queued feeder.
+    let source = r#"
+fn main() {
+    let gate = Channel[int]()
+    let ch = Channel[int]()
+    let ready = Channel[int]()
+    let held = task.run(fn() {
+        ready.send(1)
+        return gate.recv().expect("opened")
+    })
+    // The pool's thread is about to block on `gate`, and the feeder is queued only after that: the
+    // blocked thread cannot ask for room for it, so the waiting thread must.
+    ready.recv().expect("ready")
+    let feeder = task.run(fn() { ch.send(11) })
+    let got = [1].map(fn(x) => ch.recv().expect("a value") + x)
+    print("got {got}")
+    gate.send(1)
+    print("held {held.join().expect("held")}")
+    feeder.join().expect("feeder")
+}
+"#;
+    for workers in [1, 3] {
+        let (out, _, joined, alive) = run_counting(workers, None, source);
+        assert_eq!(out, "got [12]\nheld 1\n", "{workers} workers");
         assert_eq!(alive, 0);
         assert!(joined >= workers);
     }
@@ -208,7 +227,10 @@ fn main() {
 "#;
     let (out, started, joined, alive) = run_counting(1, Some(3), source);
     assert_eq!(out, "stopped: true\n");
-    assert_eq!(started, 4, "the pool's thread and the 3 it was allowed to lend");
+    assert_eq!(
+        started, 4,
+        "the pool's thread and the 3 it was allowed to lend"
+    );
     assert_eq!((joined, alive), (4, 0));
 }
 

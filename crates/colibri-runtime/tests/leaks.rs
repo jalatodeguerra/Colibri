@@ -414,5 +414,8 @@ fn main() {
     let mut paths: Vec<String> = vm.find_leaks().into_iter().map(|l| l.path).collect();
     paths.sort();
     assert_eq!(paths.len(), 2, "{paths:?}");
-    assert!(paths[0].contains("main") && paths[1].contains("task"), "{paths:?}");
+    assert!(
+        paths[0].contains("main") && paths[1].contains("task"),
+        "{paths:?}"
+    );
 }

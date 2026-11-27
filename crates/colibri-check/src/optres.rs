@@ -176,11 +176,7 @@ pub(crate) const MUTEX_METHODS: &[&str] = &["get", "set", "with"];
 
 /// The signature of a method of `Mutex[T]` (DESIGN §14.1). `with` takes the callback that runs
 /// under the lock; `fresh` makes the type of its result.
-pub(crate) fn mutex_sig(
-    t: &Ty,
-    name: &str,
-    fresh: &mut dyn FnMut() -> Ty,
-) -> Option<Sig> {
+pub(crate) fn mutex_sig(t: &Ty, name: &str, fresh: &mut dyn FnMut() -> Ty) -> Option<Sig> {
     Some(match name {
         "get" => sig(Builtin::MutexGet, vec![], t.clone()),
         "set" => sig(Builtin::MutexSet, vec![("value", t.clone())], Ty::Unit),
