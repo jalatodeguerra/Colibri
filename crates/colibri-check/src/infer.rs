@@ -88,8 +88,10 @@ impl InferCtx {
     /// variable was left unresolved.
     pub fn finalize(&mut self, ty: &Ty) -> (Ty, bool) {
         let mut unresolved = false;
-        let kinds: Vec<VarKind> = self.vars.iter().map(|v| v.kind).collect();
-        let out = self.map(ty, &mut |v| match kinds[v.0 as usize] {
+        // `map` only reads the table, so the closure can read it too: no copy of every
+        // variable's kind per call.
+        let vars = &self.vars;
+        let out = self.map(ty, &mut |v| match vars[v.0 as usize].kind {
             VarKind::IntLit => Ty::INT,
             VarKind::FloatLit => Ty::Float,
             VarKind::General => {

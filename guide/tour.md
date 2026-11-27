@@ -434,7 +434,8 @@ kid's parent is root
 renamed
 ```
 
-`colibri run --leaks` reports cycles that were never freed.
+`colibri run --leaks` reports cycles that were never freed. A cycle is reported when it goes
+through a class object or a closure; a cycle made only of lists, maps and sets is not.
 
 ## Enums
 

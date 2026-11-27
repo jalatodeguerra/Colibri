@@ -324,7 +324,15 @@ fn main() -> ExitCode {
     }
     let cli = Cli::parse();
     warn_if_the_removed_engine_is_asked_for();
-    on_big_stack(move || match cli.command {
+    // Every command but `new` runs on the big stack: parsing and checking recurse on the Rust
+    // stack for deeply nested code, and `update` walks the dependency graph recursively (one
+    // level per dependency in a chain, which a git dependency someone else controls can make
+    // long). `new` only checks a name and writes a template.
+    let command = match cli.command {
+        Command::New { name } => return colibri_lang::newcmd::run(&name),
+        other => other,
+    };
+    on_big_stack(move || match command {
         Command::Check {
             file,
             web,
@@ -433,8 +441,8 @@ fn main() -> ExitCode {
             })
         }
         Command::Update { names, path, deps } => depscmd::update(&path, names, deps),
+        Command::New { .. } => unreachable!("`new` runs before the big stack is made"),
         Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
-        Command::New { name } => colibri_lang::newcmd::run(&name),
         Command::Repl { build } => {
             colibri_lang::set_build_cfg(build.cfg());
             colibri_lang::repl::run()

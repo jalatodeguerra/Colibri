@@ -22,10 +22,38 @@ error_kind!(
     }
 );
 
-const STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-const URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+/// A base64 alphabet with its inverse, built at compile time: decoding looks each character up
+/// in `value` instead of scanning the 64 letters for it.
+struct Alphabet {
+    /// The character of each sextet value.
+    chars: [u8; 64],
+    /// The sextet value of each byte, or [`Alphabet::NOT_IN`] for a byte outside the alphabet.
+    value: [u8; 256],
+}
 
-fn encode(bytes: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
+impl Alphabet {
+    const NOT_IN: u8 = 0xFF;
+
+    const fn new(chars: &[u8; 64]) -> Alphabet {
+        let mut value = [Alphabet::NOT_IN; 256];
+        let mut i = 0;
+        while i < 64 {
+            value[chars[i] as usize] = i as u8;
+            i += 1;
+        }
+        Alphabet {
+            chars: *chars,
+            value,
+        }
+    }
+}
+
+const STANDARD: &Alphabet =
+    &Alphabet::new(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
+const URL: &Alphabet =
+    &Alphabet::new(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_");
+
+fn encode(bytes: &[u8], alphabet: &Alphabet, pad: bool) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let n = (u32::from(chunk[0]) << 16)
@@ -34,7 +62,7 @@ fn encode(bytes: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
         let sextets = chunk.len() + 1;
         for i in 0..4 {
             if i < sextets {
-                out.push(alphabet[((n >> (18 - 6 * i)) & 63) as usize] as char);
+                out.push(alphabet.chars[((n >> (18 - 6 * i)) & 63) as usize] as char);
             } else if pad {
                 out.push('=');
             }
@@ -43,7 +71,7 @@ fn encode(bytes: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
     out
 }
 
-fn decode(text: &str, alphabet: &[u8; 64], padded: bool) -> Result<Vec<u8>, String> {
+fn decode(text: &str, alphabet: &Alphabet, padded: bool) -> Result<Vec<u8>, String> {
     let bytes = text.as_bytes();
     let (body, pad) = {
         let pad = bytes.iter().rev().take_while(|&&b| b == b'=').count();
@@ -51,7 +79,10 @@ fn decode(text: &str, alphabet: &[u8; 64], padded: bool) -> Result<Vec<u8>, Stri
     };
     // A character that does not belong is the first thing to report: a stray space or line
     // break would otherwise show up as a wrong length.
-    if let Some(i) = body.iter().position(|c| !alphabet.contains(c)) {
+    if let Some(i) = body
+        .iter()
+        .position(|&c| alphabet.value[c as usize] == Alphabet::NOT_IN)
+    {
         let shown = text[i..].chars().next().unwrap_or('?');
         let note = if shown.is_whitespace() {
             " (whitespace is not skipped: strip it first)"
@@ -83,8 +114,7 @@ fn decode(text: &str, alphabet: &[u8; 64], padded: bool) -> Result<Vec<u8>, Stri
     let mut bits = 0u32;
     let mut count = 0;
     for &c in body {
-        let v = alphabet.iter().position(|&a| a == c).unwrap_or(0);
-        bits = (bits << 6) | v as u32;
+        bits = (bits << 6) | u32::from(alphabet.value[c as usize]);
         count += 1;
         if count == 4 {
             out.extend_from_slice(&[(bits >> 16) as u8, (bits >> 8) as u8, bits as u8]);
@@ -158,6 +188,41 @@ mod tests {
             let unpadded = coded.trim_end_matches('=');
             assert_eq!(encode(plain.as_bytes(), URL, false), unpadded);
             assert_eq!(decode(unpadded, URL, false).unwrap(), plain.as_bytes());
+        }
+    }
+
+    #[test]
+    fn every_byte_value_round_trips() {
+        let all: Vec<u8> = (0..=255).collect();
+        for len in 0..=all.len() {
+            let data = &all[..len];
+            let text = encode(data, STANDARD, true);
+            assert_eq!(
+                decode(&text, STANDARD, true).unwrap(),
+                data,
+                "standard, {len}"
+            );
+            let text = encode(data, URL, false);
+            assert_eq!(decode(&text, URL, false).unwrap(), data, "url, {len}");
+        }
+        // Also each byte value alone and at every position of a 3-byte group.
+        for b in 0..=255u8 {
+            for data in [[b, 0, 0], [0, b, 0], [0, 0, b]] {
+                let text = encode(&data, STANDARD, true);
+                assert_eq!(decode(&text, STANDARD, true).unwrap(), data);
+            }
+        }
+    }
+
+    #[test]
+    fn every_byte_outside_the_alphabet_is_rejected() {
+        for b in 0..=127u8 {
+            let c = b as char;
+            let text = format!("Zm9{c}");
+            let ok_std = STANDARD.chars.contains(&b);
+            assert_eq!(decode(&text, STANDARD, true).is_ok(), ok_std, "{b}");
+            let ok_url = URL.chars.contains(&b);
+            assert_eq!(decode(&text, URL, false).is_ok(), ok_url, "{b}");
         }
     }
 

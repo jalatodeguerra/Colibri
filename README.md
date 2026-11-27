@@ -866,6 +866,9 @@ warning: 1 leaked reference cycle (reference counting never frees a cycle; make 
 checks each test (a cycle leaked inside a thread task is not seen there: `colibri run --leaks`
 reports those, when the program ends).
 
+A cycle is reported only when it goes through a class object or a closure, because those are
+what the detector starts from. A cycle made only of lists, maps and sets is not reported.
+
 ### Profiler
 
 `colibri run --profile` samples the running program about every 1,024 steps and, when it
