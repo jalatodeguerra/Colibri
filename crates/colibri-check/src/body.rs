@@ -212,6 +212,9 @@ pub(crate) struct FnCtx<'c, 'a> {
     /// The closures written directly as the argument of `task.run`, judged once every write
     /// inside them is known (`FnCtx::refuse_lost_task_writes`).
     pub(crate) task_closures: Vec<(FnId, Span)>,
+    /// The `let` variables (frame, local) that were initialised with a closure literal, so
+    /// `task.run(f)` can look through them to the closure.
+    pub(crate) closure_lets: HashMap<(usize, LocalId), FnId>,
 }
 
 /// A call with type arguments that are inferred, kept so one that is never fixed is reported.
@@ -290,6 +293,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             whole_assign_target: false,
             mut_lints: Vec::new(),
             task_closures: Vec::new(),
+            closure_lets: HashMap::new(),
         }
     }
 
@@ -1382,6 +1386,11 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 }
                 if kind == LocalKind::Var {
                     self.note_mut_binding(vec![local], name.span);
+                }
+                if kind == LocalKind::Let
+                    && let hir::ExprKind::Closure(c) = &value.kind
+                {
+                    self.closure_lets.insert((self.frame_id, local), c.f);
                 }
                 out.push(Stmt {
                     span: s.span,

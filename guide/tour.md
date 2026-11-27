@@ -1225,6 +1225,12 @@ fn main() -> Result[()] {
 `n` is written inside a `task.run` closure, and the write would be lost
 ```
 
+The checker sees a closure written in the call, `task.run(fn() { ... })`, or kept in a `let` that was
+initialised with one. A function value that comes from anywhere else (a parameter, a field, the
+result of a call) is not looked into, and a write it makes to a captured variable is lost without a
+message. A change to a captured list, map or object is not an error either: it is made on the task's
+own copy, and the caller's list or object stays as it was.
+
 To get a value out of a task, return it (`let n = task.run(fn() => 1).join()?`), or send it through a
 [`Channel`](#channels) or a [`Mutex`](#mutex). A copy is a structural one: shared parts and cycles inside
 what is copied stay shared and cyclic in the copy, a `weak` reference to something outside it is

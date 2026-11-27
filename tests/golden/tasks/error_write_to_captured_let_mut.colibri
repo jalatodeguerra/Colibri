@@ -23,6 +23,10 @@ fn main() -> Result[()] {
         let inner = fn() { deep = 1 }
         inner()
     }).join()?
+    // A closure kept in a `let` and passed by name is the same closure.
+    let mut held = 0
+    let writer = fn() { held += 1 }
+    task.run(writer).join()? // error: `held` is written inside a `task.run` closure
     // Reading a captured `let mut` is a copy, and writing the closure's own variable is fine.
     let r = task.run(fn() -> int {
         let mut mine = fine
@@ -30,6 +34,6 @@ fn main() -> Result[()] {
         return mine
     }).join()?
     fine = 8
-    print(r + n + p.x + q.x + deep + fine)
+    print(r + n + p.x + q.x + deep + fine + held)
     return ok(())
 }
