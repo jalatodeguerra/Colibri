@@ -4,6 +4,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream, Parser};
+use syn::spanned::Spanned;
 use syn::{
     Error, Fields, FnArg, Ident, ImplItem, ImplItemFn, Item, ItemEnum, ItemFn, ItemImpl,
     ItemStruct, Pat, Result, Signature, Token, Type, Visibility,
@@ -314,7 +315,7 @@ struct Lowered {
 /// call. Anything else passes as written.
 fn lower(paths: &Paths, ident: &Ident, ty: &Type) -> Result<Lowered> {
     let private = &paths.private;
-    let Type::Reference(r) = ty else {
+    let Type::Reference(r) = strip(ty) else {
         return Ok(Lowered {
             pat: quote!(#ident),
             ty: quote!(#ty),
@@ -322,6 +323,7 @@ fn lower(paths: &Paths, ident: &Ident, ty: &Type) -> Result<Lowered> {
         });
     };
     let elem = &*r.elem;
+    let span = ty.span();
     if r.mutability.is_some() {
         if matches!(elem, Type::Slice(_)) || matches!(elem, Type::Path(p) if p.path.is_ident("str"))
         {
@@ -331,28 +333,64 @@ fn lower(paths: &Paths, ident: &Ident, ty: &Type) -> Result<Lowered> {
             ));
         }
         Ok(Lowered {
-            pat: quote!(mut #ident),
-            ty: quote!(<#elem as #private::MutParam>::Owned),
+            pat: quote_spanned!(span=> mut #ident),
+            ty: quote_spanned!(span=> <#elem as #private::MutParam>::Owned),
             arg: quote!(&mut #ident),
         })
     } else {
         Ok(Lowered {
             pat: quote!(#ident),
-            ty: quote!(<#elem as #private::RefParam>::Owned),
+            ty: quote_spanned!(span=> <#elem as #private::RefParam>::Owned),
             arg: quote!(&#ident),
         })
     }
 }
 
-/// A reference result cannot be converted: the script's value would have to borrow from the host.
+/// The type without the invisible groups and parentheses a macro or a `(T)` leaves around it.
+fn strip(mut ty: &Type) -> &Type {
+    loop {
+        match ty {
+            Type::Group(g) => ty = &g.elem,
+            Type::Paren(p) => ty = &p.elem,
+            other => return other,
+        }
+    }
+}
+
+/// The first reference in a result type that a script could not hold: `&'static` ones are
+/// copied out (`&'static str`, `&'static [T]`), every other one would borrow from the host.
+fn borrowed_in(ty: &Type) -> Option<&Type> {
+    match strip(ty) {
+        Type::Reference(r) => {
+            if r.lifetime.as_ref().is_some_and(|l| l.ident == "static") {
+                borrowed_in(&r.elem)
+            } else {
+                Some(strip(ty))
+            }
+        }
+        Type::Path(p) => p.path.segments.iter().find_map(|seg| match &seg.arguments {
+            syn::PathArguments::AngleBracketed(a) => a.args.iter().find_map(|arg| match arg {
+                syn::GenericArgument::Type(t) => borrowed_in(t),
+                _ => None,
+            }),
+            _ => None,
+        }),
+        Type::Tuple(t) => t.elems.iter().find_map(borrowed_in),
+        Type::Array(a) => borrowed_in(&a.elem),
+        Type::Slice(a) => borrowed_in(&a.elem),
+        _ => None,
+    }
+}
+
+/// A result that borrows cannot be converted: the script's value would have to borrow from the host.
 fn check_output(sig: &Signature) -> Result<()> {
     if let syn::ReturnType::Type(_, ty) = &sig.output
-        && matches!(&**ty, Type::Reference(_))
+        && let Some(bad) = borrowed_in(ty)
     {
         return Err(Error::new_spanned(
-            ty,
+            bad,
             format!(
-                "`{}` returns a reference, which a script cannot hold: return an owned value (a copy, a `String`, a `Vec`, or a `Handle`)",
+                "`{}` returns a reference, which a script cannot hold: return an owned value (a copy, a `String`, a `Vec`, or a `Handle`); only `&'static` results are copied",
                 sig.ident
             ),
         ));
@@ -361,7 +399,7 @@ fn check_output(sig: &Signature) -> Result<()> {
 }
 
 fn is_ctx(ty: &Type) -> bool {
-    let Type::Reference(r) = ty else {
+    let Type::Reference(r) = strip(ty) else {
         return false;
     };
     if r.mutability.is_none() {
@@ -558,7 +596,7 @@ fn export_fn(
     let has_refs = e
         .params
         .iter()
-        .any(|(_, t)| matches!(t, Type::Reference(_)));
+        .any(|(_, t)| matches!(strip(t), Type::Reference(_)));
     // A function with reference parameters is called through a closure that owns them.
     let (imports, callee) = if has_refs {
         let lowered = e
@@ -806,16 +844,38 @@ mod tests {
     }
 
     #[test]
-    fn a_reference_result_says_to_return_an_owned_value() {
+    fn a_borrowing_result_says_to_return_an_owned_value() {
         for item in [
             "impl W { pub fn name(&self) -> &str { \"\" } }",
             "impl W { pub fn body(&self) -> &Body { todo!() } }",
-            "impl W { pub fn new() -> &'static str { \"\" } }",
+            "impl W { pub fn new() -> &'a str { \"\" } }",
+            "impl W { pub fn n(&self) -> Option<&str> { None } }",
+            "impl W { pub fn n(&self) -> Result<&Body, String> { todo!() } }",
+            "impl W { pub fn n(&self) -> (i64, &[i64]) { todo!() } }",
+            "fn f() -> (&str) { \"\" }",
         ] {
             let out = error_of("", item);
-            assert!(out.contains("return an owned value"), "{out}");
+            assert!(out.contains("return an owned value"), "{item}: {out}");
         }
-        assert!(error_of("", "fn f() -> &'static [i64] { &[] }").contains("return an owned value"));
+    }
+
+    #[test]
+    fn a_static_result_is_copied_out_and_still_compiles() {
+        let out = run("", "fn v() -> &'static str { \"v1\" }");
+        assert!(!out.contains("compile_error"), "{out}");
+        let out = run("", "fn v() -> &'static [i64] { &[] }");
+        assert!(!out.contains("compile_error"), "{out}");
+        let out = run(
+            "",
+            "impl W { pub fn v(&self) -> Option<&'static str> { None } }",
+        );
+        assert!(!out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn a_parenthesised_reference_parameter_is_still_lowered() {
+        let out = run("", "impl W { pub fn f(&self, s: (&str)) {} }");
+        assert!(out.contains("RefParam"), "{out}");
     }
 
     #[test]

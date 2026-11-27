@@ -103,6 +103,11 @@ impl World {
         body.mass += by;
     }
 
+    /// `&self` and a shared `&World` of the same object do not conflict.
+    pub fn same_time(&self, other: &World) -> bool {
+        self.time == other.time
+    }
+
     pub fn swap_with(&mut self, other: &mut World) {
         std::mem::swap(&mut self.time, &mut other.time);
     }
@@ -140,6 +145,16 @@ pub fn grow(body: &mut RigidBody, by: f32) -> f32 {
 }
 
 #[colibri::export]
+pub fn same_mass(a: &RigidBody, b: &RigidBody) -> bool {
+    a.mass == b.mass
+}
+
+#[colibri::export]
+pub fn version() -> &'static str {
+    "v1"
+}
+
+#[colibri::export]
 pub fn merge_into(target: &mut RigidBody, source: &RigidBody) {
     target.mass += source.mass;
 }
@@ -166,6 +181,8 @@ fn engine() -> (colibri::Vm, colibri::SharedBuffer) {
     shout_owned::register(&mut vm).unwrap();
     grow::register(&mut vm).unwrap();
     merge_into::register(&mut vm).unwrap();
+    same_mass::register(&mut vm).unwrap();
+    version::register(&mut vm).unwrap();
     (vm, out)
 }
 
@@ -225,7 +242,7 @@ fn the_interface_text_has_the_class_its_impl_and_real_names() {
     for wanted in [
         "struct Vec3 { x: f32, y: f32, z: f32 }\n",
         "enum Material { Wood, Steel }\n",
-        "@host class World {}\nimpl World {\n    fn new(gravity: Vec3) -> World\n    fn step(self, dt: f32)\n    fn position(self, body: RigidBody) -> Vec3\n    fn depth(self) -> u32\n    fn time(self) -> f32\n    fn describe(self, label: str, weights: List[f32], offset: Vec3) -> str\n    fn describe_owned(self, label: str, weights: List[f32], offset: Vec3) -> str\n    fn push(self, body: RigidBody, by: f32)\n    fn swap_with(self, other: World)\n    fn find(self, which: int) -> Option[RigidBody]\n}\n",
+        "@host class World {}\nimpl World {\n    fn new(gravity: Vec3) -> World\n    fn step(self, dt: f32)\n    fn position(self, body: RigidBody) -> Vec3\n    fn depth(self) -> u32\n    fn time(self) -> f32\n    fn describe(self, label: str, weights: List[f32], offset: Vec3) -> str\n    fn describe_owned(self, label: str, weights: List[f32], offset: Vec3) -> str\n    fn push(self, body: RigidBody, by: f32)\n    fn same_time(self, other: World) -> bool\n    fn swap_with(self, other: World)\n    fn find(self, which: int) -> Option[RigidBody]\n}\n",
         "@host class RigidBody {}\nimpl RigidBody {\n    fn new(pos: Vec3, mass: f32, material: Material) -> RigidBody\n    fn mass(self) -> f32\n    fn material(self) -> Material\n}\n",
         "fn spawn_body(x: f32, y: f32, z: f32) -> RigidBody\n",
         "fn total_mass(first: RigidBody, second: RigidBody) -> f32\n",
@@ -413,7 +430,12 @@ fn a_mutable_conflict_is_the_already_in_use_panic() {
     // `&mut` and `&` of one object in one call.
     let (r, _) = run_main("fn main() {\nlet a = spawn_body(0.0, 0.0, 0.0)\nmerge_into(a, a)\n}\n");
     let message = panic_message(r);
-    assert!(message.contains("already in use"), "{message}");
+    assert!(
+        message.contains(
+            "host object `RigidBody` is already in use by an enclosing call (`merge_into`)"
+        ),
+        "{message}"
+    );
     // `&mut self` and `&mut` of the same world.
     let (r, _) = run_main(
         "fn main() {\nlet w = World.new(Vec3 { x: 0.0, y: 0.0, z: 0.0 })\nw.swap_with(w)\n}\n",
@@ -431,4 +453,21 @@ fn a_mutable_conflict_is_the_already_in_use_panic() {
     );
     r.unwrap();
     assert_eq!(out, "1.0\n");
+}
+
+#[test]
+fn a_shared_reference_is_a_shared_borrow_and_a_static_result_is_copied() {
+    let (r, out) = run_main(
+        r#"
+fn main() {
+let a = spawn_body(0.0, 0.0, 0.0)
+let w = World.new(Vec3 { x: 0.0, y: 0.0, z: 0.0 })
+print(same_mass(a, a))
+print(w.same_time(w))
+print(version())
+}
+"#,
+    );
+    r.unwrap();
+    assert_eq!(out, "true\ntrue\nv1\n");
 }
