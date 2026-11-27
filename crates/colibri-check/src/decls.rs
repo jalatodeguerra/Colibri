@@ -947,7 +947,13 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn contains_by_value(&self, ty: &Ty, target: TypeId, seen: &mut Vec<TypeId>) -> bool {
+    /// Whether a value of `ty` holds a struct of `target` inside itself, by value: directly, in
+    /// a tuple, or in the fields of a struct. A generic struct is looked at with its arguments
+    /// filled in (`Wrap[Bad]` has the field `x: Bad`), so `struct Bad { w: Wrap[Bad] }` counts.
+    fn contains_by_value(&self, ty: &Ty, target: TypeId, seen: &mut Vec<Ty>) -> bool {
+        // Instantiating a generic struct can keep producing new types (`P[T]` holding `Q[P[T]]`
+        // holding `P[Q[P[T]]]` ...); no sensible declaration nests this deep.
+        const DEPTH: usize = 32;
         match ty {
             Ty::Tuple(items) => items
                 .iter()
@@ -955,15 +961,20 @@ impl<'a> Checker<'a> {
             Ty::Adt(id, _) if *id == target => true,
             // A class is held by reference, so it never makes a struct infinite.
             Ty::Adt(id, _) if self.types[id.0 as usize].is_class() => false,
-            Ty::Adt(id, _) => {
-                if seen.contains(id) {
+            Ty::Adt(id, args) => {
+                // The same instantiation twice is a cycle that does not pass through `target`.
+                if seen.contains(ty) || seen.len() >= DEPTH {
                     return false;
                 }
-                seen.push(*id);
-                self.types[id.0 as usize]
+                seen.push(ty.clone());
+                let def = &self.types[id.0 as usize];
+                let map = Self::param_map_of(def, args);
+                let found = def
                     .fields()
                     .iter()
-                    .any(|f| self.contains_by_value(&f.ty, target, seen))
+                    .any(|f| self.contains_by_value(&f.ty.subst(&map), target, seen));
+                seen.pop();
+                found
             }
             _ => false,
         }
