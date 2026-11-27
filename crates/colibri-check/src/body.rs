@@ -209,6 +209,9 @@ pub(crate) struct FnCtx<'c, 'a> {
     pub(crate) whole_assign_target: bool,
     /// The `mut` bindings of the program's own code, judged once every closure is checked.
     pub(crate) mut_lints: Vec<MutLint>,
+    /// The closures written directly as the argument of `task.run`, judged once every write
+    /// inside them is known (`FnCtx::refuse_lost_task_writes`).
+    pub(crate) task_closures: Vec<(FnId, Span)>,
 }
 
 /// A call with type arguments that are inferred, kept so one that is never fixed is reported.
@@ -286,6 +289,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             unsafe_depth: 0,
             whole_assign_target: false,
             mut_lints: Vec::new(),
+            task_closures: Vec::new(),
         }
     }
 

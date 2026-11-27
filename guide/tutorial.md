@@ -1266,10 +1266,10 @@ fn main() -> Result[()] {
 
 A task has objects of its own. What the closure captures is copied to the task when it starts, and
 the result is copied back, so no two threads ever touch the same object and nothing needs a lock.
-The cost is easy to trip on: **a write to a captured `let mut` inside a task closure is lost**,
-because the closure runs on a copy. This program prints 0, not 1:
+The cost is easy to trip on: a write to a captured `let mut` inside a task closure would be lost,
+because the closure runs on a copy, so the checker refuses it:
 
-```colibri
+```colibri,error
 fn main() -> Result[()] {
     let mut n = 0
     task.run(fn() { n += 1 }).join()?
@@ -1279,7 +1279,7 @@ fn main() -> Result[()] {
 ```
 
 ```output
-0
+`n` is written inside a `task.run` closure, and the write would be lost
 ```
 
 Return the value instead. The [language tour](tour.md#thread-tasks) says what can be copied, what a

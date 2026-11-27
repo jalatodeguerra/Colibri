@@ -464,6 +464,9 @@ impl FnCtx<'_, '_> {
         }
         // A function value held in a variable is not seen here; the run time catches it.
         let closure = self.note_thread_boundary(&arg);
+        if let hir::ExprKind::Closure(c) = &arg.kind {
+            self.task_closures.push((c.f, arg.span));
+        }
         self.note_task_site(closure, mark, ob_mark, span);
         self.require_sendable(&ret, crate::sendable::SendOrigin::Result, arg.span);
         self.mk(

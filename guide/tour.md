@@ -1208,10 +1208,11 @@ not stop the program.
 A task is an **isolate**: it has its own objects. Everything the closure captures is copied to the
 task when it starts, and the result is copied back by `join`. So a task cannot change what the
 program holds, and the program cannot change what the task holds, and no locks are needed. The
-price is that **a write to a captured `let mut` inside the closure is lost**, because the closure
-runs on a copy:
+price is that **a write to a captured `let mut` inside the closure would be lost**, because the
+closure runs on a copy, so the checker refuses it. Reading a captured variable is fine: the closure
+sees the value it had when the task started.
 
-```colibri
+```colibri,error
 fn main() -> Result[()] {
     let mut n = 0
     task.run(fn() { n += 1 }).join()?
@@ -1221,10 +1222,11 @@ fn main() -> Result[()] {
 ```
 
 ```output
-0
+`n` is written inside a `task.run` closure, and the write would be lost
 ```
 
-To get a value out of a task, return it. A copy is a structural one: shared parts and cycles inside
+To get a value out of a task, return it (`let n = task.run(fn() => 1).join()?`), or send it through a
+[`Channel`](#channels) or a [`Mutex`](#mutex). A copy is a structural one: shared parts and cycles inside
 what is copied stay shared and cyclic in the copy, a `weak` reference to something outside it is
 `none`, and `Drop` runs for the copy as for any other object. What cannot be copied is refused,
 with the way to the part: a host handle such as a `net.Conn`, an iterator, a `Coroutine`,

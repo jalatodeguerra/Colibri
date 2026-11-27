@@ -541,7 +541,8 @@ woken
 
 `task.run(f)` runs the closure `f` on a worker thread and gives a `Task[T]`, where `T` is what `f`
 returns (see [thread tasks](tour.md#thread-tasks)). The closure runs on a copy of what it captures:
-a write to a captured `let mut` inside it is lost.
+a write to a captured `let mut` inside it would be lost, so it is a compile error; return the
+value from the task instead.
 
 | Type | Method | What it does |
 |------|--------|--------------|
