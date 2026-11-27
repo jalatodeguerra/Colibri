@@ -128,7 +128,8 @@ class Entry {
 }
 
 /// The header fields of a request or a response. Names compare without regard to case. A name
-/// can have several lines (`Set-Cookie`); `get` joins them with `, `, `get_all` keeps them apart.
+/// can have several lines (`Set-Cookie`); `get` joins them with `, ` (with a newline for
+/// `Set-Cookie`, whose values hold commas of their own), `get_all` keeps them apart.
 pub class Headers {
     entries: Map[str, Entry] = {:}
 }
@@ -136,10 +137,14 @@ pub class Headers {
 pub fn Headers() -> Headers => Headers {}
 
 impl Headers {
-    /// Every value of the name joined with `, `, or `none` when there is none.
+    /// Every value of the name joined with `, `, or `none` when there is none. The values of
+    /// `Set-Cookie` are joined with a newline instead: a cookie's `Expires` date has a comma, so
+    /// a comma could not be split apart again (`http.Response.headers` does the same).
     pub fn get(self, name: str) -> str? {
-        let entry = self.entries.get(name.to_lower())?
-        return some(entry.values.join(", "))
+        let key = name.to_lower()
+        let entry = self.entries.get(key)?
+        let separator = if key == "set-cookie" { "\n" } else { ", " }
+        return some(entry.values.join(separator))
     }
 
     /// One item for each field line of the name.
@@ -1420,7 +1425,7 @@ fn request(head: Head, reader: BodyReader, remote_addr: str) -> Request {
 }
 
 impl Request {
-    /// A header field: every value of the name joined with `, `.
+    /// A header field: every value of the name joined with `, ` (see `Headers.get` for `Set-Cookie`).
     pub fn header(self, name: str) -> str? => self.headers.get(name)
 
     /// The host the request is addressed to: the authority of an absolute-form target, else the

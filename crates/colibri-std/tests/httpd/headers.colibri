@@ -25,6 +25,15 @@ test "get joins the values of a name with a comma and a space, in order" {
     assert_eq(h.get("accept"), some("text/html, application/json, */*"))
 }
 
+test "get joins the values of set-cookie with a newline, whatever the case of the name" {
+    let h = httpd_impl.Headers()
+    h.add("Set-Cookie", "a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT")
+    h.add("set-cookie", "b=2")
+    let want = some("a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT\nb=2")
+    assert_eq(h.get("set-cookie"), want)
+    assert_eq(h.get("SET-COOKIE"), want)
+}
+
 test "get_all keeps the lines apart, in order" {
     let h = httpd_impl.Headers()
     h.add("Set-Cookie", "a=1; Path=/")
