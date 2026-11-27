@@ -393,3 +393,117 @@ fn run_says_a_binding_needs_the_project_runner() {
     );
     assert!(!out.stderr.contains("looked for"), "{}", out.stderr);
 }
+
+/// A root with path dependencies `nat` (declares `native`, with submodules that import it) and
+/// `lib2` (depends on `nat`).
+fn diamond(name: &str, lib2_extra: &str) -> Pkg {
+    let pkg = Pkg::new(
+        name,
+        "\n[dependencies]\nnat = { path = \"nat\" }\nlib2 = { path = \"lib2\" }\n",
+        "import nat\nimport lib2\nfn main() {\n    print(nat.total() + lib2.two())\n}\n",
+    );
+    pkg.write(
+        "nat/colibri.toml",
+        "[package]\nname = \"nat\"\n[rust-dependencies]\nnative = { path = \"native\" }\n",
+    );
+    pkg.write("nat/native.cbi", &interface_of("native"));
+    pkg.write(
+        "nat/lib.colibri",
+        "import helper\nimport sub.deep\npub fn total() -> int {\n    return helper.h() + deep.d()\n}\n",
+    );
+    pkg.write(
+        "nat/helper.colibri",
+        "import native\npub fn h() -> int {\n    return native.add(1, 1)\n}\n",
+    );
+    pkg.write(
+        "nat/sub/deep.colibri",
+        "import native\npub fn d() -> int {\n    return native.add(2, 2)\n}\n",
+    );
+    pkg.write(
+        "lib2/colibri.toml",
+        "[package]\nname = \"lib2\"\n[dependencies]\nnat = { path = \"../nat\" }\n",
+    );
+    pkg.write(
+        "lib2/lib.colibri",
+        &format!("import nat\n{lib2_extra}pub fn two() -> int {{\n    return nat.total()\n}}\n"),
+    );
+    pkg
+}
+
+#[test]
+fn the_owner_and_its_submodules_use_the_binding_in_a_diamond() {
+    let out = diamond("diamond", "").check();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+}
+
+#[test]
+fn a_package_that_shares_the_owner_in_a_diamond_still_may_not_import_the_key() {
+    let out = diamond("diamond_import", "import native\n").check();
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("declared by the package `nat`"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(out.stderr.matches("Error:").count(), 1, "{}", out.stderr);
+}
+
+#[test]
+fn a_package_nested_in_the_owners_folder_is_another_package() {
+    let pkg = diamond("nested", "");
+    pkg.write(
+        "nat/colibri.toml",
+        "[package]\nname = \"nat\"\n[dependencies]\ninner = { path = \"inner\" }\n[rust-dependencies]\nnative = { path = \"native\" }\n",
+    );
+    pkg.write("nat/inner/colibri.toml", "[package]\nname = \"inner\"\n");
+    pkg.write(
+        "nat/inner/lib.colibri",
+        "import native\npub fn x() -> int {\n    return native.add(0, 0)\n}\n",
+    );
+    pkg.write(
+        "nat/helper.colibri",
+        "import inner\npub fn h() -> int {\n    return inner.x()\n}\n",
+    );
+    let out = pkg.check();
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("declared by the package `nat`"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn an_owner_without_its_interface_gets_one_error_even_with_a_local_file_of_that_name() {
+    let pkg = Pkg::new("missing_and_local", MANIFEST, CALL);
+    pkg.write(
+        "native.colibri",
+        "pub fn add(a: int, b: int) -> int {\n    return a + b\n}\n",
+    );
+    let out = pkg.check();
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("run `colibri bindings`"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(out.stderr.matches("Error:").count(), 1, "{}", out.stderr);
+}
+
+#[test]
+fn a_malformed_or_misnamed_interface_gives_one_error() {
+    let pkg = Pkg::new("one_error", MANIFEST, CALL);
+    pkg.write("native.cbi", "this is not an interface");
+    assert_eq!(pkg.check().stderr.matches("Error:").count(), 1);
+    pkg.write("native.cbi", &interface_of("other"));
+    let out = pkg.check();
+    assert_eq!(out.stderr.matches("Error:").count(), 1, "{}", out.stderr);
+}
+
+#[test]
+fn the_run_error_for_a_binding_points_at_the_import_path() {
+    let pkg = Pkg::new("run_span", MANIFEST, CALL);
+    pkg.write("native.cbi", &interface_of("native"));
+    let out = pkg.run();
+    assert!(out.stderr.contains("main.colibri:1:8"), "{}", out.stderr);
+}

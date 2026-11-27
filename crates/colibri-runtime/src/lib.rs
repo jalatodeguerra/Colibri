@@ -504,6 +504,7 @@ fn check_entry_lazy(
             message: e.message,
         })?;
     let mut binding_problems: Vec<colibri_syntax::Diagnostic> = Vec::new();
+    let mut malformed: Vec<String> = Vec::new();
     for b in &loaded.rust_bindings {
         if !fs.is_file(&b.interface) {
             continue;
@@ -518,13 +519,16 @@ fn check_entry_lazy(
             .and_then(|text| Interface::from_text(&path, &text));
         match read {
             Ok(found) => env.merge(found.env),
-            Err(e) => binding_problems.push(
-                colibri_syntax::Diagnostic::error(
-                    format!("`{}.cbi` is not a valid interface: {e}", b.key),
-                    b.span,
-                )
-                .with_hint("regenerate it with `colibri bindings`"),
-            ),
+            Err(e) => {
+                malformed.push(b.key.clone());
+                binding_problems.push(
+                    colibri_syntax::Diagnostic::error(
+                        format!("`{}.cbi` is not a valid interface: {e}", b.key),
+                        b.span,
+                    )
+                    .with_hint("regenerate it with `colibri bindings`"),
+                );
+            }
         }
     }
     // The interfaces just merged are granted what the others were.
@@ -549,12 +553,13 @@ fn check_entry_lazy(
     // `json.Value`): that one is asked for too, though the program does not import it.
     ask_lazy_uses(&mut env, lazy_names, &mut asked, interface);
     let mut diagnostics = loaded.diagnostics.clone();
+    // Each problem with a binding interface is one error: checking stops after it.
+    let mut binding_error = !binding_problems.is_empty();
     diagnostics.extend(binding_problems);
     // A binding interface that names the types of a module nobody provides.
-    let mut uses_problem = false;
     for (module, used) in env.missing_uses() {
         if let Some(b) = loaded.rust_bindings.iter().find(|b| b.key == module) {
-            uses_problem = true;
+            binding_error = true;
             diagnostics.push(
                 colibri_syntax::Diagnostic::error(
                     format!(
@@ -569,7 +574,8 @@ fn check_entry_lazy(
     // A binding interface whose header names another module is no use under its key.
     let described = env.module_names();
     for b in &loaded.rust_bindings {
-        if fs.is_file(&b.interface) && !described.contains(&b.key) {
+        if fs.is_file(&b.interface) && !malformed.contains(&b.key) && !described.contains(&b.key) {
+            binding_error = true;
             diagnostics.push(
                 colibri_syntax::Diagnostic::error(
                     format!("`{}.cbi` does not describe the module `{}`", b.key, b.key),
@@ -583,7 +589,7 @@ fn check_entry_lazy(
         }
     }
     // A tree with syntax errors would only produce follow-on errors.
-    if !loaded.has_errors() && !uses_problem {
+    if !loaded.has_errors() && !binding_error {
         // The loader's own warnings (an unknown `allow-ffi` name) stay.
         diagnostics.extend(
             colibri_check::check_modules(
