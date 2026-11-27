@@ -225,3 +225,34 @@ fn finish() -> int {
     let after = vm.memory_used().unwrap();
     assert!(after < before + MIB, "{before} -> {after}");
 }
+
+#[test]
+fn a_task_is_rebuilt_while_its_portable_form_is_freed_so_the_peak_is_not_double() {
+    // 2000 distinct strings of 4 KiB are about 8 MiB. While the task is received the program
+    // still holds the strings (one copy), the portable form is the second, and the rebuilt
+    // closure the third: held to the end that is three copies, freed as it is rebuilt it is two
+    // and a node. A limit of 2.4 copies lets the second pass and the first fail.
+    let (mut vm, _out) = vm_with(
+        None,
+        r#"
+fn run_big(n: int) -> int {
+    let mut big: List[str] = []
+    for i in 0..n {
+        big.push("{i}".pad_left(4096))
+    }
+    let t = task.run(fn() -> int { return big.len() })
+    let got = t.join().expect("the task")
+    return got + big.len()
+}
+"#,
+    );
+    let go = vm.get_fn::<(i64,), i64>("run_big").unwrap();
+    // Warm the worker up, so that its program is not part of what is measured.
+    assert_eq!(go.call(&mut vm, (4,)).unwrap(), 8);
+    let before = vm.memory_used().expect("the allocator is installed");
+    let copy = 2000 * 4096_u64;
+    let limit = before + copy * 12 / 5 + MIB;
+    eprintln!("rebuild peak: before {before}, copy {copy}, limit {limit}");
+    vm.set_memory_limit(Some(limit));
+    assert_eq!(go.call(&mut vm, (2000,)).unwrap(), 4000);
+}

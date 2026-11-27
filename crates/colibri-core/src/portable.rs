@@ -1037,20 +1037,13 @@ impl std::error::Error for RebuildError {}
 /// accepted under a budget is accepted under the same budget here (a test holds this for the
 /// shapes that nest: enums, lists and objects).
 pub fn from_portable(
-    portable: Portable,
+    mut portable: Portable,
     core: &mut Core,
     stack: StackGuard,
 ) -> Result<Value, RebuildError> {
-    rebuild(&portable, core, stack)
-}
-
-/// [`from_portable`] of a graph that stays where it is (a frozen `Shared` value is rebuilt once
-/// on each thread that reads it).
-pub fn rebuild(
-    portable: &Portable,
-    core: &mut Core,
-    stack: StackGuard,
-) -> Result<Value, RebuildError> {
+    // The portable form is freed node by node as it is rebuilt (see `Rebuild::value`), so the
+    // receiver holds about one copy of the data at its peak, not two.
+    let portable = &mut portable;
     let mut b = Rebuild {
         core,
         stack,
@@ -1106,12 +1099,12 @@ impl Rebuild<'_> {
 
     // As in `ToPortable::visit`, each kind that has children is a function of its own, so that
     // the frame of the recursion holds what the kind on the path needs.
-    fn value(&mut self, p: &Portable) -> Result<Value, RebuildError> {
+    fn value(&mut self, p: &mut Portable) -> Result<Value, RebuildError> {
         if self.stack.exceeded() {
             return Err(RebuildError::TooDeep);
         }
         self.charge(BUILT_NODE_COST)?;
-        Ok(match p {
+        let built = match p {
             Portable::Unit => Value::Unit,
             Portable::Bool(b) => Value::Bool(*b),
             Portable::Int(i) => Value::Int(*i),
@@ -1175,7 +1168,10 @@ impl Rebuild<'_> {
                 None => return Err(RebuildError::Malformed),
             },
             Portable::Handle(h) => h.materialise(self.core),
-        })
+        };
+        // This node is built, and so are its children: give its memory back now.
+        *p = Portable::Unit;
+        Ok(built)
     }
 
     #[inline(never)]
@@ -1183,10 +1179,10 @@ impl Rebuild<'_> {
         &mut self,
         id: Option<u32>,
         ty: TypeId,
-        fields: &[Portable],
+        fields: &mut [Portable],
     ) -> Result<Value, RebuildError> {
         let mut out = StructFields::with_capacity(fields.len());
-        for f in fields {
+        for f in fields.iter_mut() {
             out.push(self.value(f)?);
         }
         let v = Value::Struct(Rc::new(StructVal { ty, fields: out }));
@@ -1195,9 +1191,9 @@ impl Rebuild<'_> {
     }
 
     #[inline(never)]
-    fn tuple_value(&mut self, id: Option<u32>, items: &[Portable]) -> Result<Value, RebuildError> {
+    fn tuple_value(&mut self, id: Option<u32>, items: &mut [Portable]) -> Result<Value, RebuildError> {
         let mut out = Vec::with_capacity(items.len());
-        for p in items {
+        for p in items.iter_mut() {
             out.push(self.value(p)?);
         }
         let v = Value::Tuple(Rc::from(out));
@@ -1211,13 +1207,13 @@ impl Rebuild<'_> {
         id: Option<u32>,
         ty: TypeId,
         variant: u32,
-        payload: &[Portable],
+        payload: &mut [Portable],
     ) -> Result<Value, RebuildError> {
         if id.is_none() && payload.is_empty() && ty == OPTION_TYPE && variant == VARIANT_NONE {
             return Ok(self.core.none());
         }
         let mut out = Payload::with_capacity(payload.len());
-        for f in payload {
+        for f in payload.iter_mut() {
             out.push(self.value(f)?);
         }
         let v = Value::Enum(Rc::new(EnumVal {
@@ -1234,7 +1230,7 @@ impl Rebuild<'_> {
         &mut self,
         id: Option<u32>,
         impl_id: u32,
-        val: &Portable,
+        val: &mut Portable,
     ) -> Result<Value, RebuildError> {
         let v = Value::Dyn(Rc::new(DynVal {
             impl_id,
@@ -1250,14 +1246,14 @@ impl Rebuild<'_> {
         id: Option<u32>,
         f: FnId,
         generation: u32,
-        captures: &[PortableCapture],
+        captures: &mut [PortableCapture],
     ) -> Result<Value, RebuildError> {
         let mut out = Vec::with_capacity(captures.len());
-        for c in captures {
+        for c in captures.iter_mut() {
             out.push(Captured {
                 inner: c.inner,
                 mode: c.mode,
-                value: self.value(&c.value)?,
+                value: self.value(&mut c.value)?,
             });
         }
         let closure = Rc::new(ClosureObj {
@@ -1272,11 +1268,11 @@ impl Rebuild<'_> {
     }
 
     #[inline(never)]
-    fn list_value(&mut self, id: u32, items: &[Portable]) -> Result<Value, RebuildError> {
+    fn list_value(&mut self, id: u32, items: &mut [Portable]) -> Result<Value, RebuildError> {
         let list = ListObj::new(Vec::with_capacity(items.len()));
         let v = Value::List(Rc::clone(&list));
         self.built.insert(id, v.clone());
-        for p in items {
+        for p in items.iter_mut() {
             let item = self.value(p)?;
             let _ = list.push(item);
         }
@@ -1287,12 +1283,12 @@ impl Rebuild<'_> {
     fn map_value(
         &mut self,
         id: u32,
-        entries: &[(Portable, Portable)],
+        entries: &mut [(Portable, Portable)],
     ) -> Result<Value, RebuildError> {
         let map = MapObj::new(OrderedMap::new());
         let v = Value::Map(Rc::clone(&map));
         self.built.insert(id, v.clone());
-        for (k, e) in entries {
+        for (k, e) in entries.iter_mut() {
             let (k, e) = (self.value(k)?, self.value(e)?);
             let _ = map.insert(k, e);
         }
@@ -1300,11 +1296,11 @@ impl Rebuild<'_> {
     }
 
     #[inline(never)]
-    fn set_value(&mut self, id: u32, items: &[Portable]) -> Result<Value, RebuildError> {
+    fn set_value(&mut self, id: u32, items: &mut [Portable]) -> Result<Value, RebuildError> {
         let set = SetObj::new(OrderedMap::new());
         let v = Value::Set(Rc::clone(&set));
         self.built.insert(id, v.clone());
-        for p in items {
+        for p in items.iter_mut() {
             let item = self.value(p)?;
             let _ = set.add(item);
         }
@@ -1312,7 +1308,7 @@ impl Rebuild<'_> {
     }
 
     #[inline(never)]
-    fn cell_value(&mut self, id: u32, value: &Portable) -> Result<Value, RebuildError> {
+    fn cell_value(&mut self, id: u32, value: &mut Portable) -> Result<Value, RebuildError> {
         let cell = CellObj::new(Value::Unit);
         let v = Value::Cell(Rc::clone(&cell));
         self.built.insert(id, v.clone());
@@ -1326,7 +1322,7 @@ impl Rebuild<'_> {
         &mut self,
         id: u32,
         ty: TypeId,
-        fields: &[Portable],
+        fields: &mut [Portable],
     ) -> Result<Value, RebuildError> {
         let obj = match self.built.get(&id) {
             // Made for a `weak` reference that came first.
@@ -1338,7 +1334,7 @@ impl Rebuild<'_> {
             }
         };
         self.core.track_object(&obj, None);
-        for (i, p) in fields.iter().enumerate() {
+        for (i, p) in fields.iter_mut().enumerate() {
             let field = self.value(p)?;
             let _ = obj.set_field(i, field);
         }
