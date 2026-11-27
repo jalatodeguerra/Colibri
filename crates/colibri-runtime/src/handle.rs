@@ -366,3 +366,63 @@ impl<T: HostType> FromColibri for Ref<T> {
             .map_err(borrow_error)
     }
 }
+
+impl<T: HostType> FromColibri for RefMut<T> {
+    fn ty(reg: &mut TypeRegistry) -> TypeDesc {
+        reg.define_host_type::<T>()
+    }
+    fn from_colibri(value: &Value, cx: &mut Cx<'_>) -> Result<Self, Error> {
+        let Inner::Host(r) = &value.0 else {
+            return Err(wrong(&TypeDesc::Host(T::NAME.to_string()), &value.0));
+        };
+        cx.eng
+            .host_borrow(true, r.index, r.generation, AnyTypeId::of::<T>(), true)
+            .map(|guard| RefMut {
+                guard,
+                _class: PhantomData,
+            })
+            .map_err(borrow_error)
+    }
+}
+
+/// What an exported function's `&X` parameter is converted to before the call: the function
+/// borrows the owned value (`&str` from a `String`, `&[T]` from a `Vec<T>`, `&V` from a value
+/// struct, `&Class` from a [`Ref`]). Written by `#[colibri::export]`, not by hosts.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "`&{Self}` cannot be a parameter of an exported function",
+    label = "not exportable by reference",
+    note = "a reference parameter is `&str`, `&[T]`, `&V` for a `#[colibri::export(value)]` type, or `&T` for an exported host class; take other types by value"
+)]
+pub trait RefParam {
+    /// The owned form the script's argument converts to.
+    type Owned: FromColibri;
+}
+
+/// The same for `&mut X`, which only an exported host class allows (a [`RefMut`]).
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "`&mut {Self}` cannot be a parameter of an exported function",
+    label = "not exportable by mutable reference",
+    note = "only an exported host class can be taken as `&mut`; a value type is copied in, so take it by value"
+)]
+pub trait MutParam {
+    /// The owned form the script's argument converts to.
+    type Owned: FromColibri;
+}
+
+impl RefParam for str {
+    type Owned = String;
+}
+
+impl<T: FromColibri> RefParam for [T] {
+    type Owned = Vec<T>;
+}
+
+impl<T: HostType> RefParam for T {
+    type Owned = Ref<T>;
+}
+
+impl<T: HostType> MutParam for T {
+    type Owned = RefMut<T>;
+}

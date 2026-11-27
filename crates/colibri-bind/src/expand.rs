@@ -4,6 +4,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream, Parser};
+use syn::spanned::Spanned;
 use syn::{
     Error, Fields, FnArg, Ident, ImplItem, ImplItemFn, Item, ItemEnum, ItemFn, ItemImpl,
     ItemStruct, Pat, Result, Signature, Token, Type, Visibility,
@@ -172,6 +173,9 @@ fn export_struct(options: &Options, paths: &Paths, item: ItemStruct) -> Result<T
     Ok(quote! {
         #item
         #copy_check
+        impl #private::RefParam for #name {
+            type Owned = #name;
+        }
         impl #private::IntoColibri for #name {
             fn ty(reg: &mut #private::TypeRegistry) -> #private::TypeDesc {
                 let fields = ::std::vec![
@@ -247,6 +251,9 @@ fn export_enum(options: &Options, paths: &Paths, item: ItemEnum) -> Result<Token
     let indices: Vec<u32> = (0..variants.len() as u32).collect();
     Ok(quote! {
         #item
+        impl #private::RefParam for #name {
+            type Owned = #name;
+        }
         impl #private::IntoColibri for #name {
             fn ty(reg: &mut #private::TypeRegistry) -> #private::TypeDesc {
                 reg.name_rust_type(::core::any::TypeId::of::<#name>(), ::core::any::type_name::<#name>());
@@ -289,12 +296,110 @@ struct Exported {
     receiver: Option<bool>,
     /// The `&mut Ctx` parameter, as written (`cx: &mut colibri::Ctx`).
     ctx: Option<(Ident, Type)>,
-    /// The other parameters.
+    /// The other parameters, as written.
     params: Vec<(Ident, Type)>,
 }
 
+/// How a parameter reaches the host function: the type the closure takes, and the expression
+/// that passes it on.
+struct Lowered {
+    /// The closure parameter's pattern: `mut` for the owner of a `&mut`.
+    pat: TokenStream,
+    ty: TokenStream,
+    arg: TokenStream,
+}
+
+/// A reference parameter becomes an owned local of the type its trait names, which the call
+/// borrows: `&str` from a `String`, `&[T]` from a `Vec<T>`, `&V` from the value, and `&T` /
+/// `&mut T` of a host class from a `Ref<T>` / `RefMut<T>`, which hold the borrow flag for the
+/// call. Anything else passes as written.
+fn lower(paths: &Paths, ident: &Ident, ty: &Type) -> Result<Lowered> {
+    let private = &paths.private;
+    let Type::Reference(r) = strip(ty) else {
+        return Ok(Lowered {
+            pat: quote!(#ident),
+            ty: quote!(#ty),
+            arg: quote!(#ident),
+        });
+    };
+    let elem = &*r.elem;
+    let span = ty.span();
+    if r.mutability.is_some() {
+        if matches!(elem, Type::Slice(_)) || matches!(elem, Type::Path(p) if p.path.is_ident("str"))
+        {
+            return Err(Error::new_spanned(
+                ty,
+                "a `&mut str` or `&mut [T]` parameter cannot be exported: scripts pass copies, so a change would be lost; take `&str`, `&[T]` or an owned value",
+            ));
+        }
+        Ok(Lowered {
+            pat: quote_spanned!(span=> mut #ident),
+            ty: quote_spanned!(span=> <#elem as #private::MutParam>::Owned),
+            arg: quote!(&mut #ident),
+        })
+    } else {
+        Ok(Lowered {
+            pat: quote!(#ident),
+            ty: quote_spanned!(span=> <#elem as #private::RefParam>::Owned),
+            arg: quote!(&#ident),
+        })
+    }
+}
+
+/// The type without the invisible groups and parentheses a macro or a `(T)` leaves around it.
+fn strip(mut ty: &Type) -> &Type {
+    loop {
+        match ty {
+            Type::Group(g) => ty = &g.elem,
+            Type::Paren(p) => ty = &p.elem,
+            other => return other,
+        }
+    }
+}
+
+/// The first reference in a result type that a script could not hold: `&'static` ones are
+/// copied out (`&'static str`, `&'static [T]`), every other one would borrow from the host.
+fn borrowed_in(ty: &Type) -> Option<&Type> {
+    match strip(ty) {
+        Type::Reference(r) => {
+            if r.lifetime.as_ref().is_some_and(|l| l.ident == "static") {
+                borrowed_in(&r.elem)
+            } else {
+                Some(strip(ty))
+            }
+        }
+        Type::Path(p) => p.path.segments.iter().find_map(|seg| match &seg.arguments {
+            syn::PathArguments::AngleBracketed(a) => a.args.iter().find_map(|arg| match arg {
+                syn::GenericArgument::Type(t) => borrowed_in(t),
+                _ => None,
+            }),
+            _ => None,
+        }),
+        Type::Tuple(t) => t.elems.iter().find_map(borrowed_in),
+        Type::Array(a) => borrowed_in(&a.elem),
+        Type::Slice(a) => borrowed_in(&a.elem),
+        _ => None,
+    }
+}
+
+/// A result that borrows cannot be converted: the script's value would have to borrow from the host.
+fn check_output(sig: &Signature) -> Result<()> {
+    if let syn::ReturnType::Type(_, ty) = &sig.output
+        && let Some(bad) = borrowed_in(ty)
+    {
+        return Err(Error::new_spanned(
+            bad,
+            format!(
+                "`{}` returns a reference, which a script cannot hold: return an owned value (a copy, a `String`, a `Vec`, or a `Handle`); only `&'static` results are copied",
+                sig.ident
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn is_ctx(ty: &Type) -> bool {
-    let Type::Reference(r) = ty else {
+    let Type::Reference(r) = strip(ty) else {
         return false;
     };
     if r.mutability.is_none() {
@@ -335,6 +440,7 @@ fn analyse(sig: &Signature, allow_receiver: bool) -> Result<Exported> {
     if let Some(v) = &sig.variadic {
         return Err(Error::new_spanned(v, format!("{what} is variadic")));
     }
+    check_output(sig)?;
     let mut receiver = None;
     let mut ctx = None;
     let mut params = Vec::new();
@@ -435,19 +541,25 @@ fn export_impl(options: &Options, paths: &Paths, item: ItemImpl) -> Result<Token
     })
 }
 
-fn describe_member(_paths: &Paths, f: &ImplItemFn) -> Result<TokenStream> {
+fn describe_member(paths: &Paths, f: &ImplItemFn) -> Result<TokenStream> {
     let e = analyse(&f.sig, true)?;
     let name = &e.name;
     let ident = &e.ident;
     let names = e.param_names();
-    let idents: Vec<&Ident> = e.params.iter().map(|(n, _)| n).collect();
-    let types: Vec<&Type> = e.params.iter().map(|(_, t)| t).collect();
+    let lowered = e
+        .params
+        .iter()
+        .map(|(n, t)| lower(paths, n, t))
+        .collect::<Result<Vec<_>>>()?;
+    let pats: Vec<&TokenStream> = lowered.iter().map(|l| &l.pat).collect();
+    let types: Vec<&TokenStream> = lowered.iter().map(|l| &l.ty).collect();
+    let args: Vec<&TokenStream> = lowered.iter().map(|l| &l.arg).collect();
     let ctx_param = e.ctx.as_ref().map(|(n, t)| quote!(#n: #t,));
     let ctx_arg = e.ctx.as_ref().map(|(n, _)| quote!(#n,));
     Ok(match e.receiver {
         None => quote! {
-            d.static_fn(#name, [#(#names),*], |#ctx_param #(#idents: #types),*| {
-                Self::#ident(#ctx_arg #(#idents),*)
+            d.static_fn(#name, [#(#names),*], |#ctx_param #(#pats: #types),*| {
+                Self::#ident(#ctx_arg #(#args),*)
             });
         },
         Some(mutable) => {
@@ -457,8 +569,8 @@ fn describe_member(_paths: &Paths, f: &ImplItemFn) -> Result<TokenStream> {
                 (format_ident!("method"), quote!(&Self))
             };
             quote! {
-                d.#method(#name, [#(#names),*], |#ctx_param this: #this_ty, #(#idents: #types),*| {
-                    Self::#ident(this, #ctx_arg #(#idents),*)
+                d.#method(#name, [#(#names),*], |#ctx_param this: #this_ty, #(#pats: #types),*| {
+                    Self::#ident(this, #ctx_arg #(#args),*)
                 });
             }
         }
@@ -475,22 +587,48 @@ fn export_fn(
     if let Some(span) = options.no_methods {
         return Err(Error::new(span, "`no_methods` is for a host class"));
     }
-    let _ = paths;
     let e = analyse(&item.sig, false)?;
     let name = &e.name;
     let ident = &e.ident;
     let vis = &item.vis;
     let names = e.param_names();
     let module = ident;
+    let has_refs = e
+        .params
+        .iter()
+        .any(|(_, t)| matches!(strip(t), Type::Reference(_)));
+    // A function with reference parameters is called through a closure that owns them.
+    let (imports, callee) = if has_refs {
+        let lowered = e
+            .params
+            .iter()
+            .map(|(n, t)| lower(paths, n, t))
+            .collect::<Result<Vec<_>>>()?;
+        let pats: Vec<&TokenStream> = lowered.iter().map(|l| &l.pat).collect();
+        let types: Vec<&TokenStream> = lowered.iter().map(|l| &l.ty).collect();
+        let args: Vec<&TokenStream> = lowered.iter().map(|l| &l.arg).collect();
+        let ctx_param = e.ctx.as_ref().map(|(n, t)| quote!(#n: #t,));
+        let ctx_arg = e.ctx.as_ref().map(|(n, _)| quote!(#n,));
+        (
+            quote!(
+                #[allow(unused_imports)]
+                use super::*;
+            ),
+            quote!(|#ctx_param #(#pats: #types),*| super::#ident(#ctx_arg #(#args),*)),
+        )
+    } else {
+        (quote!(), quote!(super::#ident))
+    };
     Ok(quote! {
         #item
         #[allow(non_camel_case_types, dead_code)]
         #vis mod #module {
+            #imports
             /// Registers the function with the `Vm`, with its Rust parameter names.
             pub fn register(
                 vm: &mut #runtime::Vm,
             ) -> ::core::result::Result<#runtime::Registration<'_>, #runtime::Error> {
-                #runtime::__private::register_exported(vm, #name, [#(#names),*], super::#ident)
+                #runtime::__private::register_exported(vm, #name, [#(#names),*], #callee)
             }
         }
     })
@@ -625,5 +763,125 @@ mod tests {
     fn the_item_is_kept_next_to_an_error() {
         let out = error_of("value", "struct P { y: f32 }");
         assert!(out.contains("struct P"), "{out}");
+    }
+
+    #[test]
+    fn a_str_parameter_is_a_string_local_that_is_borrowed() {
+        let out = run("", "impl W { pub fn say(&self, text: &str) {} }");
+        assert!(
+            out.contains("text : < str as :: colibri_runtime :: __private :: RefParam > :: Owned"),
+            "{out}"
+        );
+        assert!(out.contains("Self :: say (this , & text)"), "{out}");
+        assert!(out.contains("[\"text\"]"), "{out}");
+        assert!(!out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn a_slice_parameter_is_a_vec_local() {
+        let out = run(
+            "",
+            "impl W { pub fn sum(&self, xs: &[f32]) -> f32 { 0.0 } }",
+        );
+        assert!(
+            out.contains("< [f32] as :: colibri_runtime :: __private :: RefParam > :: Owned"),
+            "{out}"
+        );
+        assert!(out.contains("Self :: sum (this , & xs)"), "{out}");
+    }
+
+    #[test]
+    fn a_class_parameter_borrows_shared_or_exclusive() {
+        let out = run(
+            "",
+            "impl World { pub fn pos(&self, body: &Body) {} pub fn push(&mut self, body: &mut Body, by: f32) {} }",
+        );
+        assert!(
+            out.contains("body : < Body as :: colibri_runtime :: __private :: RefParam > :: Owned"),
+            "{out}"
+        );
+        assert!(out.contains("Self :: pos (this , & body)"), "{out}");
+        assert!(out.contains("mut body : < Body as :: colibri_runtime :: __private :: MutParam > :: Owned , by : f32"), "{out}");
+        assert!(
+            out.contains("Self :: push (this , & mut body , by)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_static_fn_and_a_function_take_references_too() {
+        let out = run("", "impl W { pub fn named(name: &str) -> W { todo!() } }");
+        assert!(out.contains("Self :: named (& name)"), "{out}");
+        let out = run(
+            "",
+            "pub fn join(a: &str, n: i64, b: &mut Body) -> i64 { 0 }",
+        );
+        assert!(
+            out.contains("register_exported (vm , \"join\" , [\"a\" , \"n\" , \"b\"] , | a :"),
+            "{out}"
+        );
+        assert!(out.contains("super :: join (& a , n , & mut b)"), "{out}");
+        assert!(out.contains("use super :: *"), "{out}");
+        // Without references the function itself is registered, as before.
+        let plain = run("", "pub fn plain(a: i64) {}");
+        assert!(plain.contains("super :: plain)"), "{plain}");
+        assert!(!plain.contains("use super"), "{plain}");
+    }
+
+    #[test]
+    fn value_types_and_enums_can_be_borrowed() {
+        let out = run("value", "#[derive(Clone, Copy)] struct P { pub x: f32 }");
+        assert!(out.contains("RefParam for P"), "{out}");
+        let out = run("value", "enum E { A }");
+        assert!(out.contains("RefParam for E"), "{out}");
+    }
+
+    #[test]
+    fn a_context_is_still_not_a_parameter() {
+        let out = run("", "impl W { pub fn f(&self, cx: &mut Ctx, s: &str) {} }");
+        assert!(out.contains("[\"s\"]"), "{out}");
+        assert!(out.contains("Self :: f (this , cx , & s)"), "{out}");
+    }
+
+    #[test]
+    fn a_borrowing_result_says_to_return_an_owned_value() {
+        for item in [
+            "impl W { pub fn name(&self) -> &str { \"\" } }",
+            "impl W { pub fn body(&self) -> &Body { todo!() } }",
+            "impl W { pub fn new() -> &'a str { \"\" } }",
+            "impl W { pub fn n(&self) -> Option<&str> { None } }",
+            "impl W { pub fn n(&self) -> Result<&Body, String> { todo!() } }",
+            "impl W { pub fn n(&self) -> (i64, &[i64]) { todo!() } }",
+            "fn f() -> (&str) { \"\" }",
+        ] {
+            let out = error_of("", item);
+            assert!(out.contains("return an owned value"), "{item}: {out}");
+        }
+    }
+
+    #[test]
+    fn a_static_result_is_copied_out_and_still_compiles() {
+        let out = run("", "fn v() -> &'static str { \"v1\" }");
+        assert!(!out.contains("compile_error"), "{out}");
+        let out = run("", "fn v() -> &'static [i64] { &[] }");
+        assert!(!out.contains("compile_error"), "{out}");
+        let out = run(
+            "",
+            "impl W { pub fn v(&self) -> Option<&'static str> { None } }",
+        );
+        assert!(!out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn a_parenthesised_reference_parameter_is_still_lowered() {
+        let out = run("", "impl W { pub fn f(&self, s: (&str)) {} }");
+        assert!(out.contains("RefParam"), "{out}");
+    }
+
+    #[test]
+    fn a_mutable_str_or_slice_is_refused() {
+        let out = error_of("", "impl W { pub fn f(&self, s: &mut str) {} }");
+        assert!(out.contains("`&mut str` or `&mut [T]`"), "{out}");
+        assert!(error_of("", "fn f(s: &mut [i64]) {}").contains("`&mut str` or `&mut [T]`"));
     }
 }

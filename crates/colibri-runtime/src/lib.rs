@@ -242,6 +242,7 @@ pub mod __private {
     pub use crate::convert::{FromColibri, IntoColibri, Value};
     pub use crate::ctx::Cx;
     pub use crate::error::Error;
+    pub use crate::handle::{MutParam, RefParam};
     pub use crate::types::{TypeDesc, TypeRegistry};
 
     use crate::{HostFn, Registration, Vm};
