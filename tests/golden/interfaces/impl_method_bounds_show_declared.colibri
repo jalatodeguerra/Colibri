@@ -1,0 +1,24 @@
+// When the interface declares `Show` and `Clone`, the impl may use them.
+interface Mk {
+    fn sh[U: Show](self, u: U) -> str
+    fn dup[U: Clone](self, u: U) -> U
+}
+
+struct S {}
+
+impl Mk for S {
+    fn sh[U: Show](self, u: U) -> str {
+        return u.show()
+    }
+
+    fn dup[U: Clone](self, u: U) -> U {
+        return u.clone()
+    }
+}
+
+fn main() {
+    print(S {}.sh(5))
+    print(S {}.dup("a"))
+}
+// expect: 5
+// expect: a

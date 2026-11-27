@@ -1,0 +1,19 @@
+// The impl's own bounds may be the interface's, or fewer; `Ord` gives `Eq`, so an `Eq` impl is fine for an `Ord` interface.
+interface Keyed {
+    fn pick[U: Ord](self, a: U, b: U) -> U
+    fn same[U: Ord](self, a: U, b: U) -> bool
+}
+
+struct S {}
+
+impl Keyed for S {
+    fn pick[U](self, a: U, b: U) -> U { return a }
+    fn same[U: Eq](self, a: U, b: U) -> bool { return a == b }
+}
+
+fn main() {
+    print(S {}.pick(1, 2))
+    print(S {}.same("a", "a"))
+}
+// expect: 1
+// expect: true

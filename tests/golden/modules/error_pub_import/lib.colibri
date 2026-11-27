@@ -1,0 +1,2 @@
+pub import math // error: re-exports are not supported
+pub let x = 1

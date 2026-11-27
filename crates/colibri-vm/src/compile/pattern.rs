@@ -145,17 +145,22 @@ impl FnCompiler<'_> {
             PatKind::Const(g) => self.test(Op::TestConst { r: v, g: g.0 }, span, cx),
             PatKind::Variant { variant, args, .. } => {
                 self.test(Op::TestVariant { r: v, v: *variant }, span, cx);
-                self.pat_parts(args, v, cx);
+                self.pat_parts(args, &[], v, cx);
             }
-            PatKind::Struct { fields: parts, .. } | PatKind::Tuple(parts) => {
-                self.pat_parts(parts, v, cx);
-            }
+            PatKind::Struct {
+                fields: parts,
+                weak,
+                ..
+            } => self.pat_parts(parts, weak, v, cx),
+            PatKind::Tuple(parts) => self.pat_parts(parts, &[], v, cx),
             PatKind::Or(alts) => self.pat_or(alts, v, cx),
         }
     }
 
     /// The sub-patterns of a variant, struct or tuple: each part is cloned into a temporary.
-    fn pat_parts(&mut self, parts: &[Pat], v: Reg, cx: &mut PatCx) {
+    /// The parts at the indices in `weak` are weak references that the pattern sees as an
+    /// `Option`: once cloned out, they are upgraded before the part is matched.
+    fn pat_parts(&mut self, parts: &[Pat], weak: &[usize], v: Reg, cx: &mut PatCx) {
         for (i, part) in parts.iter().enumerate() {
             if matches!(part.kind, PatKind::Wild) {
                 continue;
@@ -165,7 +170,17 @@ impl FnCompiler<'_> {
                 return;
             };
             let t = self.alloc_for(&part.ty);
-            self.emit(Op::Unpack { d: t, s: v, i }, part.span);
+            if weak.contains(&usize::from(i)) {
+                // The weak reference goes into its own temporary, and the upgraded `Option` into
+                // `t`: a register may not be overwritten by an instruction that would lose a
+                // weak value, and the weak one has to be dropped by the cleanup stack.
+                let w = self.alloc_for(&part.ty);
+                self.emit(Op::Unpack { d: w, s: v, i }, part.span);
+                self.own(w);
+                self.emit(Op::FromWeak { d: t, s: w }, part.span);
+            } else {
+                self.emit(Op::Unpack { d: t, s: v, i }, part.span);
+            }
             self.own(t);
             self.pat(part, t, cx);
         }

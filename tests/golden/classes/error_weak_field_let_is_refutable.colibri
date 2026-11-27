@@ -1,0 +1,11 @@
+// A `let` that destructures a weak field with `some(..)` can fail when the target is gone.
+class Node {
+    name: str
+    parent: weak Node
+}
+
+fn main() {
+    let o = Node { name: "o" }
+    let Node { parent: some(q), .. } = o // error: this `let` pattern does not match every value
+    print(q.name)
+}

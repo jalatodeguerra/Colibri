@@ -261,6 +261,15 @@ impl Zonker<'_> {
         }
     }
 
+    /// The value of an integer literal of a pattern, wide enough for a `u64` above `i64::MAX`.
+    fn pat_int(l: &Lit) -> Option<i128> {
+        match l {
+            Lit::Int(v) => Some(i128::from(*v)),
+            Lit::U64(v) => Some(i128::from(*v)),
+            _ => None,
+        }
+    }
+
     fn literal_does_not_fit(&mut self, value: i128, ty: IntTy, span: Span) {
         let name = ty.name();
         self.diags.push(
@@ -273,20 +282,17 @@ impl Zonker<'_> {
         self.ty(&mut p.ty, p.span);
         if let Ty::Int(t) = p.ty {
             let bounds = match &p.kind {
-                PatKind::Lit(Lit::Int(v)) => vec![*v],
+                PatKind::Lit(l) => Self::pat_int(l).into_iter().collect(),
                 PatKind::Range { lo, hi, .. } => [lo, hi]
                     .into_iter()
                     .flatten()
-                    .filter_map(|l| match l {
-                        Lit::Int(v) => Some(*v),
-                        _ => None,
-                    })
+                    .filter_map(Self::pat_int)
                     .collect(),
                 _ => Vec::new(),
             };
             for v in bounds {
-                if !t.fits(i128::from(v)) {
-                    self.literal_does_not_fit(i128::from(v), t, p.span);
+                if !t.fits(v) {
+                    self.literal_does_not_fit(v, t, p.span);
                 }
             }
         }

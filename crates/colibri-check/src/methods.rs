@@ -214,6 +214,7 @@ impl FnCtx<'_, '_> {
         match ty {
             Ty::Param(p, _) => {
                 let bounds = self.ck.param_bounds.get(p).cloned().unwrap_or_default();
+                let ordered = bounds.iter().any(|b| b.iface == ORD);
                 for b in bounds {
                     if out.iter().any(|(i, _)| *i == b.iface) {
                         continue;
@@ -235,16 +236,18 @@ impl FnCtx<'_, '_> {
                         ));
                     }
                 }
-                // Being ordered implies being comparable for equality.
+                // Being ordered implies being comparable for equality. `Ord` has no `eq` of its
+                // own, so what shows it is the bound itself, not a candidate found above.
                 if name == "eq"
                     && !out.iter().any(|(i, _)| *i == EQ)
-                    && out.iter().any(|(i, _)| *i == ORD)
+                    && ordered
+                    && let Some(index) = index_of(self, EQ)
                 {
                     out.push((
                         EQ,
                         Via::Bound {
                             iface: EQ,
-                            index: 0,
+                            index,
                             args: Vec::new(),
                         },
                     ));

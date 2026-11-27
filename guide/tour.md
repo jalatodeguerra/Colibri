@@ -9,6 +9,11 @@ reference counted (no garbage collector), has no exceptions and no null, and has
 instead of `async`. It is early and pre-release, and what is planned but not built is marked
 **planned**.
 
+A statement ends at the end of its line, so a line that starts with an operator is a new
+statement: `let c = a` followed by `- b` on the next line is `let c = a` and an unused `-b`. The
+checker warns about a statement that only computes a plain value and drops it; end the first
+line with the operator (`let c = a -`) or wrap the expression in parentheses to continue it.
+
 - [Programs and scripts](#programs-and-scripts)
 - [Bindings and constants](#bindings-and-constants)
 - [Types and numbers](#types-and-numbers)
@@ -432,6 +437,33 @@ fn main() {
 ```output
 kid's parent is root
 renamed
+```
+
+A pattern sees a weak field the same way: `let Node { parent, .. } = kid` binds `parent` as a
+`Node?`, and so does `Node { parent: p, .. }` in a `match`. Write `some(p)` or `none` there to
+test it.
+
+```colibri
+class Node {
+    name: str
+    parent: weak Node
+}
+
+fn main() {
+    let root = Node { name: "root" }
+    let kid = Node { name: "kid", parent: root }
+    let Node { name, parent } = kid
+    print("{name} has a parent: {parent.is_some()}")
+    match kid {
+        Node { parent: some(p), .. } => print("under {p.name}")
+        Node { parent: none, .. }    => print("an orphan")
+    }
+}
+```
+
+```output
+kid has a parent: true
+under root
 ```
 
 `colibri run --leaks` reports cycles that were never freed. A cycle is reported when it goes
@@ -904,6 +936,9 @@ name = "shop"
 utils = { path = "../utils" }
 greet = { git = "https://example.com/me/greet.git", tag = "v1.2.0" }
 ```
+
+An import is private to the file that writes it: `pub import` is an error, because nothing is
+re-exported, and another file that needs the module imports it too.
 
 Imports between files of one package may form cycles, between packages they may not. The
 exact commits of git dependencies go into `colibri.lock`. There is no package registry, and none is planned for v1. The

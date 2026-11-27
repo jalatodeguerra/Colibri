@@ -1,0 +1,24 @@
+// `Bad` holds a `W[Bad]`, and `W[T]` is `Eq` only when `T` is: so asking whether `Bad` is `Eq`
+// asks whether `W[Bad]` is, which asks whether `Bad` is. The check has to see that it is
+// already deciding `Bad` (it used to ask for ever and overflow the stack).
+enum W[T] { Nothing, Just(T) }
+
+impl[T: Eq] Eq for W[T] {
+    fn eq(self, other: W[T]) -> bool {
+        return true
+    }
+}
+
+struct Bad { w: W[Bad] }
+
+fn same[T: Eq](a: T, b: T) -> bool {
+    return a == b
+}
+
+fn main() {
+    let a = Bad { w: W.Nothing }
+    print(a == a)
+    print(same(a, Bad { w: W.Nothing }))
+}
+// expect: true
+// expect: true

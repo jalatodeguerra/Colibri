@@ -1,0 +1,17 @@
+// A parameter type that is already an error is reported once, not again as a signature
+// mismatch against the interface.
+interface Mk {
+    fn conv(self, u: int) -> str
+}
+
+struct S {}
+
+impl Mk for S {
+    fn conv(self, u: Nope) -> str { // error: unknown type `Nope`
+        return "ok"
+    }
+}
+
+fn main() {
+    print(S {}.conv(1))
+}

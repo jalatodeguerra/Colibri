@@ -314,7 +314,14 @@ impl Cx<'_> {
                 .get(id.0 as usize)
                 .map(|d| {
                     let map: Vec<_> = d.params.iter().copied().zip(args.iter().cloned()).collect();
-                    d.fields().iter().map(|f| f.ty.subst(&map)).collect()
+                    // A weak field is matched as the `Option` it reads as.
+                    d.fields()
+                        .iter()
+                        .map(|f| {
+                            let t = f.ty.subst(&map);
+                            if f.weak { Ty::Option(Box::new(t)) } else { t }
+                        })
+                        .collect()
                 })
                 .unwrap_or_default(),
             (Ctor::Variant(v), Ty::Adt(id, args)) => self
@@ -775,6 +782,7 @@ mod tests {
             PatKind::Struct {
                 ty: TypeId(1),
                 fields: vec![wild(&Ty::INT), boolean(true)],
+                weak: vec![],
             },
             ty.clone(),
         );

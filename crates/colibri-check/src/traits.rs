@@ -177,7 +177,7 @@ impl Env<'_> {
         // Every type has `Show` and `Clone`: each concrete type derives them (§7.4).
         if iface == SHOW || iface == CLONE {
             return if self.user_impl_for(ty, iface).is_some() {
-                self.user(ty, iface, args)
+                self.user(ty, iface, args, visiting)
             } else if iface == CLONE
                 && matches!(ty, Ty::Adt(id, _) if self.types.get(id.0 as usize).is_some_and(TypeDef::is_host_class))
             {
@@ -191,7 +191,7 @@ impl Env<'_> {
             return self.operator_implements(ty, iface, args);
         }
         if self.user_impl_for(ty, iface).is_some() {
-            return self.user(ty, iface, args);
+            return self.user(ty, iface, args, visiting);
         }
         match iface {
             EQ => self.derive_with(ty, iface, visiting, Self::eq_part),
@@ -263,11 +263,17 @@ impl Env<'_> {
     /// Checks an explicit implementation against a particular instantiation: the target
     /// pattern must match, the interface arguments must agree and the bounds of the `impl`'s
     /// own parameters must hold.
-    fn user(&self, ty: &Ty, iface: TypeId, args: &[Ty]) -> Result<Source, Ty> {
+    fn user(
+        &self,
+        ty: &Ty,
+        iface: TypeId,
+        args: &[Ty],
+        visiting: &mut Vec<TypeId>,
+    ) -> Result<Source, Ty> {
         let Some(id) = self.user_impl_for(ty, iface) else {
             return Err(ty.clone());
         };
-        self.user_with(id, ty, args)
+        self.user_with(id, ty, args, visiting)
     }
 
     /// Whether `ty` implements an operator interface: by one of the impls written for its head
@@ -290,7 +296,7 @@ impl Env<'_> {
             None => Vec::new(),
         };
         for id in ids {
-            if let Ok(source) = self.user_with(id, ty, args) {
+            if let Ok(source) = self.user_with(id, ty, args, &mut Vec::new()) {
                 return Ok(source);
             }
         }
@@ -406,7 +412,18 @@ impl Env<'_> {
     }
 
     /// [`Env::user`] for one particular impl.
-    fn user_with(&self, id: ImplId, ty: &Ty, args: &[Ty]) -> Result<Source, Ty> {
+    ///
+    /// `visiting` is the derivations under way. The bounds of the impl are checked with it, not
+    /// with a fresh list: with `struct Bad { w: W[Bad] }` and `impl[T: Eq] Eq for W[T]`, whether
+    /// `Bad` is `Eq` asks whether `W[Bad]` is, which asks whether `Bad` is. A fresh list would
+    /// forget that `Bad` is already being derived and ask for ever.
+    fn user_with(
+        &self,
+        id: ImplId,
+        ty: &Ty,
+        args: &[Ty],
+        visiting: &mut Vec<TypeId>,
+    ) -> Result<Source, Ty> {
         let info = &self.impls[id.0 as usize];
         let params: Vec<ParamId> = info.generics.iter().map(|g| g.id).collect();
         let mut subst = Vec::new();
@@ -428,7 +445,7 @@ impl Env<'_> {
             };
             for b in &g.bounds {
                 let bargs: Vec<Ty> = b.args.iter().map(|a| a.subst(&subst)).collect();
-                self.implements(arg, b.iface, &bargs)?;
+                self.implements_in(arg, b.iface, &bargs, visiting)?;
             }
         }
         Ok(Source::User(id))

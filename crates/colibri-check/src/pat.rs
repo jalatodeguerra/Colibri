@@ -414,7 +414,7 @@ impl FnCtx<'_, '_> {
         };
         if self.infer.unify(expected, &ty).is_err() {
             self.report_pat_mismatch(expected, &ty, span);
-        } else if matches!(value, Lit::Int(_))
+        } else if matches!(value, Lit::Int(_) | Lit::U64(_))
             && matches!(self.infer.shallow(expected), Ty::Float | Ty::F32)
         {
             self.ck.report(float_pattern(span));
@@ -426,6 +426,11 @@ impl FnCtx<'_, '_> {
     fn pat_lit(&mut self, lit: &ast::PatLit) -> Option<(Lit, Ty)> {
         Some(match &lit.lit {
             AstLit::Int(n) => {
+                // Above `i64::MAX` only a `u64` can match, as in an expression (`check_int`);
+                // `zonk` rejects it for any other type.
+                if !lit.neg && *n > i64::MAX as u64 {
+                    return Some((Lit::U64(*n), self.fresh_var(crate::infer::VarKind::IntLit)));
+                }
                 let value = if lit.neg {
                     i64::try_from(-(*n as i128)).ok()
                 } else {
@@ -481,7 +486,7 @@ impl FnCtx<'_, '_> {
             return wild(self);
         };
         let range_ty = first.1.clone();
-        if !matches!(first.0, Lit::Int(_) | Lit::Char(_)) {
+        if !matches!(first.0, Lit::Int(_) | Lit::U64(_) | Lit::Char(_)) {
             self.ck.report(
                 Diagnostic::error("only integer and `char` ranges can be patterns", span)
                     .with_hint("use a guard for other comparisons"),
@@ -499,13 +504,20 @@ impl FnCtx<'_, '_> {
         }
         if self.infer.unify(expected, &range_ty).is_err() {
             self.report_pat_mismatch(expected, &range_ty, span);
-        } else if matches!(first.0, Lit::Int(_))
+        } else if matches!(first.0, Lit::Int(_) | Lit::U64(_))
             && matches!(self.infer.shallow(expected), Ty::Float | Ty::F32)
         {
             self.ck.report(float_pattern(span));
         }
-        if let (Some((Lit::Int(a), _)), Some((Lit::Int(b), _))) = (&lo_v, &hi_v)
-            && (a > b || (!inclusive && a == b))
+        let int_value = |l: &Lit| match l {
+            Lit::Int(v) => Some(i128::from(*v)),
+            Lit::U64(v) => Some(i128::from(*v)),
+            _ => None,
+        };
+        if let (Some(a), Some(b)) = (
+            lo_v.as_ref().and_then(|v| int_value(&v.0)),
+            hi_v.as_ref().and_then(|v| int_value(&v.0)),
+        ) && (a > b || (!inclusive && a == b))
         {
             self.ck.report(
                 Diagnostic::error("this range pattern is empty", span)
@@ -733,7 +745,13 @@ impl FnCtx<'_, '_> {
             }
             self.ck
                 .note_deprecated_use(DeprKey::Field(id, i as u32), f.name.span);
-            subs[i] = Some(self.check_pat(&f.pat, &decls[i].ty, cx));
+            // A weak field reads as `T?` (see `class_field_read`), so it matches as `T?`.
+            let want = if decls[i].weak {
+                Ty::Option(Box::new(decls[i].ty.clone()))
+            } else {
+                decls[i].ty.clone()
+            };
+            subs[i] = Some(self.check_pat(&f.pat, &want, cx));
         }
         let missing: Vec<&str> = decls
             .iter()
@@ -757,9 +775,32 @@ impl FnCtx<'_, '_> {
         let fields = subs
             .into_iter()
             .zip(&decls)
-            .map(|(s, d)| s.unwrap_or_else(|| self.pat(PatKind::Wild, &d.ty, span)))
+            .map(|(s, d)| {
+                s.unwrap_or_else(|| {
+                    let ty = if d.weak {
+                        Ty::Option(Box::new(d.ty.clone()))
+                    } else {
+                        d.ty.clone()
+                    };
+                    self.pat(PatKind::Wild, &ty, span)
+                })
+            })
             .collect();
-        self.pat(PatKind::Struct { ty: id, fields }, expected, span)
+        let weak = decls
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.weak)
+            .map(|(i, _)| i)
+            .collect();
+        self.pat(
+            PatKind::Struct {
+                ty: id,
+                fields,
+                weak,
+            },
+            expected,
+            span,
+        )
     }
 
     // ---- variants ----

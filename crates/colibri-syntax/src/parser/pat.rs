@@ -190,6 +190,11 @@ impl Parser<'_> {
         } else {
             None
         };
+        // `..=` ends at its upper bound; with none it would say "up to and including nothing",
+        // and a bare `..=` would quietly match everything like `_`.
+        if inclusive && hi.is_none() {
+            return self.unexpected("an upper bound after `..=`");
+        }
         Ok(self.make_pat(start, PatKind::Range { lo, hi, inclusive }))
     }
 

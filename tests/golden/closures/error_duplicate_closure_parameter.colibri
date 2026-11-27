@@ -1,0 +1,5 @@
+// A closure's parameters are declared once each, as a `fn`'s are.
+fn main() {
+    let f = fn(x: int, x: int) => x // error: the parameter `x` is declared more than once
+    print(f(1, 2))
+}

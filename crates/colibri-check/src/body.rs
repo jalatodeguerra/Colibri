@@ -978,6 +978,83 @@ impl<'c, 'a> FnCtx<'c, 'a> {
         }
     }
 
+    /// The lint for a statement that only computes a plain value and throws it away
+    /// (`-b`, `a + 1`, `x`). It is most often a line that was meant to continue the one above:
+    /// a line that starts with `-` is a new statement, because a statement ends at the end of its
+    /// line (`let c = a` and then `- b` is `let c = a` and an unused `-b`).
+    ///
+    /// Narrow on purpose: only numbers, `bool`, `char` and `str` built from literals, names, fields
+    /// and the operators on them. A call, an assignment, an index (which may panic) or an
+    /// operator on a user's type (which runs their `impl`) can have an effect, and the tail of a
+    /// block is its value, so none of those warn.
+    fn warn_discarded_value(&mut self, e: &ast::Expr, value: &Expr) {
+        if self.defer_depth != 0 || !self.ck.mods[self.ck.cur_mod.0 as usize].root {
+            return;
+        }
+        // Decided on the checked expression, not on what was written: `p == q` may run a
+        // user's `impl Eq`, which only the types say.
+        if !self.plain_hir(value) {
+            return;
+        }
+        let starts_with_operator = matches!(
+            &e.kind,
+            ExprKind::Unary {
+                op: ast::UnOp::Neg,
+                ..
+            }
+        );
+        let hint = if starts_with_operator {
+            "a line that starts with `-` is a new statement, not a continuation of the line above: put the operator at the end of the previous line, or use parentheses"
+        } else {
+            "the value is not used; remove the statement, or use it (`let _ = ...` ignores a value on purpose)"
+        };
+        let diag = Diagnostic::warning("unused value: this expression has no effect", e.span)
+            .with_hint(hint);
+        self.ck.report_lint(diag);
+    }
+
+    /// Whether the checked expression `e` is a plain value: a literal, a local or global, a
+    /// field of one, or numbers, `bool`, `char` and `str` combined with the built-in
+    /// operators. Anything that dispatches to a user's code (an operator on another type, a
+    /// call), indexes, or can panic on its own (`/`, `%`) is not.
+    fn plain_hir(&self, e: &Expr) -> bool {
+        let primitive = |this: &Self, x: &Expr| {
+            matches!(
+                this.infer.shallow(&x.ty),
+                Ty::Int(_) | Ty::Float | Ty::F32 | Ty::Bool | Ty::Char | Ty::Str | Ty::Infer(_)
+            )
+        };
+        match &e.kind {
+            hir::ExprKind::Lit(_) => true,
+            hir::ExprKind::Read(place) => match &place.anchor {
+                hir::Anchor::Local(_) | hir::Anchor::Global(_) => true,
+                hir::Anchor::ClassField(obj, _) => self.plain_hir(obj),
+                hir::Anchor::ListElem(..) | hir::Anchor::MapEntry(..) => false,
+            },
+            hir::ExprKind::Unary(op, x) => {
+                !matches!(op, hir::UnOp::User(_)) && primitive(self, x) && self.plain_hir(x)
+            }
+            hir::ExprKind::Binary(op, a, b) => {
+                let ok = match op {
+                    hir::BinOp::Arith(arith, _) => {
+                        !matches!(arith, hir::ArithOp::Div | hir::ArithOp::Rem)
+                    }
+                    hir::BinOp::Bit(bit, _) => !matches!(bit, hir::BitOp::Shl | hir::BitOp::Shr),
+                    hir::BinOp::Concat | hir::BinOp::Cmp(..) => true,
+                    hir::BinOp::User(_) | hir::BinOp::Is => false,
+                };
+                ok && primitive(self, a)
+                    && primitive(self, b)
+                    && self.plain_hir(a)
+                    && self.plain_hir(b)
+            }
+            hir::ExprKind::And(a, b) | hir::ExprKind::Or(a, b) => {
+                self.plain_hir(a) && self.plain_hir(b)
+            }
+            _ => false,
+        }
+    }
+
     /// The lint for code after `return`, `break`, `continue` or a call that never returns: one
     /// warning per block, at the first statement that cannot run. Dependencies are not linted.
     fn warn_unreachable(&mut self, span: Span) {
@@ -1004,6 +1081,9 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             }
             StmtKind::Expr(e) => {
                 let (stmt, never) = self.expr_stmt(e);
+                if let hir::StmtKind::Expr(value) = &stmt.kind {
+                    self.warn_discarded_value(e, value);
+                }
                 out.push(stmt);
                 never
             }

@@ -44,7 +44,15 @@ impl FnCtx<'_, '_> {
         let f = self.new_closure_fn(span);
         self.enter_closure_frame(ret.clone());
         self.push_scope();
-        for (p, ty) in c.params.iter().zip(&param_tys) {
+        for (i, (p, ty)) in c.params.iter().zip(&param_tys).enumerate() {
+            // The same rule as for a `fn`: the second one would shadow the first, which could
+            // never be used again.
+            if c.params[..i].iter().any(|q| q.name.name == p.name.name) {
+                self.ck.report(Diagnostic::error(
+                    format!("the parameter `{}` is declared more than once", p.name.name),
+                    p.name.span,
+                ));
+            }
             let kind = if p.mutable {
                 LocalKind::Var
             } else {

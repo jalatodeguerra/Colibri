@@ -1,0 +1,22 @@
+// A `u64` literal above `i64::MAX` is a fine pattern against a `u64`, as it is an expression.
+fn describe(n: u64) -> str {
+    match n {
+        18446744073709551615 => return "max"
+        9223372036854775808..=18446744073709551614 => return "high"
+        0..9223372036854775808 => return "low"
+        _ => return "unreachable"
+    }
+}
+
+fn main() {
+    print(describe(u64.MAX))
+    print(describe(u64.MAX - 1))
+    print(describe(9223372036854775808))
+    print(describe(9223372036854775807))
+    print(describe(0))
+}
+// expect: max
+// expect: high
+// expect: high
+// expect: low
+// expect: low

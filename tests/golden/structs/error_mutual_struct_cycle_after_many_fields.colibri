@@ -1,0 +1,80 @@
+// Many unrelated fields make a struct wide, not deep: the size check must still find the
+// cycle through the last field.
+struct S0 { x: int }
+struct S1 { x: int }
+struct S2 { x: int }
+struct S3 { x: int }
+struct S4 { x: int }
+struct S5 { x: int }
+struct S6 { x: int }
+struct S7 { x: int }
+struct S8 { x: int }
+struct S9 { x: int }
+struct S10 { x: int }
+struct S11 { x: int }
+struct S12 { x: int }
+struct S13 { x: int }
+struct S14 { x: int }
+struct S15 { x: int }
+struct S16 { x: int }
+struct S17 { x: int }
+struct S18 { x: int }
+struct S19 { x: int }
+struct S20 { x: int }
+struct S21 { x: int }
+struct S22 { x: int }
+struct S23 { x: int }
+struct S24 { x: int }
+struct S25 { x: int }
+struct S26 { x: int }
+struct S27 { x: int }
+struct S28 { x: int }
+struct S29 { x: int }
+struct S30 { x: int }
+struct S31 { x: int }
+struct S32 { x: int }
+
+struct Holder { // error: the struct `Holder` contains itself
+    b: Bad
+}
+
+struct Bad { // error: the struct `Bad` contains itself
+    s0: S0
+    s1: S1
+    s2: S2
+    s3: S3
+    s4: S4
+    s5: S5
+    s6: S6
+    s7: S7
+    s8: S8
+    s9: S9
+    s10: S10
+    s11: S11
+    s12: S12
+    s13: S13
+    s14: S14
+    s15: S15
+    s16: S16
+    s17: S17
+    s18: S18
+    s19: S19
+    s20: S20
+    s21: S21
+    s22: S22
+    s23: S23
+    s24: S24
+    s25: S25
+    s26: S26
+    s27: S27
+    s28: S28
+    s29: S29
+    s30: S30
+    s31: S31
+    s32: S32
+    h: Holder
+}
+
+fn main() {
+    print(1)
+}

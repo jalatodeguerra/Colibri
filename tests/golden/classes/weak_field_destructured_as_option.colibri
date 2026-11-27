@@ -1,0 +1,29 @@
+// A `weak` field reads as `T?` (`n.parent`), and a pattern sees it the same way: `let` and
+// `match` destructuring bind it as `Node?`, upgraded when the pattern runs. It used to bind
+// it as `Node`, which the checker accepted and the VM then crashed on.
+class Node {
+    name: str
+    parent: weak Node
+}
+
+fn main() {
+    let p = Node { name: "p" }
+    let n = Node { name: "n", parent: p }
+    let Node { name, parent } = n
+    let up: Node? = parent
+    print(name)
+    print(up.is_some())
+    match n {
+        Node { parent: some(q), .. } => print(q.name)
+        Node { parent: none, .. } => print("orphan")
+    }
+    let orphan = Node { name: "o" }
+    match orphan {
+        Node { parent: some(_), .. } => print("has parent")
+        Node { parent: none, .. } => print("orphan")
+    }
+}
+// expect: n
+// expect: true
+// expect: p
+// expect: orphan

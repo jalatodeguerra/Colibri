@@ -1,0 +1,36 @@
+// A struct that holds itself through a generic struct has infinite size, like a direct
+// `struct A { a: A }`. A list, a class or an enum in between breaks the cycle.
+struct Wrap[T] {
+    x: T
+}
+
+struct Pair[A, B] {
+    a: A
+    b: B
+}
+
+struct Bad { // error: the struct `Bad` contains itself
+    w: Wrap[Bad]
+}
+
+struct Deep { // error: the struct `Deep` contains itself
+    p: Pair[int, Wrap[(int, Deep)]]
+}
+
+struct Fine {
+    kids: Wrap[List[Fine]]
+}
+
+class Node {
+    next: Wrap[Node]?
+}
+
+enum Opt[T] { Nothing, Just(T) }
+
+struct Linked {
+    next: Opt[Linked]
+}
+
+fn main() {
+    print(Wrap { x: 1 }.x)
+}
