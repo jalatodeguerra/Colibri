@@ -12,6 +12,7 @@ use crate::infer::InferCtx;
 use crate::insight::{RawFact, Target, expr_facts, type_fact};
 use crate::types::{IntTy, Ty};
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn zonk_body(
     infer: &mut InferCtx,
     block: &mut Block,
