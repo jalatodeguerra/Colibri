@@ -35,6 +35,15 @@ use crate::fiber::VmFiber;
 use crate::machine::Machine;
 use crate::stacks::{WalkRole, on_walk_stack};
 
+/// Lets the pool know the thread is awake again when dropped, on every path out of a wait.
+pub(crate) struct WaitingScope(std::rc::Rc<dyn colibri_core::taskrun::TaskSpawner>);
+
+impl Drop for WaitingScope {
+    fn drop(&mut self) {
+        self.0.waiting(false);
+    }
+}
+
 impl Machine {
     /// `task.run(f)`: copies `f` and queues it. Gives the `Task` handle.
     pub(crate) fn task_run(&mut self, fiber: &mut VmFiber, f: Value, span: Span) -> Eval {
@@ -103,6 +112,14 @@ impl Machine {
             // A `Task` cannot be made on the web (`task.run` has no pool), so there is nothing to wait for.
             return Err(self.internal(fiber, span, "a task handle on the web"));
         }
+        // Whether it panics does not depend on whether the task has finished.
+        if self.core.mutex_held().is_some() {
+            return Err(self.panic(
+                fiber,
+                span,
+                "`join` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits (`done` and `try_join` do not wait)",
+            ));
+        }
         loop {
             if self.core.task_poll(op) == TaskPoll::Finished {
                 return self.task_result(fiber, op, span).map(Some);
@@ -118,14 +135,14 @@ impl Machine {
             // that joins, and one of them may be what the task waits for. Any other joiner waits
             // (parked, or driving its coroutines) and asks the pool for a thread for the task
             // if every one of the pool's is busy.
-            if fiber.state.coro.is_none() && self.core.sched.coroutine_count() == 0 {
-                if let Some(stolen) = self.take_over(op) {
-                    self.run_stolen(fiber, stolen, span)?;
-                    continue;
-                }
-            } else {
-                self.make_room(op);
+            if fiber.state.coro.is_none()
+                && self.core.sched.coroutine_count() == 0
+                && let Some(stolen) = self.take_over(op)
+            {
+                self.run_stolen(fiber, stolen, span)?;
+                continue;
             }
+            self.make_room(fiber, span)?;
             let state = &fiber.state;
             let quiet = state.host_depth == 0
                 && state.native_depth == 0
@@ -133,17 +150,18 @@ impl Machine {
                 && !self.core.sched.is_shutting_down();
             if state.coro.is_none() {
                 if quiet && !self.core.sched.is_busy() {
-                    // With a flag that can stop it, the loop looks at the flag now and then.
+                    // The loop looks at the cancel flag and asks the pool for room now and then.
                     let deadline = self
                         .core
-                        .has_cancel_flag()
+                        .polls_while_waiting()
                         .then(|| self.core.sched.clock_now() + crate::chan::DRIVE_POLL);
+                    let _waiting = self.waiting_scope();
                     let driven = self.drive_main(fiber, span, "join", deadline, &mut |it| {
                         it.core.task_poll(op) == TaskPoll::Finished || it.core.cancelled()
                     });
                     self.settle_refusal(fiber, span, driven)?;
                 } else {
-                    self.block_on_task(op);
+                    self.block_on_task(fiber, op, span)?;
                 }
                 continue;
             }
@@ -152,24 +170,40 @@ impl Machine {
                 self.suspend(fiber, id, Wake::External(op), true, span)?;
                 return Ok(None);
             }
-            self.block_on_task(op);
+            self.block_on_task(fiber, op, span)?;
         }
     }
 
     /// Blocks the thread until the task `op` has finished: the one place a wait cannot let other
     /// code run (a `Drop` hook, a host callback, native code that calls user code).
-    fn block_on_task(&mut self, op: u64) {
+    fn block_on_task(&mut self, fiber: &mut VmFiber, op: u64, span: Span) -> Result<(), Ctl> {
         while self.core.task_poll(op) == TaskPoll::Running && !self.core.cancelled() {
-            self.make_room(op);
+            self.make_room(fiber, span)?;
+            let _waiting = self.waiting_scope();
             self.core.sched.ext().wait(Duration::from_millis(50));
+        }
+        Ok(())
+    }
+
+    /// Asks the pool for a thread for what is queued, if no thread can take it (see
+    /// [`TaskSpawner::make_room`]). A pool that is at its limit of temporary threads is a panic
+    /// of the waiter, which would otherwise wait for ever.
+    pub(crate) fn make_room(&mut self, fiber: &mut VmFiber, span: Span) -> Result<(), Ctl> {
+        let Some(spawner) = self.core.task_spawner() else {
+            return Ok(());
+        };
+        match spawner.make_room() {
+            Ok(()) => Ok(()),
+            Err(why) => Err(self.panic(fiber, span, why)),
         }
     }
 
-    /// Asks the pool for a thread for the queued task `op`, if none is free.
-    fn make_room(&mut self, op: u64) {
-        if let (Some(key), Some(spawner)) = (self.core.task_key(op), self.core.task_spawner()) {
-            spawner.make_room(key);
-        }
+    /// Tells the pool that this thread sleeps waiting for a task or a channel until the guard is
+    /// dropped (see [`TaskSpawner::waiting`]).
+    pub(crate) fn waiting_scope(&self) -> Option<WaitingScope> {
+        let spawner = self.core.task_spawner()?;
+        spawner.waiting(true);
+        Some(WaitingScope(spawner))
     }
 
     /// The queued task `op`, taken out of the pool's queue, if this isolate may run it.
@@ -233,7 +267,12 @@ impl Machine {
                     Err(e) => Err(TaskFailure::Copy(e.to_string())),
                 }
             }
-            Err(Ctl::Panic(info)) => Err(failure_of_panic(&self.core, *info)),
+            // A pool that is shutting down stops the task at a `Cancel` safepoint, which unwinds as
+            // an exhausted budget: that is a cancellation, as on a thread of its own.
+            Err(Ctl::Panic(info)) => Err(match failure_of_panic(&self.core, *info) {
+                TaskFailure::BudgetExhausted if self.core.cancelled() => TaskFailure::Cancelled,
+                other => other,
+            }),
             Err(Ctl::Cancel) => Err(TaskFailure::Cancelled),
         };
         let steps = self.core.end_inline_entry(entry);
@@ -320,10 +359,39 @@ impl Machine {
 
 /// The error a failed task gives its joiner. A panic is the message with the trace under it
 /// (`e.message()` is the message, `e.cause()` the trace, `{e}` both).
+/// How many nested wrappers of one task name are written out before they are folded into a count.
+const DEEP_WRAPPERS: usize = 8;
+
+/// A chain of tasks of one function that each panicked because the one below did (a deep
+/// recursion through `task.run`) would repeat one wrapper at every level. Past a few levels the
+/// headline says how many there are, once, and gives the innermost message.
+fn folded_headline(name: &str, message: &str) -> Option<String> {
+    let wrapper = format!("the task `{name}` panicked: ");
+    let at = message.find(&wrapper)?;
+    let rest = &message[at + wrapper.len()..];
+    // One level above a headline that is folded already.
+    if let Some(counted) = rest.strip_prefix('[')
+        && let Some((n, tail)) = counted.split_once(" nested levels] ")
+        && let Ok(n) = n.parse::<usize>()
+    {
+        return Some(format!("{wrapper}[{} nested levels] {tail}", n + 1));
+    }
+    let nested = message.matches(&wrapper).count();
+    let last = message.rfind(&wrapper)?;
+    (nested >= DEEP_WRAPPERS).then(|| {
+        format!(
+            "{wrapper}[{} nested levels] {}",
+            nested + 1,
+            &message[last + wrapper.len()..]
+        )
+    })
+}
+
 fn failure_error(name: &str, failure: &TaskFailure) -> Value {
     match failure {
         TaskFailure::Panic { message, trace } => {
-            let headline = format!("the task `{name}` panicked: {message}");
+            let headline = folded_headline(name, message)
+                .unwrap_or_else(|| format!("the task `{name}` panicked: {message}"));
             if trace.is_empty() {
                 error_value(&headline)
             } else {

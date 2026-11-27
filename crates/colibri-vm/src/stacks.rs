@@ -422,7 +422,10 @@ impl WalkRole {
     /// The native stack a walk in this role may use when it runs on the caller's own stack, of
     /// which `native` bytes are the caller's to use (an engine's `native_stack_budget`): the
     /// walk stack's budget, but never more than the caller has. The receiver keeps its extra over
-    /// the sender, so the one relation holds on every stack.
+    /// the sender, so the one relation holds on every stack. (So a receiver on the caller's own
+    /// stack may use `RECEIVER_EXTRA_BUDGET` (64 KiB) beyond `native`: the main and worker stacks
+    /// keep that much in reserve above the native budget, and a graph the sender accepted must be
+    /// accepted by whoever rebuilds it.)
     pub const fn fallback_budget(self, native: usize) -> usize {
         let own = match self {
             WalkRole::Sender => native,

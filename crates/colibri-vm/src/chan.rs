@@ -192,6 +192,14 @@ impl Machine {
         let Some(chan) = self.core.chan_of(channel) else {
             return Err(self.internal(fiber, span, "ill-typed channel method"));
         };
+        // Whether it panics does not depend on whether a value is there.
+        if self.core.mutex_held().is_some() && fiber.state.native_depth > 0 {
+            return Err(self.panic(
+                fiber,
+                span,
+                "`recv` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits (`try_recv` does not wait)",
+            ));
+        }
         // Back from a park: what the waiter was woken for.
         let done = match self.woken(fiber) {
             Some(done) => done,
@@ -237,6 +245,13 @@ impl Machine {
         let Some(chan) = self.core.chan_of(channel) else {
             return Err(self.internal(fiber, span, "ill-typed channel method"));
         };
+        if self.core.mutex_held().is_some() && fiber.state.native_depth > 0 && chan.is_bounded() {
+            return Err(self.panic(
+                fiber,
+                span,
+                "`send` on a channel with a capacity cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits (a channel without a capacity never waits)",
+            ));
+        }
         // Back from a park: the value is in the channel (or the channel was closed).
         match self.woken(fiber) {
             Some(Done::Sent) => return Ok(true),
@@ -355,9 +370,20 @@ impl Machine {
             && state.native_depth == 0
             && self.core.hook_depth == 0
             && !self.core.sched.is_shutting_down();
-        let result = if state.coro.is_some() && quiet && may_park {
+        let (in_coro, in_main) = (state.coro.is_some(), state.coro.is_none());
+        // A coroutine that `go` started inside a `with` may park (that holds nothing), but it may
+        // not block the thread, which would hold the lock while it waits.
+        let result = if self.core.mutex_held().is_some() && !(in_coro && quiet && may_park) {
+            Err(self.panic(
+                fiber,
+                span,
+                format!(
+                    "`{what}` cannot wait here while a `Mutex.with` is running: the lock would stay held while the thread waits"
+                ),
+            ))
+        } else if in_coro && quiet && may_park {
             self.park_in_channel(fiber, chan, ticket, sending, span)
-        } else if state.coro.is_none() && quiet && !self.core.sched.is_busy() {
+        } else if in_main && quiet && !self.core.sched.is_busy() {
             self.drive_for_channel(fiber, chan, ticket, what, span)
                 .map(|()| false)
         } else {
@@ -392,6 +418,8 @@ impl Machine {
         span: Span,
     ) -> Result<bool, Ctl> {
         let id = self.pause_context(fiber, span, if sending { "send" } else { "recv" })?;
+        // What would feed or empty the channel may be queued with no thread to run it.
+        self.make_room(fiber, span)?;
         self.core.sched.set_chan_wait(
             id,
             ChanWait {
@@ -424,13 +452,19 @@ impl Machine {
     ) -> Result<(), Ctl> {
         let id = ticket.id;
         loop {
+            // The loop looks at the cancel flag and asks the pool for room now and then: what
+            // would feed this channel may be queued with no thread to run it.
+            self.make_room(fiber, span)?;
             let deadline = self
                 .core
-                .has_cancel_flag()
+                .polls_while_waiting()
                 .then(|| self.core.sched.clock_now() + DRIVE_POLL);
-            let driven = self.drive_main(fiber, span, what, deadline, &mut |it| {
-                chan.has_done(id) || it.core.cancelled()
-            });
+            let driven = {
+                let _waiting = self.waiting_scope();
+                self.drive_main(fiber, span, what, deadline, &mut |it| {
+                    chan.has_done(id) || it.core.cancelled()
+                })
+            };
             self.settle_refusal(fiber, span, driven)?;
             if chan.has_done(id) {
                 return Ok(());
@@ -466,6 +500,8 @@ impl Machine {
                     "this channel operation would wait forever: nothing can run while it waits here",
                 ));
             }
+            self.make_room(fiber, span)?;
+            let _waiting = self.waiting_scope();
             self.core.sched.ext().wait(BLOCK_POLL);
         }
     }

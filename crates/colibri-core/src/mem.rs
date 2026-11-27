@@ -20,6 +20,7 @@
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, Ordering};
@@ -417,13 +418,19 @@ fn credit(tag: u64, bytes: usize) {
 /// allocator.
 struct Registry {
     handed_out: usize,
-    closed: Vec<usize>,
+    closed: VecDeque<usize>,
 }
 
 static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
     handed_out: 0,
-    closed: Vec::new(),
+    closed: VecDeque::new(),
 });
+
+/// How many closed slots `open_slot` looks at for one that is free again. A closed slot whose
+/// allocations are still alive (a result or a message that nobody has taken yet) stays in the
+/// queue; looking at all of them would make each of 10,000 tasks pay for every one before it. The
+/// ones looked at and found busy go to the back, so every closed slot is looked at in turn.
+const SCAN: usize = 16;
 
 fn slot_at(index: usize) -> &'static Slot {
     let (chunk, offset) = locate(index);
@@ -436,12 +443,19 @@ fn slot_at(index: usize) -> &'static Slot {
 fn open_slot() -> u64 {
     let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     // A closed slot whose allocations are all gone is free again.
-    let reusable = reg
-        .closed
-        .iter()
-        .position(|&i| slot_at(i).used.load(Ordering::Acquire) == 0);
+    let mut reusable = None;
+    for _ in 0..reg.closed.len().min(SCAN) {
+        let Some(i) = reg.closed.pop_front() else {
+            break;
+        };
+        if slot_at(i).used.load(Ordering::Acquire) == 0 {
+            reusable = Some(i);
+            break;
+        }
+        reg.closed.push_back(i);
+    }
     let index = match reusable {
-        Some(at) => reg.closed.swap_remove(at),
+        Some(index) => index,
         None => {
             let index = reg.handed_out;
             let (chunk, offset) = locate(index);
@@ -479,7 +493,7 @@ fn close_slot(tag: u64) {
     }
     let index = tag as u32 as usize - 1;
     let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    reg.closed.push(index);
+    reg.closed.push_back(index);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -638,11 +652,6 @@ impl MemAccount {
     /// `None` for an inert account or one whose slot is gone.
     pub fn measured_used(&self) -> Option<u64> {
         Some(lookup(self.tag)?.measured().max(0) as u64)
-    }
-
-    /// Bytes this account holds itself, whatever its workers hold. `None` when inert.
-    pub fn own_used(&self) -> Option<u64> {
-        Some(lookup(self.tag)?.own.load(Ordering::Relaxed).max(0) as u64)
     }
 
     /// Sets the limit in bytes (`None` for none) and re-evaluates `over` against it. Allocation
@@ -1151,6 +1160,43 @@ mod tests {
         let orphan = MemAccount::child_of(parent.tag());
         drop(parent);
         assert_eq!(orphan.used(), Some(0));
+    }
+
+    #[test]
+    fn closed_slots_that_are_still_in_use_are_passed_over_and_a_freed_one_is_found_in_turn() {
+        let _g = exclusive();
+        let l = layout(100, 8);
+        // Three scans' worth of accounts that each still hold a block when they are closed.
+        let mut blocks = Vec::new();
+        let mut tags = Vec::new();
+        for _ in 0..3 * SCAN {
+            let mut account = MemAccount::open();
+            blocks.push(within(&mut account, || unsafe { A.alloc(l) }));
+            tags.push(account.tag() as u32);
+            drop(account);
+        }
+        // None of them is free, so none is handed out again.
+        let mut kept = vec![MemAccount::open()];
+        assert!(!tags.contains(&(kept[0].tag() as u32)));
+        // Free the block of the one that was closed last, which is the furthest back. Each open
+        // looks at `SCAN` closed slots and moves the busy ones to the back, so within one pass over
+        // the queue it is found and handed out.
+        let last = tags[tags.len() - 1];
+        unsafe { A.dealloc(blocks[blocks.len() - 1], l) };
+        let mut again = false;
+        for _ in 0..(3 * SCAN) {
+            let account = MemAccount::open();
+            again |= account.tag() as u32 == last;
+            kept.push(account);
+            if again {
+                break;
+            }
+        }
+        assert!(again, "the freed slot was never handed out again");
+        drop(kept);
+        for p in &blocks[..blocks.len() - 1] {
+            unsafe { A.dealloc(*p, l) };
+        }
     }
 
     #[test]

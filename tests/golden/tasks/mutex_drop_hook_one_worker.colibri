@@ -1,0 +1,49 @@
+// workers: 1
+// A value in a `Mutex` with an `impl Drop` that itself uses a `Mutex` (it counts the objects that
+// are alive). The hook runs for every copy that is freed: the one `with` leaves in its parameter
+// is freed after the lock is let go, so the hook may use a mutex, and a `with` whose function
+// panics leaves the value as it was. Same output on a pool of three (`mutex_drop_hook_three_workers`).
+class Res {
+    n: int
+    live: Mutex[int]
+}
+
+impl Drop for Res {
+    fn drop(self) {
+        self.live.with(fn(mut c) { c -= 1 })
+    }
+}
+
+fn bump(m: Mutex[Res]) -> int {
+    return m.with(fn(mut r) {
+        r.n += 1
+        return r.n
+    })
+}
+
+fn fail(m: Mutex[Res]) -> int {
+    return m.with(fn(mut r) -> int {
+        r.n = 100
+        panic("halfway")
+    })
+}
+
+fn main() {
+    let live = Mutex(0)
+    let m = Mutex(Res { n: 1, live: live })
+    print("main: {bump(m)}")
+    let a = task.run(fn() => bump(m) + bump(m))
+    print("task: {a.join().expect("a")}")
+    print("n: {m.get().n}")
+    let f = task.run(fn() => fail(m))
+    print("a panic in the function: {f.join().is_err()}")
+    print("n after the panic: {m.get().n}")
+    print("one more: {bump(m)}")
+}
+
+// expect: main: 2
+// expect: task: 7
+// expect: n: 4
+// expect: a panic in the function: true
+// expect: n after the panic: 4
+// expect: one more: 5

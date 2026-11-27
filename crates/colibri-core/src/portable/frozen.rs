@@ -34,6 +34,33 @@ pub fn from_portable_frozen(
     }
 }
 
+/// Rebuilds a graph that stays where it is, as an ordinary value that can be changed (the borrowing
+/// walk of [`from_portable_frozen`] without the freezing). A `Mutex` keeps its value as a portable
+/// graph and gives each `get` and `with` a copy of it.
+pub fn from_portable_ref(
+    portable: &Portable,
+    core: &mut Core,
+    stack: StackGuard,
+) -> Result<Value, RebuildError> {
+    let mut b = Rebuild {
+        core,
+        stack,
+        built: HashMap::new(),
+        placeholders: HashSet::new(),
+        pending: 0,
+    };
+    match b.value_ref(portable) {
+        Ok(v) => {
+            b.finish();
+            Ok(v)
+        }
+        Err(e) => {
+            b.abandon();
+            Err(e)
+        }
+    }
+}
+
 impl Rebuild<'_> {
     /// Freezes what the walk built that can be changed. An object that came from a handle (a
     /// channel, another `Shared`) is frozen too, which changes nothing: its state is not in it.

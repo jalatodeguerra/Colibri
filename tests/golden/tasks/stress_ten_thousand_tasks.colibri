@@ -1,0 +1,31 @@
+// workers: 3
+// Ten thousand tasks, started in batches and joined in order, each one adding to a `Mutex` and
+// returning its own number. Nothing is lost, the pool does not grow while it is only busy, and the
+// memory slot of each task is let go of when its result is taken. (The mutation test leaves out
+// programs with a `while`, and this one has a long loop on purpose.)
+fn main() {
+    let count = Mutex(0)
+    let mut sum = 0
+    let mut batch: List[Task[int]] = []
+    let mut started = 0
+    while started < 10000 {
+        let id = started
+        batch.push(task.run(fn() {
+            count.with(fn(mut n) { n += 1 })
+            return id * 2
+        }))
+        started += 1
+        if batch.len() == 500 {
+            for t in batch {
+                sum += t.join().expect("a task")
+            }
+            batch = []
+        }
+    }
+    for t in batch {
+        sum += t.join().expect("a task")
+    }
+    print("tasks {count.get()}, sum {sum}")
+}
+
+// expect: tasks 10000, sum 99990000

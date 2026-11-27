@@ -84,6 +84,7 @@ impl Cloner {
                 // handle (the channel is shared by every thread that holds it anyway).
                 if src.ty() == colibri_check::types::CHANNEL_TYPE
                     || src.ty() == colibri_check::types::SHARED_TYPE
+                    || src.ty() == colibri_check::types::MUTEX_TYPE
                 {
                     return Ok(v.clone());
                 }

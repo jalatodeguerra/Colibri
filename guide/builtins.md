@@ -607,3 +607,14 @@ none
 | Type | Method | What it does |
 |------|--------|--------------|
 | `Shared[T]` | `get() -> T` | this thread's frozen copy of the value, built on the first call and the same object after; a write to it panics |
+
+## `Mutex`
+
+`Mutex(x)` gives a `Mutex[T]` for any `x: T` that a task could be sent (see
+[Mutex](tour.md#mutex)). The handle is shared by every thread that holds it.
+
+| Type | Method | What it does |
+|------|--------|--------------|
+| `Mutex[T]` | `get() -> T` | a copy of the value |
+| `Mutex[T]` | `set(v: T)` | puts a copy of `v` in |
+| `Mutex[T]` | `with(f: fn(mut T) -> R) -> R` | runs `f` on a copy under the lock and stores the copy back when `f` returns; a panic in `f` stores nothing. `f` may not use a mutex, `wait`, `join`, `recv` or `send` on a channel with a capacity |

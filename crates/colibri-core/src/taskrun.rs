@@ -154,10 +154,23 @@ pub trait TaskSpawner {
     /// deadlock on a task that joins another); the main `Vm` has nothing to take over.
     fn steal(&self, key: u64) -> Option<StolenTask>;
 
-    /// A joiner that waits for the queued task `key` instead of running it (it has coroutines of
-    /// its own to keep running) asks for a thread to take it if none is free. A pool thread that
-    /// does so gets a temporary one.
-    fn make_room(&self, _key: u64) {}
+    /// A thread that waits for a task or a channel asks for room: if a task is queued and no thread
+    /// can take it, the pool starts a temporary thread. It does so when no thread is idle and
+    /// every thread that runs a job is itself waiting (a thread that computes will reach the
+    /// queue by itself), so a pool that is merely busy does not grow. `Err` says why it cannot
+    /// (the limit on temporary threads), for the waiter to panic with.
+    fn make_room(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The last handle of a `Shared`, in every isolate, died: the frozen copies that idle workers
+    /// kept of it are garbage now. The pool wakes its idle threads to free them.
+    fn shared_gone(&self) {}
+
+    /// The thread is about to sleep waiting for something (`true`), or has woken (`false`): the pool
+    /// counts how many of its threads are waiting, to tell a pool that is busy from one that is
+    /// stuck.
+    fn waiting(&self, _on: bool) {}
 
     /// The thread begins running the task `serial` (inline in a join, or as a job): what it
     /// starts is numbered from `serial`. The result puts back what was there.
@@ -218,6 +231,12 @@ impl Core {
                 back();
             }
         })
+    }
+
+    /// Whether a wait on the main fiber should come up for air every so often: to look at the
+    /// cancel flag of a pool, and to ask the pool for a thread for what is queued.
+    pub fn polls_while_waiting(&self) -> bool {
+        self.has_cancel_flag() || self.tasks.spawner.is_some()
     }
 
     /// Gives the engine the pool that `task.run` submits to.

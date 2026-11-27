@@ -246,6 +246,10 @@ pub struct PoolStats {
     pub failed_builds: AtomicUsize,
     /// Threads that were joined: counted when `join` of the thread returned.
     pub joined: AtomicUsize,
+    /// The most temporary threads that were alive at one time. The limit on them bounds this, not
+    /// `started`: a temporary thread that finds the queue empty (another thread took its job
+    /// first) ends, and a later wait may start another in its place.
+    pub peak_extra: AtomicUsize,
 }
 
 /// What every worker needs from the `Vm` that owns the pool.
@@ -256,6 +260,12 @@ pub(crate) struct WorkerCfg {
     pub out: WorkerOut,
     pub caps: CapSet,
     pub max_call_depth: usize,
+    /// Whether the isolates track their objects for the leak detector (the host asked for it on
+    /// the main `Vm`); each worker then reports what it leaks when the pool shuts down.
+    pub track_leaks: bool,
+    /// The most temporary threads at a time (see [`Shared::make_room`]); [`MAX_EXTRA_THREADS`]
+    /// unless a test lowers it.
+    pub max_extra: usize,
     /// Whether this platform can start threads (not the web): the pool's one seam to the
     /// platform, so that a test can see the refusal without a web build.
     pub threads_supported: bool,
@@ -332,6 +342,16 @@ pub(crate) struct Shared {
     pub(crate) cancel: Arc<AtomicBool>,
     /// How many pool threads wait for a job (not running one).
     idle: AtomicUsize,
+    /// Set before the pool shuts down when the workers are to report their leaks: each thread
+    /// shuts its isolate down as it ends and adds what the leak detector finds to `leaks`.
+    collect_leaks: AtomicBool,
+    leaks: Mutex<Vec<colibri_core::leaks::Leak>>,
+    /// Counts the `Shared`s whose last handle died: an idle thread that sees it change frees the
+    /// frozen copies its isolate kept.
+    sweep: AtomicU64,
+    /// How many threads that run a job sleep, waiting for a task or a channel (see
+    /// [`TaskSpawner::waiting`]).
+    blocked: AtomicUsize,
     /// The temporary threads a join started because every pool thread was busy.
     extras: Mutex<Vec<JoinHandle<()>>>,
     cfg: Arc<WorkerCfg>,
@@ -340,20 +360,38 @@ pub(crate) struct Shared {
 
 /// The most temporary threads at a time: they are bounded by the depth of nested joins, and this
 /// keeps a program that nests without end from starting threads without end.
-const MAX_EXTRA_THREADS: usize = 256;
+pub(crate) const MAX_EXTRA_THREADS: usize = 256;
 
 impl Shared {
-    /// A joiner that does not run the queued task `key` itself waits for it: if no thread is
-    /// free to take it, starts a temporary one, which runs jobs until the queue is empty and then
-    /// ends. So a pool of a fixed size cannot be deadlocked by tasks that wait for tasks.
-    fn make_room(self: &Arc<Self>, key: u64) {
+    /// A waiter that no thread may be free to help asks for room: whatever is queued must run, and
+    /// the pool lends a temporary thread for it, which runs jobs until the queue is empty and then
+    /// ends. So a pool of a fixed size cannot be
+    /// deadlocked by tasks that wait for tasks or for channels the queued ones feed.
+    ///
+    /// A thread is lent only when it is needed: no thread is idle (an idle one takes the job), and
+    /// every thread that runs a job is waiting itself (one that computes reaches the queue when it
+    /// ends). `caller_waits` says that the caller is a pool thread about to sleep, which is not
+    /// counted yet. A pool that is merely busy therefore never grows. At the limit of temporary
+    /// threads the waiter is told, to panic with it, instead of waiting for ever.
+    /// A `Shared` lost its last handle: idle workers sweep their copies. The queue lock is taken
+    /// between the bump and the notify, so a worker that has read the old count under it is
+    /// already waiting (or has not yet read, and sees the new one): the wakeup is never lost.
+    fn announce_sweep(&self) {
+        self.sweep.fetch_add(1, Ordering::SeqCst);
+        drop(lock(&self.queue));
+        self.wake.notify_all();
+    }
+
+    fn make_room(self: &Arc<Self>, caller_waits: bool) -> Result<(), String> {
         {
             let queue = lock(&self.queue);
             if queue.closed
-                || !queue.jobs.iter().any(|j| j.key == key)
-                || queue.jobs.len() <= self.idle.load(Ordering::SeqCst)
+                || queue.jobs.is_empty()
+                || self.idle.load(Ordering::SeqCst) > 0
+                || self.blocked.load(Ordering::SeqCst) + usize::from(caller_waits)
+                    < self.stats.alive.load(Ordering::SeqCst)
             {
-                return;
+                return Ok(());
             }
         }
         let mut extras = lock(&self.extras);
@@ -367,8 +405,14 @@ impl Shared {
                 i += 1;
             }
         }
-        if extras.len() >= MAX_EXTRA_THREADS || lock(&self.queue).closed {
-            return;
+        if lock(&self.queue).closed {
+            return Ok(());
+        }
+        if extras.len() >= self.cfg.max_extra {
+            return Err(format!(
+                "tasks are waiting for tasks that no thread is free to run, and the pool has already lent its limit of {} temporary threads: a chain of nested waits that deep cannot be run (wait less deeply, or finish tasks before starting more)",
+                self.cfg.max_extra
+            ));
         }
         let (shared, cfg, stats) = (
             Arc::clone(self),
@@ -387,9 +431,14 @@ impl Shared {
             Ok(handle) => {
                 stats.started.fetch_add(1, Ordering::SeqCst);
                 extras.push(handle);
+                stats.peak_extra.fetch_max(extras.len(), Ordering::SeqCst);
+                Ok(())
             }
-            Err(_) => {
+            Err(e) => {
                 stats.alive.fetch_sub(1, Ordering::SeqCst);
+                Err(format!(
+                    "tasks are waiting for tasks that no thread is free to run, and the operating system cannot start a temporary thread: {e}"
+                ))
             }
         }
     }
@@ -454,6 +503,10 @@ impl TaskPool {
                 next_key: AtomicU64::new(1),
                 cancel: Arc::new(AtomicBool::new(false)),
                 idle: AtomicUsize::new(0),
+                blocked: AtomicUsize::new(0),
+                sweep: AtomicU64::new(0),
+                collect_leaks: AtomicBool::new(false),
+                leaks: Mutex::new(Vec::new()),
                 extras: Mutex::new(Vec::new()),
                 cfg,
                 stats: Arc::clone(&stats),
@@ -561,6 +614,12 @@ impl TaskPool {
     /// and its thread drops the worker `Vm` and ends. No thread is left behind, and none is
     /// detached. What a cancellation cannot interrupt is a host function that blocks (a read
     /// from standard input, a sleep): the shutdown waits for it to return.
+    pub(crate) fn shutdown_and_collect_leaks(&mut self) -> Vec<colibri_core::leaks::Leak> {
+        self.shared.collect_leaks.store(true, Ordering::SeqCst);
+        self.shutdown();
+        std::mem::take(&mut *lock(&self.shared.leaks))
+    }
+
     pub(crate) fn shutdown(&mut self) {
         self.shared.cancel.store(true, Ordering::Release);
         self.close();
@@ -687,6 +746,24 @@ impl TaskSpawner for Launch {
     fn steal(&self, _key: u64) -> Option<StolenTask> {
         None
     }
+
+    // Main's wait is only a latency gain: every worker that waits asks for room itself on each
+    // of its 50 ms polls (with itself counted), which is the stronger check. Asking here too
+    // saves the main thread up to one poll. `try_borrow`: the call must never panic.
+    fn make_room(&self) -> Result<(), String> {
+        let Ok(pool) = self.pool.try_borrow() else {
+            return Ok(());
+        };
+        let shared = Arc::clone(&pool.shared);
+        drop(pool);
+        shared.make_room(false)
+    }
+
+    fn shared_gone(&self) {
+        if let Ok(pool) = self.pool.try_borrow() {
+            pool.shared.announce_sweep();
+        }
+    }
 }
 
 /// The program and the serial of the task a worker is running.
@@ -753,8 +830,20 @@ impl TaskSpawner for WorkerLaunch {
         Ok(key)
     }
 
-    fn make_room(&self, key: u64) {
-        self.shared.make_room(key);
+    fn make_room(&self) -> Result<(), String> {
+        self.shared.make_room(true)
+    }
+
+    fn shared_gone(&self) {
+        self.shared.announce_sweep();
+    }
+
+    fn waiting(&self, on: bool) {
+        if on {
+            self.shared.blocked.fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.shared.blocked.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     fn steal(&self, key: u64) -> Option<StolenTask> {
@@ -803,29 +892,66 @@ fn worker_main(shared: &Arc<Shared>, cfg: &WorkerCfg, stats: &PoolStats, tempora
     let _alive = Alive(stats);
     // The isolate of this thread, and the image it was built from.
     let mut isolate: Option<(Vm, Arc<ProgramImage>, u64)> = None;
+    worker_loop(shared, cfg, stats, temporary, &mut isolate);
+    // The pool is closing. An isolate that tracked its objects says what it leaks, once its
+    // program has ended; the `Vm` that owns the pool collects the reports.
+    if shared.collect_leaks.load(Ordering::SeqCst)
+        && let Some((vm, _, _)) = isolate.as_mut()
+    {
+        let found = catch_unwind(AssertUnwindSafe(|| {
+            vm.shutdown();
+            vm.find_leaks()
+        }));
+        if let Ok(found) = found {
+            lock(&shared.leaks).extend(found);
+        }
+    }
+}
+
+/// The jobs of a pool thread, until the pool closes.
+fn worker_loop(
+    shared: &Arc<Shared>,
+    cfg: &WorkerCfg,
+    stats: &PoolStats,
+    temporary: bool,
+    isolate: &mut Option<(Vm, Arc<ProgramImage>, u64)>,
+) {
     // The image this thread failed to build an isolate from, and why: the tasks that wait for the
     // same image fail alike without another full check.
     let mut failed: Option<(Arc<ProgramImage>, u64, String)> = None;
+    // The count of `Shared`s that died that this thread has acted on.
+    let mut swept = 0;
     loop {
-        let job = {
+        let job = loop {
             let mut queue = lock(&shared.queue);
-            loop {
-                if queue.closed {
-                    return;
-                }
-                if let Some(job) = queue.jobs.pop_front() {
-                    break job;
-                }
-                if temporary {
-                    return;
-                }
-                shared.idle.fetch_add(1, Ordering::SeqCst);
-                queue = shared
-                    .wake
-                    .wait(queue)
-                    .unwrap_or_else(PoisonError::into_inner);
-                shared.idle.fetch_sub(1, Ordering::SeqCst);
+            if queue.closed {
+                return;
             }
+            if let Some(job) = queue.jobs.pop_front() {
+                break job;
+            }
+            if temporary {
+                return;
+            }
+            let died = shared.sweep.load(Ordering::SeqCst);
+            if died != swept {
+                // A `Shared` lost its last handle: the copy this isolate kept of it is garbage
+                // now, and an idle thread would hold it until its next task. (Not under the
+                // lock: a `Drop` hook may run.)
+                swept = died;
+                drop(queue);
+                if let Some((vm, _, _)) = isolate.as_mut() {
+                    let _ = catch_unwind(AssertUnwindSafe(|| vm.sweep_when_idle()));
+                }
+                continue;
+            }
+            shared.idle.fetch_add(1, Ordering::SeqCst);
+            queue = shared
+                .wake
+                .wait(queue)
+                .unwrap_or_else(PoisonError::into_inner);
+            shared.idle.fetch_sub(1, Ordering::SeqCst);
+            drop(queue);
         };
         let Job {
             image,
@@ -838,7 +964,7 @@ fn worker_main(shared: &Arc<Shared>, cfg: &WorkerCfg, stats: &PoolStats, tempora
             ..
         } = job;
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            let stale = match &isolate {
+            let stale = match &*isolate {
                 Some((_, built, built_hash)) => !Arc::ptr_eq(built, &image) || *built_hash != hash,
                 None => true,
             };
@@ -854,12 +980,12 @@ fn worker_main(shared: &Arc<Shared>, cfg: &WorkerCfg, stats: &PoolStats, tempora
                 }
                 // The old isolate goes first: its program and its host state are freed before the
                 // new one is built.
-                isolate = None;
+                *isolate = None;
                 match Vm::build_worker(cfg, &image, hash, shared) {
                     Ok(vm) => {
                         stats.builds.fetch_add(1, Ordering::SeqCst);
                         failed = None;
-                        isolate = Some((vm, Arc::clone(&image), hash));
+                        *isolate = Some((vm, Arc::clone(&image), hash));
                     }
                     Err(why) => {
                         stats.failed_builds.fetch_add(1, Ordering::SeqCst);
@@ -878,7 +1004,7 @@ fn worker_main(shared: &Arc<Shared>, cfg: &WorkerCfg, stats: &PoolStats, tempora
             Err(payload) => {
                 // A Rust panic in the engine: the isolate cannot be trusted, so the next task
                 // builds a new one.
-                isolate = None;
+                *isolate = None;
                 Err(TaskFailure::Internal(format!(
                     "the worker panicked: {}",
                     crate::host::payload_message(payload.as_ref())
@@ -921,6 +1047,8 @@ mod tests {
             out: WorkerOut::Process,
             caps: CapSet::default(),
             max_call_depth: 100,
+            track_leaks: false,
+            max_extra: MAX_EXTRA_THREADS,
             threads_supported: false,
         };
         let mut pool = TaskPool::new(cfg, Arc::clone(&stats));
@@ -959,6 +1087,8 @@ mod tests {
                 out: WorkerOut::Process,
                 caps: CapSet::default(),
                 max_call_depth: 100,
+                track_leaks: false,
+                max_extra: MAX_EXTRA_THREADS,
                 threads_supported: false,
             },
             Arc::new(PoolStats::default()),

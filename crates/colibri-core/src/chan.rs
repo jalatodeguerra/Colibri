@@ -137,6 +137,11 @@ impl ChanInner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Whether a `send` can have to wait (the channel has a capacity).
+    pub fn is_bounded(&self) -> bool {
+        self.capacity.is_some()
+    }
+
     fn has_room(&self, s: &State) -> bool {
         self.capacity.is_none_or(|c| s.queue.len() < c)
     }

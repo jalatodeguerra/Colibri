@@ -1,0 +1,75 @@
+// A `Mutex` holds a value that threads change one at a time. `get` gives a copy, `set` copies a
+// value in, and `with` runs a function on a copy under the lock and keeps what the function leaves
+// in its parameter. The function's own result is what `with` gives back.
+struct Point {
+    x: int
+    y: int
+}
+
+class Counter {
+    hits: int
+}
+
+fn main() {
+    let n = Mutex(0)
+    n.with(fn(mut v) { v += 5 })
+    print("after with: {n.get()}")
+    n.set(40)
+    let doubled = n.with(fn(mut v) -> int {
+        v *= 2
+        return v + 1
+    })
+    print("result {doubled}, stored {n.get()}")
+
+    // A struct is a value: the function changes its own copy of it, and the change is kept.
+    let p = Mutex(Point { x: 1, y: 2 })
+    p.with(fn(mut q) { q.x = 100 })
+    print("point {p.get().x},{p.get().y}")
+
+    // A list and an object are changed in place; the change is kept the same way.
+    let xs = Mutex([1, 2, 3])
+    xs.with(fn(l) { l.push(4) })
+    let c = Mutex(Counter { hits: 0 })
+    c.with(fn(k) { k.hits += 3 })
+    print("list {xs.get()}, counter {c.get().hits}")
+
+    // `get` gives a copy of its own: changing it does not change the mutex.
+    let mut copy = xs.get()
+    copy.push(99)
+    print("copy {copy}, stored {xs.get()}")
+
+    // `set` copies the value in: the caller's list is its own afterwards.
+    let mut mine = [7, 8]
+    xs.set(mine)
+    mine.push(9)
+    print("mine {mine}, stored {xs.get()}")
+
+    // What `with` returns may be any type, and may hold what the function saw.
+    let total = xs.with(fn(l) -> int {
+        let mut sum = 0
+        for v in l {
+            sum += v
+        }
+        return sum
+    })
+    print("sum {total}")
+
+    // A function that only reads leaves the value as it was.
+    let shown = p.with(fn(q) => "{q.x}/{q.y}")
+    print("shown {shown}, still {p.get().x}")
+
+    // A handle is one mutex however many names it has.
+    let same = n.clone()
+    same.set(7)
+    print("through a clone {n.get()}")
+}
+
+// expect: after with: 5
+// expect: result 81, stored 80
+// expect: point 100,2
+// expect: list [1, 2, 3, 4], counter 3
+// expect: copy [1, 2, 3, 4, 99], stored [1, 2, 3, 4]
+// expect: mine [7, 8, 9], stored [7, 8]
+// expect: sum 15
+// expect: shown 100/2, still 100
+// expect: through a clone 7

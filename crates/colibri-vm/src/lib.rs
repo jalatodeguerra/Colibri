@@ -33,6 +33,7 @@ mod host_async;
 mod leaf;
 mod load;
 mod machine;
+mod mutex;
 mod patterns;
 mod places;
 mod profile;

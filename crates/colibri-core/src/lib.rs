@@ -30,6 +30,7 @@ pub(crate) mod iter;
 pub mod leaks;
 pub(crate) mod listfn;
 pub mod mem;
+pub mod mutex;
 pub mod num;
 pub mod ops;
 pub mod ordered;

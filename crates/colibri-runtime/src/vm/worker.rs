@@ -110,6 +110,8 @@ impl Vm {
         vm.engine
             .core_mut()
             .set_cancel_flag(Some(Arc::clone(cancel)));
+        // The leak detector runs in each isolate, on its own objects.
+        vm.engine.core_mut().set_track_leaks(cfg.track_leaks);
         // A task of this isolate queues the tasks it starts on the pool it runs in.
         let launch = Rc::new(WorkerLaunch::new(Arc::clone(shared)));
         vm.engine
@@ -231,6 +233,17 @@ impl Vm {
             }
             Err(info) => Err(panic_error(self.engine.core(), *info)),
         }
+    }
+
+    /// Frees the frozen copies of `Shared`s that no handle holds any more, in any isolate: what an
+    /// idle worker does when the last handle of one dies (the memory it holds counts against the
+    /// limit of the `Vm` it works for until it is freed).
+    pub(crate) fn sweep_when_idle(&mut self) {
+        let dead = self.engine.core_mut().sweep_shared();
+        for copy in dead {
+            self.engine.release_in_entry(copy);
+        }
+        self.engine.core_mut().flush();
     }
 
     /// Runs one task on this isolate: rebuilds the arguments, calls the function under the

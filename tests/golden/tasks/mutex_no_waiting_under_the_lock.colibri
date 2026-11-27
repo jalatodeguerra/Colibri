@@ -1,0 +1,101 @@
+// A lock is never held across a pause, and never while a thread waits for something that may need
+// it. The function of `with` is native code: `wait` in it panics, so do `join` and `recv` and a
+// `send` on a channel with a capacity, and so does using any `Mutex` (the same one would wait for
+// itself, and two mutexes taken in opposite orders by two threads would wait for each other).
+// Whether they panic never depends on timing: a `join` of a task that is done, a `recv` of a value
+// that is there and a `send` with room panic as well. `done`, `try_join`, `try_recv` and a `send`
+// on a channel without a capacity do not wait, and work.
+fn why(r: Result[()]) -> str {
+    match r {
+        ok(_) => return "ok"
+        err(e) => return e.message()
+    }
+}
+
+fn in_a_coroutine(m: Mutex[int]) -> str {
+    let c = go fn() { m.with(fn(v) { wait(0.01) }) }()
+    return why(c.join_result())
+}
+
+fn main() {
+    let m = Mutex(1)
+    let other = Mutex(2)
+
+    let t1 = task.run(fn() { m.with(fn(v) { let _ = m.get() }) })
+    print("get on the same mutex: {why(t1.join())}")
+
+    let t2 = task.run(fn() { m.with(fn(v) { m.set(5) }) })
+    print("set on the same mutex: {why(t2.join())}")
+
+    let t3 = task.run(fn() { m.with(fn(v) { m.with(fn(mut w) { w += 1 }) }) })
+    print("a nested with: {why(t3.join())}")
+
+    let t4 = task.run(fn() { m.with(fn(v) { let _ = other.get() }) })
+    print("another mutex: {why(t4.join())}")
+
+    // The value is there already: `recv` panics all the same.
+    let gate = Channel[int]()
+    gate.send(1)
+    let t5 = task.run(fn() { m.with(fn(v) { let _ = gate.recv() }) })
+    print("recv: {why(t5.join())}")
+
+    // The task is done already: `join` panics all the same.
+    let t6 = task.run(fn() {
+        m.with(fn(v) {
+            let fin = task.run(fn() => 3)
+            while !fin.done() {}
+            let _ = fin.join()
+        })
+    })
+    print("join: {why(t6.join())}")
+
+    let t6b = task.run(fn() {
+        let room = Channel[int](capacity: 4)
+        m.with(fn(v) { room.send(1) })
+    })
+    print("send with a capacity: {why(t6b.join())}")
+
+    // What does not wait works inside the function, with a value there or not.
+    let spare = Channel[int]()
+    spare.send(8)
+    let t8 = task.run(fn() => m.with(fn(mut v) {
+        let inner = task.run(fn() => 3)
+        while !inner.done() {}
+        let finished = inner.try_join().is_some()
+        v += spare.try_recv().expect("a value")
+        spare.send(9)
+        print("try_join of a finished task: {finished}, try_recv with a value there: {spare.try_recv().is_some()}")
+        return v
+    }))
+    print("no waiting calls: {t8.join().expect("t8")}")
+
+    // A coroutine that has ended already: joining it panics all the same.
+    let t9 = task.run(fn() { m.with(fn(v) { let c = go fn() {}()
+        c.join() }) })
+    print("join of an ended coroutine: {why(t9.join())}")
+    let t10 = task.run(fn() { m.with(fn(v) { let c = go fn() {}()
+        let _ = c.join_result() }) })
+    print("join_result of an ended coroutine: {why(t10.join())}")
+    let t11 = task.run(fn() { m.with(fn(v) { CoGroup().join_all() }) })
+    print("join_all of a group with nobody in it: {why(t11.join())}")
+
+    let t7 = task.run(fn() => in_a_coroutine(m))
+    print("wait: {t7.join().expect("t7")}")
+
+    print("still {m.get()}, {other.get()}")
+}
+
+// expect: get on the same mutex: the task `<closure in main>` panicked: this `Mutex` is locked by the `with` that is running: its callback cannot use the same mutex (`get`, `set` and `with` would wait for the lock they hold)
+// expect: set on the same mutex: the task `<closure in main>` panicked: this `Mutex` is locked by the `with` that is running: its callback cannot use the same mutex (`get`, `set` and `with` would wait for the lock they hold)
+// expect: a nested with: the task `<closure in main>` panicked: this `Mutex` is locked by the `with` that is running: its callback cannot use the same mutex (`get`, `set` and `with` would wait for the lock they hold)
+// expect: another mutex: the task `<closure in main>` panicked: a `with` callback cannot use another `Mutex`: threads that took two mutexes in opposite orders would wait for each other for ever (read the other one before the `with`, or keep both values in one `Mutex`)
+// expect: recv: the task `<closure in main>` panicked: `recv` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits (`try_recv` does not wait)
+// expect: join: the task `<closure in main>` panicked: `join` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits (`done` and `try_join` do not wait)
+// expect: send with a capacity: the task `<closure in main>` panicked: `send` on a channel with a capacity cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits (a channel without a capacity never waits)
+// expect: try_join of a finished task: true, try_recv with a value there: true
+// expect: no waiting calls: 9
+// expect: join of an ended coroutine: the task `<closure in main>` panicked: `join` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits
+// expect: join_result of an ended coroutine: the task `<closure in main>` panicked: `join_result` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits
+// expect: join_all of a group with nobody in it: the task `<closure in main>` panicked: `join_all` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits
+// expect: wait: the coroutine `<closure>` panicked: `wait` cannot pause inside the callback of `Mutex.with`: the lock would stay held while the coroutine is suspended
+// expect: still 9, 2

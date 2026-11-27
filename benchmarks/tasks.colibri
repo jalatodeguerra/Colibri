@@ -1,0 +1,59 @@
+// Thread tasks: CPU-bound work split into tasks. Counts the primes below a limit by trial
+// division, in `parts` equal ranges, one task for each. With one part the work runs as a single
+// task, which is what the speed-up is measured against: `tasks.sh` runs both and prints the ratio.
+//
+//   colibri run benchmarks/tasks.colibri [parts]
+import os
+import str
+
+const LIMIT = 1_200_000
+
+fn is_prime(n: int) -> bool {
+    if n < 2 {
+        return false
+    }
+    let mut d = 2
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d += 1
+    }
+    return true
+}
+
+fn count(from: int, to: int) -> int {
+    let mut found = 0
+    for n in from..to {
+        if is_prime(n) {
+            found += 1
+        }
+    }
+    return found
+}
+
+fn main() -> Result[()] {
+    let args = os.args()
+    let parts = if args.len() > 0 { str.parse_int(args[0])? } else { 4 }
+    // Small numbers are cheap and large ones dear, so each task takes every `parts`-th block of
+    // 2,000 numbers, which spreads the cost evenly.
+    let block = 2000
+    let mut tasks: List[Task[int]] = []
+    for part in 0..parts {
+        tasks.push(task.run(fn() {
+            let mut found = 0
+            let mut from = part * block
+            while from < LIMIT {
+                found += count(from, if from + block < LIMIT { from + block } else { LIMIT })
+                from += parts * block
+            }
+            return found
+        }))
+    }
+    let mut total = 0
+    for t in tasks {
+        total += t.join()?
+    }
+    print("primes below {LIMIT}: {total}")
+    return ok(())
+}

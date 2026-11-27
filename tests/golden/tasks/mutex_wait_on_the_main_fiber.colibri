@@ -1,0 +1,10 @@
+// A `wait` on the main fiber would run the event loop under the lock. The message says so.
+fn main() {
+    let m = Mutex(1)
+    m.with(fn(mut v) {
+        v += 1
+        wait(0.001)
+    })
+}
+
+// panic: `wait` on the main fiber runs the event loop, which cannot be done inside the callback of `Mutex.with` (the lock would stay held while the loop runs)

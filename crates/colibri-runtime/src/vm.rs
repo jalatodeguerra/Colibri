@@ -124,6 +124,7 @@ pub struct VmBuilder {
     compile_all: bool,
     safepoint_slice: Option<u32>,
     worker_threads: Option<usize>,
+    worker_extra_cap: Option<usize>,
     worker_setup: Option<WorkerSetup>,
     shared_out: Option<SharedOut>,
 }
@@ -274,6 +275,14 @@ impl VmBuilder {
         self
     }
 
+    /// Lowers the most temporary threads the pool lends to waiting tasks at a time (256 by
+    /// default), so that a test reaches the limit without starting 256 threads.
+    #[doc(hidden)]
+    pub fn worker_extra_cap(mut self, threads: usize) -> Self {
+        self.worker_extra_cap = Some(threads);
+        self
+    }
+
     /// Registers what thread tasks may call. `setup` runs on the fresh `Vm` of every worker, on
     /// the worker's thread, before the program is loaded into it: it registers host functions,
     /// types and state like the host does for its main `Vm` (the CLI passes
@@ -341,6 +350,10 @@ impl VmBuilder {
             out: worker_out,
             caps: self.caps,
             max_call_depth: self.max_call_depth,
+            track_leaks: self.track_leaks,
+            max_extra: self
+                .worker_extra_cap
+                .unwrap_or(crate::tasks::MAX_EXTRA_THREADS),
         };
         let launch = Rc::new(Launch::new(TaskPool::new(workers, Arc::clone(&stats))));
         // On the web there is no pool to hand tasks to: without the coercion to the trait object
@@ -376,6 +389,8 @@ impl VmBuilder {
             cfg: self.cfg,
             stats: Arc::clone(&stats),
             worker_launch: None,
+            track_leaks: self.track_leaks,
+            worker_leaks: Vec::new(),
             launch,
         }
     }
@@ -436,6 +451,10 @@ pub struct Vm {
     stats: Arc<PoolStats>,
     /// On a worker's `Vm`: where the tasks it starts are queued.
     worker_launch: Option<Rc<WorkerLaunch>>,
+    /// Whether the leak detector is on (the builder's `track_leaks`).
+    track_leaks: bool,
+    /// What the workers' isolates leaked, reported when the pool shut down at [`Vm::shutdown`].
+    worker_leaks: Vec<Leak>,
     /// The worker threads, which start with the first task, and what the workers build their
     /// isolates from. The engine holds the other end of it, to submit through. Last, so that
     /// it drops last: the threads are joined after everything else of the `Vm` is gone (see
@@ -538,6 +557,7 @@ impl Vm {
             compile_all: false,
             safepoint_slice: None,
             worker_threads: None,
+            worker_extra_cap: None,
             worker_setup: None,
             shared_out: None,
         }
@@ -2584,6 +2604,13 @@ impl Vm {
     pub fn shutdown(&mut self) {
         self.reload = None;
         self.launch.set_image(None);
+        if self.track_leaks {
+            // The leak detector runs in every isolate, and a worker's report comes to this `Vm`
+            // when its thread ends: the pool shuts down (what runs is cancelled), and what the
+            // workers found is kept for `find_leaks`. The pool does not start again.
+            self.worker_leaks
+                .extend(self.launch.pool().shutdown_and_collect_leaks());
+        }
         self.teardown();
     }
 
@@ -2618,7 +2645,9 @@ impl Vm {
     /// and finds only objects made while [`VmBuilder::track_leaks`] was on; without it the
     /// result is empty. The cost is linear in the live objects. See ARCHITECTURE §18.
     pub fn find_leaks(&self) -> Vec<Leak> {
-        self.engine.find_leaks()
+        let mut found = self.engine.find_leaks();
+        found.extend(self.worker_leaks.iter().cloned());
+        found
     }
 
     /// Starts the sampling profiler: about every 1,024 steps it records the stack that runs.

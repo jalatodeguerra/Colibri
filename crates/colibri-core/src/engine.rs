@@ -206,6 +206,17 @@ pub trait Engine: Sized {
     /// the first call. Rebuilding it needs a walk stack, which only an engine can map.
     fn shared_get(&mut self, fiber: &mut Self::Fiber, recv: &Value, span: Span) -> Eval;
 
+    /// `get`, `set` and `with` of a `Mutex` (`args[0]` is the handle, `args[1]` the value or the
+    /// callback). The value is copied on a walk stack, and `with` runs the callback under the lock
+    /// as a native call, which only an engine can do.
+    fn mutex_builtin(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        op: colibri_check::hir::Builtin,
+        args: &mut [Value],
+        span: Span,
+    ) -> Eval;
+
     /// The next value of a channel's iterator (`for x in ch` outside the instruction that waits
     /// properly, `ch.iter().enumerate()`): `None` when the channel is closed and empty. It waits
     /// by blocking this thread where it cannot pause.

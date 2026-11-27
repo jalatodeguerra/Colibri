@@ -65,8 +65,7 @@ pub const TASK_TYPE: TypeId = TypeId(22);
 pub const CHANNEL_TYPE: TypeId = TypeId(23);
 /// The built-in `Shared[T]` (DESIGN §14.1): a frozen value that every thread can read.
 pub const SHARED_TYPE: TypeId = TypeId(24);
-/// The built-in `Mutex[T]`. Only the id and the name are reserved; the type has no constructor and
-/// no methods until its own step.
+/// The built-in `Mutex[T]` (DESIGN §14.1): a value that threads change one at a time.
 pub const MUTEX_TYPE: TypeId = TypeId(25);
 
 /// Whether `id` is `Add`, `Sub`, `Mul` or `Div`: an operator interface with a right-hand type
@@ -89,7 +88,7 @@ pub fn prelude_class_maker(id: TypeId) -> Option<&'static str> {
         TASK_TYPE => Some("`task.run(f)`"),
         CHANNEL_TYPE => Some("`Channel[T]()`"),
         SHARED_TYPE => Some("`Shared(x)`"),
-        MUTEX_TYPE => Some("`Mutex(x)` (not built yet)"),
+        MUTEX_TYPE => Some("`Mutex(x)`"),
         STR_BUILDER_TYPE => Some("`StrBuilder()`"),
         BYTES_BUILDER_TYPE => Some("`BytesBuilder()`"),
         _ => None,

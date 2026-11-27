@@ -172,6 +172,26 @@ pub(crate) fn shared_sig(t: &Ty, name: &str) -> Option<Sig> {
     })
 }
 
+pub(crate) const MUTEX_METHODS: &[&str] = &["get", "set", "with"];
+
+/// The signature of a method of `Mutex[T]` (DESIGN §14.1). `with` takes the callback that runs
+/// under the lock; `fresh` makes the type of its result.
+pub(crate) fn mutex_sig(t: &Ty, name: &str, fresh: &mut dyn FnMut() -> Ty) -> Option<Sig> {
+    Some(match name {
+        "get" => sig(Builtin::MutexGet, vec![], t.clone()),
+        "set" => sig(Builtin::MutexSet, vec![("value", t.clone())], Ty::Unit),
+        "with" => {
+            let r = fresh();
+            sig(
+                Builtin::MutexWith,
+                vec![("f", crate::builtins::func(vec![t.clone()], r.clone()))],
+                r,
+            )
+        }
+        _ => return None,
+    })
+}
+
 pub(crate) const COGROUP_METHODS: &[&str] = &["go", "cancel", "count", "join_all"];
 
 /// The signature of a method of `CoGroup`. (`go` is a special form, see

@@ -913,6 +913,8 @@ pub enum Intrinsic {
     NewChannel,
     /// `Shared(x)`
     NewShared,
+    /// `Mutex(x)`
+    NewMutex,
     /// `CoGroup()`
     NewCoGroup,
     /// `Signal()`
@@ -1180,6 +1182,12 @@ pub enum Builtin {
     ChannelIter,
     /// `s.get() -> T`
     SharedGet,
+    /// `m.get() -> T`
+    MutexGet,
+    /// `m.set(v)`
+    MutexSet,
+    /// `m.with(f) -> R`
+    MutexWith,
 }
 
 #[derive(Debug)]

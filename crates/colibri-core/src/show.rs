@@ -401,6 +401,8 @@ impl<'t> Writer<'t> {
             self.out.push_str("<Channel>");
         } else if ty == colibri_check::types::SHARED_TYPE {
             self.out.push_str("<Shared>");
+        } else if ty == colibri_check::types::MUTEX_TYPE {
+            self.out.push_str("<Mutex>");
         } else {
             return false;
         }
