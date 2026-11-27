@@ -760,6 +760,27 @@ impl Machine {
         }
     }
 
+    /// A join in the function of a `Mutex.with` is refused whether or not the target has ended, so
+    /// that it never depends on timing. (A coroutine that `go` started in the function runs on a
+    /// fiber of its own, which holds nothing: only the fiber under `enter_native` is refused.)
+    fn refuse_join_under_lock(
+        &mut self,
+        fiber: &mut VmFiber,
+        span: Span,
+        what: &str,
+    ) -> Result<(), Ctl> {
+        if fiber.state.native_depth > 0 && self.core.mutex_held().is_some() {
+            return Err(self.panic(
+                fiber,
+                span,
+                format!(
+                    "`{what}` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// Waits until the coroutine of the handle has ended, then `joined_outcome`. `None`: paused.
     fn join_coroutine(
         &mut self,
@@ -769,6 +790,7 @@ impl Machine {
         as_result: bool,
     ) -> Result<Option<Value>, Ctl> {
         let what = if as_result { "join_result" } else { "join" };
+        self.refuse_join_under_lock(fiber, span, what)?;
         let Some(h) = handle_of(recv) else {
             return Err(self.internal(fiber, span, "ill-typed coroutine method"));
         };
@@ -811,6 +833,7 @@ impl Machine {
         let Some(g) = group_id(recv) else {
             return Err(self.internal(fiber, span, "ill-typed CoGroup method"));
         };
+        self.refuse_join_under_lock(fiber, span, "join_all")?;
         let me = fiber.state.coro;
         if !self.core.sched.group_has_others(g, me) {
             return Ok(Some(Value::Unit));

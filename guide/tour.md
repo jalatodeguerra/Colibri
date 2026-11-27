@@ -1369,7 +1369,9 @@ Things to know:
   `with`. They panic whether or not they would have had to wait at that moment, so a program does
   not pass on one run and fail on another. `done`, `try_join`, `try_recv` and `send` on a channel
   without a capacity do not wait, and work. A lock is never held while a thread waits for anything.
-  (`go` is fine: the new coroutine pauses by itself, and the `with` goes on.)
+  Joining a coroutine (`join`, `join_result`, `join_all`) panics the same way, even for one that has
+  ended. (`go` is fine: the new coroutine runs on a fiber of its own and may pause on a `wait`, a
+  `recv` or a `send`, which holds nothing, and the `with` goes on.)
 - **A panic in the callback leaves the value as it was.** The lock is released and nothing is
   poisoned: the copy the callback changed is dropped, and the next `get` sees the value from before
   the call. The panic goes on to the caller of `with`, in a task it is the task's result. The same
@@ -1381,7 +1383,9 @@ Things to know:
 - Each operation costs a copy of the whole value. Keep the value small, or keep many small mutexes.
 - A type with an `impl Drop` in a `Mutex` has its hook run once for each copy that is freed: the
   copy `with` hands to its function, the copy it takes back, and each `get`, not once for the value.
-  The hooks run after the lock is let go, so a hook may use a `Mutex` (to count live objects, say).
+  The hooks of the copy the function leaves behind run after the lock is let go, so such a hook may
+  use a `Mutex` (to count live objects, say). A copy that dies inside the function (a parameter that
+  is reassigned, a local) runs its hook under the lock, where using a `Mutex` panics.
 - A `Shared` that is inside a `Mutex`, or inside a message that is never received, may keep its copies
   in idle worker threads until those workers run another task: they are freed when the last handle
   that is a variable of a program dies, and at the latest at the end of the program.

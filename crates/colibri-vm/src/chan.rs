@@ -193,7 +193,7 @@ impl Machine {
             return Err(self.internal(fiber, span, "ill-typed channel method"));
         };
         // Whether it panics does not depend on whether a value is there.
-        if self.core.mutex_held().is_some() {
+        if self.core.mutex_held().is_some() && fiber.state.native_depth > 0 {
             return Err(self.panic(
                 fiber,
                 span,
@@ -245,7 +245,7 @@ impl Machine {
         let Some(chan) = self.core.chan_of(channel) else {
             return Err(self.internal(fiber, span, "ill-typed channel method"));
         };
-        if self.core.mutex_held().is_some() && chan.is_bounded() {
+        if self.core.mutex_held().is_some() && fiber.state.native_depth > 0 && chan.is_bounded() {
             return Err(self.panic(
                 fiber,
                 span,
@@ -371,7 +371,17 @@ impl Machine {
             && self.core.hook_depth == 0
             && !self.core.sched.is_shutting_down();
         let (in_coro, in_main) = (state.coro.is_some(), state.coro.is_none());
-        let result = if in_coro && quiet && may_park {
+        // A coroutine that `go` started inside a `with` may park (that holds nothing), but it may
+        // not block the thread, which would hold the lock while it waits.
+        let result = if self.core.mutex_held().is_some() && !(in_coro && quiet && may_park) {
+            Err(self.panic(
+                fiber,
+                span,
+                format!(
+                    "`{what}` cannot wait here while a `Mutex.with` is running: the lock would stay held while the thread waits"
+                ),
+            ))
+        } else if in_coro && quiet && may_park {
             self.park_in_channel(fiber, chan, ticket, sending, span)
         } else if in_main && quiet && !self.core.sched.is_busy() {
             self.drive_for_channel(fiber, chan, ticket, what, span)

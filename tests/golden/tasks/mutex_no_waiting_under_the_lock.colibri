@@ -69,6 +69,16 @@ fn main() {
     }))
     print("no waiting calls: {t8.join().expect("t8")}")
 
+    // A coroutine that has ended already: joining it panics all the same.
+    let t9 = task.run(fn() { m.with(fn(v) { let c = go fn() {}()
+        c.join() }) })
+    print("join of an ended coroutine: {why(t9.join())}")
+    let t10 = task.run(fn() { m.with(fn(v) { let c = go fn() {}()
+        let _ = c.join_result() }) })
+    print("join_result of an ended coroutine: {why(t10.join())}")
+    let t11 = task.run(fn() { m.with(fn(v) { CoGroup().join_all() }) })
+    print("join_all of a group with nobody in it: {why(t11.join())}")
+
     let t7 = task.run(fn() => in_a_coroutine(m))
     print("wait: {t7.join().expect("t7")}")
 
@@ -84,5 +94,8 @@ fn main() {
 // expect: send with a capacity: the task `<closure in main>` panicked: `send` on a channel with a capacity cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits (a channel without a capacity never waits)
 // expect: try_join of a finished task: true, try_recv with a value there: true
 // expect: no waiting calls: 9
+// expect: join of an ended coroutine: the task `<closure in main>` panicked: `join` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits
+// expect: join_result of an ended coroutine: the task `<closure in main>` panicked: `join_result` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits
+// expect: join_all of a group with nobody in it: the task `<closure in main>` panicked: `join_all` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits
 // expect: wait: the coroutine `<closure>` panicked: `wait` cannot pause inside the callback of `Mutex.with`: the lock would stay held while the coroutine is suspended
 // expect: still 9, 2

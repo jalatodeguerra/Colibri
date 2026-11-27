@@ -13,8 +13,25 @@ fn main() {
     })
     print("with is over: {m.get()}")
     c.join()
+
+    // The new coroutine may park on a channel as well: it holds nothing while it waits.
+    let ch = Channel[int]()
+    let got = Mutex(0)
+    let r = m.with(fn(mut v) {
+        v += 1
+        return go fn() {
+            let x = ch.recv().expect("a value")
+            got.set(x)
+        }()
+    })
+    print("parked: {got.get()}")
+    ch.send(7)
+    r.join()
+    print("received: {got.get()}")
 }
 
 // expect: started
 // expect: with is over: 2
 // expect: woke
+// expect: parked: 0
+// expect: received: 7
