@@ -273,16 +273,27 @@ pub fn install_worker(vm: &mut Vm, worker: &WorkerStd) -> Result<(), Error> {
     if let Some(stderr) = worker.stderr() {
         set_stderr(vm, stderr);
     }
-    // A task draws from a generator of its own, seeded from its serial number: its numbers do
-    // not depend on which worker runs it or on what that worker ran before. The generator that
-    // was there comes back when the task ends.
-    if let Some(main) = worker.seed() {
-        vm.task_scope::<config::State>(move |state, serial| {
-            let task = rand::Rng::from_seed(config::task_seed(main, serial));
-            let saved = std::mem::replace(&mut state.rng, task);
-            Box::new(move |state| state.rng = saved)
+    // A task has a world of its own, made from its serial number and the configuration, as on a
+    // thread of its own: a generator seeded from the serial (its numbers do not depend on which
+    // worker runs it or on what that worker ran before) and a clock made afresh. What was there
+    // comes back when the task ends (a task that runs inline in a join leaves its joiner's).
+    let main = worker.seed();
+    let make_clock = worker.clock_factory();
+    vm.task_scope::<config::State>(move |state, serial| {
+        let clock = std::mem::replace(&mut state.clock, make_clock());
+        let rng = main.map(|main| {
+            std::mem::replace(
+                &mut state.rng,
+                rand::Rng::from_seed(config::task_seed(main, serial)),
+            )
         });
-    }
+        Box::new(move |state| {
+            state.clock = clock;
+            if let Some(rng) = rng {
+                state.rng = rng;
+            }
+        })
+    });
     Ok(())
 }
 

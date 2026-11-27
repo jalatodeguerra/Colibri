@@ -552,14 +552,21 @@ impl MemAccount {
     /// to the parent's count (so the parent's `used` is everything its `Vm` and its workers
     /// hold), wherever it is freed, while the limit, the `over` flag and the grace state stay its
     /// own. A worker's task runs under one of these, so passing the limit fails that task and
-    /// nothing else. A parent that is gone (or 0) leaves a plain account.
+    /// nothing else. A parent that is gone (or 0) leaves a plain account. A child of a child is a
+    /// child of the root, so that every task of a `Vm` counts into its one total.
     pub fn child_of(parent: u64) -> MemAccount {
         if parent == 0 {
             return MemAccount::share(0);
         }
+        // A task that a task starts counts into the `Vm`'s total, not into its parent task's slot
+        // (which closes when that task ends): the parent is the root of the chain.
+        let root = lookup(parent)
+            .map(|p| p.parent.load(Ordering::Relaxed))
+            .filter(|&grand| grand != 0)
+            .unwrap_or(parent);
         let tag = open_slot();
         if let Some(slot) = lookup(tag) {
-            slot.parent.store(parent, Ordering::Relaxed);
+            slot.parent.store(root, Ordering::Relaxed);
         }
         MemAccount { tag, owned: true }
     }

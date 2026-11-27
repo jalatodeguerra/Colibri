@@ -11,11 +11,12 @@ fn work(n: int) -> int {
 
 let mut finished = 0
 let mut ticks = 0
+let mut answers: List[str] = []
 
 fn waiter(name: str, t: Task[int]) {
     match t.join() {
-        ok(v) => print("{name} got {v}")
-        err(e) => print("{name} failed: {e}")
+        ok(v) => answers.push("got {v}")
+        err(e) => answers.push("failed: {e}")
     }
     finished += 1
 }
@@ -38,12 +39,17 @@ fn main() -> Result[()] {
     while finished < 2 {
         wait(0.001)
     }
+    // Whichever waiter the scheduler resumed first took the result; the other was told.
+    answers.sort()
+    for a in answers {
+        print(a)
+    }
     print("the ticker ran: {ticks > 0}")
     print("main done")
     return ok(())
 }
 
-// expect: first got 499500
-// expect: second failed: the task `<closure in main>` was joined already: its result can be taken once
+// expect: failed: the task `<closure in main>` was joined already: its result can be taken once
+// expect: got 499500
 // expect: the ticker ran: true
 // expect: main done

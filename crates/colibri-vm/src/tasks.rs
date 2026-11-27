@@ -182,10 +182,14 @@ impl Machine {
         // one ends in a panic of the innermost, not in a stack overflow.
         let mut inner = VmFiber::new();
         inner.stack_base = fiber.stack_base;
-        // The task sees the world it would see on a thread of its own.
+        // The task is an entry of its own, as it is on a thread of its own: a fresh instruction
+        // allotment, a memory-limit state of its own, its serial for what it starts and for what
+        // is derived per task, and the coroutines it leaves cancelled at its end. What the joiner
+        // has used up, or breached, is not touched.
+        let first_coroutine = self.core.sched.next_id();
+        let entry = self.core.begin_inline_entry();
         let restore = self.core.enter_task_scope(serial);
         let called = self.call_value(&mut inner, &f, Vec::new(), span);
-        restore(&mut self.core);
         self.release(f);
         let outcome: TaskOutcome = match called {
             Ok(value) => {
@@ -204,6 +208,14 @@ impl Machine {
             Err(Ctl::Panic(info)) => Err(failure_of_panic(&self.core, *info)),
             Err(Ctl::Cancel) => Err(TaskFailure::Cancelled),
         };
+        let steps = self.core.end_inline_entry(entry);
+        // What the task left running is cancelled, newest first, under a fresh allotment (a task
+        // that used its own up still cleans up).
+        let cleanup = self.core.begin_inline_entry();
+        self.cancel_coroutines_since(first_coroutine);
+        self.core.end_inline_entry(cleanup);
+        restore(&mut self.core);
+        let outcome = outcome.map(|done| TaskDone { steps, ..done });
         completer.complete(outcome);
         Ok(())
     }

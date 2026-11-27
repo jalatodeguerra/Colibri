@@ -344,6 +344,12 @@ impl WorkerStd {
         self.seed
     }
 
+    /// What makes a worker's clock: each task starts with a clock made afresh, so that what a task
+    /// reads from it does not depend on what the worker ran before.
+    pub(crate) fn clock_factory(&self) -> Factory<Box<dyn Clock>> {
+        std::sync::Arc::clone(&self.clock)
+    }
+
     /// The configuration of one worker `Vm`.
     pub fn config(&self) -> StdConfig {
         StdConfig {

@@ -65,6 +65,12 @@ impl MemLimit {
     }
 }
 
+/// What [`Core::begin_inline_entry`] set aside.
+pub struct InlineEntry {
+    budget: Budget,
+    memory: SavedMemState,
+}
+
 /// The memory state of the entry a fresh coroutine resumption interrupted (see
 /// [`Core::begin_resumption_memory`]).
 #[derive(Clone, Copy, Debug)]
@@ -491,6 +497,32 @@ impl Core {
             MemState::Dead => {}
         }
         limit
+    }
+
+    /// Begins an entry of its own inside the running one, for a task that a joiner runs itself: it
+    /// gets a fresh instruction allotment and a memory-limit state of its own (it starts `Normal`
+    /// under the host's limit), as a coroutine's resumption does, so that what it uses up, and
+    /// the grace after it, are not the joiner's. Gives what [`Core::end_inline_entry`] puts back.
+    pub fn begin_inline_entry(&mut self) -> InlineEntry {
+        let allotment = self.budget.allotment;
+        let slice = self.safepoints.slice();
+        self.close_budget();
+        let fresh = Budget::fresh(allotment, slice, self.safepoints.progress);
+        let budget = std::mem::replace(&mut self.budget, fresh);
+        let memory = self.begin_resumption_memory();
+        InlineEntry { budget, memory }
+    }
+
+    /// The inline entry is over: the joiner's budget and memory state come back. Gives the steps
+    /// the entry used.
+    pub fn end_inline_entry(&mut self, saved: InlineEntry) -> u64 {
+        let steps = self.budget.used();
+        self.end_resumption_memory(saved.memory);
+        self.close_budget();
+        self.budget = saved.budget;
+        self.sync_slice();
+        self.open_budget();
+        steps
     }
 
     /// A coroutine resumption of the scheduler gets a memory state of its own, as it gets a budget

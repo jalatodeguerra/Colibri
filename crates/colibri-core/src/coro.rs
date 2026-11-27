@@ -222,6 +222,14 @@ pub trait Sched: Engine {
             return;
         }
         let entry = self.core_mut().begin_entry();
+        self.cancel_coroutines_since(first);
+        self.core_mut().end_entry(entry, false);
+    }
+
+    /// Cancels the suspended coroutines with an id of `first` or more, newest first, whether or
+    /// not a coroutine is running (a task that its joiner ran inline leaves some behind, and the
+    /// joiner may be a coroutine itself).
+    fn cancel_coroutines_since(&mut self, first: u64) {
         // A `defer` or a `Drop` hook that runs during a cancel may start coroutines, which are
         // cancelled in turn; a few rounds are enough for any program that is not building them
         // forever.
@@ -242,7 +250,6 @@ pub trait Sched: Engine {
                 self.cancel_id(id);
             }
         }
-        self.core_mut().end_entry(entry, false);
     }
 
     // ---- driving the scheduler from the main fiber ----

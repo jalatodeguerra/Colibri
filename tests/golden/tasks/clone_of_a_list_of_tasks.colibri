@@ -1,0 +1,9 @@
+// The checker cannot see a task inside a list, so the copy refuses it when it reaches the handle.
+fn main() {
+    let t = task.run(fn() => 5)
+    let tasks = [t]
+    let copy = tasks.clone()
+    print("not reached {copy.len()}")
+}
+
+// panic: a `Task` cannot be copied (clone): it has one owner

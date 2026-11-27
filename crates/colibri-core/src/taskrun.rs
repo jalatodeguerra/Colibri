@@ -150,6 +150,12 @@ pub trait TaskSpawner {
     /// that waits for it runs it itself. Only a worker does that (a pool of one thread would
     /// deadlock on a task that joins another); the main `Vm` has nothing to take over.
     fn steal(&self, key: u64) -> Option<StolenTask>;
+
+    /// The thread begins running the task `serial` (inline in a join, or as a job): what it
+    /// starts is numbered from `serial`. The result puts back what was there.
+    fn enter_task(&self, _serial: u64) -> Box<dyn FnOnce()> {
+        Box::new(|| {})
+    }
 }
 
 /// Where a task is.
@@ -193,10 +199,17 @@ impl Core {
 
     /// Enters the scope of the task `serial`; the result puts the state back.
     pub fn enter_task_scope(&mut self, serial: u64) -> Box<dyn FnOnce(&mut Core)> {
-        match self.tasks.scope.clone() {
+        let spawner_back = self.tasks.spawner.as_ref().map(|s| s.enter_task(serial));
+        let scope_back: Box<dyn FnOnce(&mut Core)> = match self.tasks.scope.clone() {
             Some(scope) => scope(self, serial),
-            None => Box::new(|_| {}),
-        }
+            None => Box::new(|_: &mut Core| {}),
+        };
+        Box::new(move |core| {
+            scope_back(core);
+            if let Some(back) = spawner_back {
+                back();
+            }
+        })
     }
 
     /// Gives the engine the pool that `task.run` submits to.

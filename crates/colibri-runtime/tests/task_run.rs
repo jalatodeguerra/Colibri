@@ -463,3 +463,144 @@ fn finished() -> bool {
         std::thread::yield_now();
     }
 }
+
+/// Runs `source` (its `main`) on a pool of `workers`, with the instruction budget when given, and
+/// gives what it printed. The inline path (a task its joiner runs itself) is taken when no other
+/// thread picked the task up first: always on a pool of one, now and then on a larger one. The
+/// result must be the same either way.
+fn run_on(workers: usize, budget: Option<u64>, source: &str) -> String {
+    let source = source.to_string();
+    within_a_minute(move || {
+        let out = Out::default();
+        let mut builder = colibri::Vm::builder()
+            .worker_threads(workers)
+            .stdout_shared(Box::new(out.clone()));
+        if let Some(steps) = budget {
+            builder = builder.instruction_budget(steps);
+        }
+        let mut vm = builder.build();
+        vm.load_source("inline.colibri", &source).unwrap();
+        vm.run_main().unwrap();
+        vm.run_event_loop().unwrap();
+        out.text()
+    })
+}
+
+#[test]
+fn a_task_run_inline_has_an_instruction_budget_of_its_own() {
+    // `spin` uses up its allotment; `outer`, which joins it, has used almost none of its own and
+    // goes on, whoever ran `spin`.
+    let source = r#"
+fn spin() -> int {
+    let mut n = 0
+    while true {
+        n += 1
+    }
+    return n
+}
+
+fn outer() -> int {
+    let b = task.run(spin)
+    let mut x = 0
+    for i in 0..1000 {
+        x += i
+    }
+    match b.join() {
+        ok(v) => print("b ok {v}")
+        err(e) => print("b err: {e}")
+    }
+    for i in 0..1000 {
+        x += i
+    }
+    return x
+}
+
+fn main() {
+    print("outer: {task.run(outer).join().expect("outer")}")
+}
+"#;
+    let want = "b err: the task `spin` failed: the instruction budget ran out\nouter: 999000\n";
+    for workers in [1, 3] {
+        for _ in 0..3 {
+            assert_eq!(
+                run_on(workers, Some(2_000_000), source),
+                want,
+                "{workers} workers"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_coroutines_a_task_run_inline_leaves_do_not_run_in_its_joiner() {
+    let source = r#"
+fn ghost() {
+    wait(0.01)
+    print("ghost ran")
+}
+
+fn inner() -> int {
+    go ghost()
+    return 1
+}
+
+fn outer() -> int {
+    let r = task.run(inner).join().expect("inner")
+    wait(0.05)
+    return r
+}
+
+fn main() {
+    print("outer {task.run(outer).join().expect("outer")}")
+}
+"#;
+    for workers in [1, 3] {
+        for _ in 0..3 {
+            assert_eq!(
+                run_on(workers, None, source),
+                "outer 1\n",
+                "{workers} workers"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_coroutine_that_joins_a_task_run_inline_is_not_disturbed_by_what_the_task_leaves() {
+    // The joiner is itself a coroutine, on a pool of one thread: the task it runs inline leaves a
+    // coroutine, which is cancelled from inside the joiner's resumption.
+    let source = r#"
+fn ghost() {
+    wait(0.01)
+    print("ghost ran")
+}
+
+fn inner() -> int {
+    go ghost()
+    return 1
+}
+
+fn waiter() {
+    let r = task.run(inner).join().expect("inner")
+    wait(0.05)
+    print("waiter {r}")
+}
+
+fn outer() -> int {
+    go waiter()
+    wait(0.2)
+    return 2
+}
+
+fn main() {
+    print("outer {task.run(outer).join().expect("outer")}")
+}
+"#;
+    for workers in [1, 3] {
+        assert_eq!(
+            run_on(workers, None, source),
+            "waiter 1\nouter 2\n",
+            "{workers} workers"
+        );
+    }
+}

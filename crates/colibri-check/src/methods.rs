@@ -611,6 +611,21 @@ impl FnCtx<'_, '_> {
                 );
                 return self.error_expr(span);
             }
+            "clone"
+                if matches!(
+                    self.infer.shallow(recv_ty),
+                    Ty::Adt(crate::types::TASK_TYPE, _)
+                ) =>
+            {
+                self.check_args_loosely(args);
+                let shown = self.show(recv_ty);
+                self.ck.report(
+                    Diagnostic::error(format!("`{shown}` cannot be cloned"), name.span).with_hint(
+                        "a task has one owner, the one that joins it; move the handle instead",
+                    ),
+                );
+                return self.error_expr(span);
+            }
             "clone" => return self.check_clone(recv, args, span),
             "show" if args.is_empty() => {
                 let call = hir::ExprKind::Call(Box::new(hir::Call {

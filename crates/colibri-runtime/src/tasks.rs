@@ -624,16 +624,16 @@ impl TaskSpawner for Launch {
 /// What a worker submits through: the queue of the pool it belongs to, for the task it runs.
 pub(crate) struct WorkerLaunch {
     shared: Arc<Shared>,
-    now: RefCell<Option<(Arc<ProgramImage>, u64, u64)>>,
-    started: Cell<u64>,
+    now: Rc<RefCell<Option<(Arc<ProgramImage>, u64, u64)>>>,
+    started: Rc<Cell<u64>>,
 }
 
 impl WorkerLaunch {
     pub(crate) fn new(shared: Arc<Shared>) -> WorkerLaunch {
         WorkerLaunch {
             shared,
-            now: RefCell::new(None),
-            started: Cell::new(0),
+            now: Rc::new(RefCell::new(None)),
+            started: Rc::new(Cell::new(0)),
         }
     }
 
@@ -645,19 +645,29 @@ impl WorkerLaunch {
     }
 }
 
+impl WorkerLaunch {
+    /// The serial of the next task the running task starts: numbered from the running task's own
+    /// serial and from how many it has started. `None` outside of a task.
+    fn next_serial(&self) -> Option<u64> {
+        let parent = self.now.borrow().as_ref()?.2;
+        let n = self.started.get() + 1;
+        self.started.set(n);
+        Some(task_serial(parent, n))
+    }
+}
+
 impl TaskSpawner for WorkerLaunch {
     fn spawn(
         &self,
         request: SpawnRequest,
         completer: Completer<TaskOutcome>,
     ) -> Result<u64, TaskFailure> {
-        let Some((image, hash, parent)) = self.now.borrow().clone() else {
+        let Some((image, hash, _)) = self.now.borrow().clone() else {
             return Err(TaskFailure::Internal(
                 "a worker started a task outside of one".to_string(),
             ));
         };
-        let n = self.started.get() + 1;
-        self.started.set(n);
+        let serial = self.next_serial().expect("checked above");
         let key = self.shared.key();
         self.shared.enqueue(Job {
             key,
@@ -666,7 +676,7 @@ impl TaskSpawner for WorkerLaunch {
             entry: JobEntry::Closure(request.closure),
             budget: request.budget,
             account: request.account,
-            serial: task_serial(parent, n),
+            serial,
             reply: Reply::Completer(completer),
         })?;
         Ok(key)
@@ -674,6 +684,22 @@ impl TaskSpawner for WorkerLaunch {
 
     fn steal(&self, key: u64) -> Option<StolenTask> {
         self.shared.steal(key)
+    }
+
+    /// The tasks that the task `serial` starts are numbered from it, and the counter of the task
+    /// that was running (the joiner, when `serial` runs inline in its join) comes back after.
+    fn enter_task(&self, serial: u64) -> Box<dyn FnOnce()> {
+        let was = self.now.borrow().clone();
+        let started = self.started.get();
+        if let Some((image, hash, _)) = &was {
+            *self.now.borrow_mut() = Some((Arc::clone(image), *hash, serial));
+        }
+        self.started.set(0);
+        let (now, counter) = (Rc::clone(&self.now), Rc::clone(&self.started));
+        Box::new(move || {
+            *now.borrow_mut() = was;
+            counter.set(started);
+        })
     }
 }
 
@@ -831,6 +857,40 @@ mod tests {
             TaskFailure::CannotStart(colibri_core::external::NO_THREADS.to_string())
         );
         assert_eq!(stats.started.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_tasks_a_task_starts_are_numbered_from_it_and_from_nothing_else() {
+        let shared = Arc::new(Shared {
+            queue: Mutex::new(Queue {
+                jobs: VecDeque::new(),
+                closed: false,
+            }),
+            wake: Condvar::new(),
+            next_key: AtomicU64::new(1),
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        let launch = WorkerLaunch::new(shared);
+        let image = Arc::new(ProgramImage {
+            files: MemoryFs::default(),
+            entry: OwnedEntry::File(PathBuf::from("a.colibri")),
+            cfg: BuildCfg::default(),
+            iface: Vec::new(),
+        });
+        assert_eq!(launch.next_serial(), None);
+        launch.enter(&image, 1, 100);
+        assert_eq!(launch.next_serial(), Some(task_serial(100, 1)));
+        assert_eq!(launch.next_serial(), Some(task_serial(100, 2)));
+        // A task that the worker runs next starts counting again.
+        launch.enter(&image, 1, 200);
+        assert_eq!(launch.next_serial(), Some(task_serial(200, 1)));
+        // A task run inline in a join numbers what it starts from its own serial, and the task that
+        // joined goes on where it was.
+        let back = launch.enter_task(300);
+        assert_eq!(launch.next_serial(), Some(task_serial(300, 1)));
+        assert_eq!(launch.next_serial(), Some(task_serial(300, 2)));
+        back();
+        assert_eq!(launch.next_serial(), Some(task_serial(200, 2)));
     }
 
     #[test]

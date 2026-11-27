@@ -222,6 +222,11 @@ pub trait Deep: Engine {
                 span,
                 format!("these values nest too deeply to {what}"),
             ),
+            Stop::Task => self.panic(
+                fiber,
+                span,
+                format!("a `Task` cannot be copied ({what}): it has one owner"),
+            ),
         }
     }
 

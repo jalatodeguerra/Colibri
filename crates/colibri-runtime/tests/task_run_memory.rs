@@ -43,6 +43,44 @@ struct Gate {
 }
 
 fn vm_with(limit: Option<u64>, source: &str) -> (colibri::Vm, Out) {
+    vm_pool(1, limit, source)
+}
+
+thread_local! {
+    /// What `hold` keeps on this thread until `release`.
+    static HELD: std::cell::RefCell<Vec<Vec<u8>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Where the tasks that `meet` wait for each other: two of them, or a timeout.
+static MEETING: (Mutex<u32>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
+
+fn meet() -> i64 {
+    let (lock, cv) = &MEETING;
+    let mut here = lock.lock().unwrap();
+    *here += 1;
+    cv.notify_all();
+    let (here, timeout) = cv
+        .wait_timeout_while(here, Duration::from_secs(30), |n| *n < 2)
+        .unwrap();
+    drop(here);
+    i64::from(timeout.timed_out())
+}
+
+fn register_hold(vm: &mut colibri::Vm) {
+    vm.register_fn("hold", |bytes: i64| -> i64 {
+        HELD.with(|h| h.borrow_mut().push(vec![1_u8; bytes as usize]));
+        bytes
+    })
+    .unwrap();
+    vm.register_fn("release", || -> i64 {
+        HELD.with(|h| h.borrow_mut().clear());
+        0
+    })
+    .unwrap();
+    vm.register_fn("meet", meet).unwrap();
+}
+
+fn vm_pool(workers: usize, limit: Option<u64>, source: &str) -> (colibri::Vm, Out) {
     let (tx, rx) = mpsc::channel();
     let gate = Gate {
         tx,
@@ -50,7 +88,7 @@ fn vm_with(limit: Option<u64>, source: &str) -> (colibri::Vm, Out) {
     };
     let out = Out::default();
     let mut builder = colibri::Vm::builder()
-        .worker_threads(1)
+        .worker_threads(workers)
         .stdout_shared(Box::new(out.clone()));
     if let Some(limit) = limit {
         builder = builder.memory_limit(limit);
@@ -66,8 +104,10 @@ fn vm_with(limit: Option<u64>, source: &str) -> (colibri::Vm, Out) {
                 }
             })
             .unwrap();
+            register_hold(vm);
         })
         .build();
+    register_hold(&mut vm);
     let rx = Arc::clone(&gate.rx);
     vm.register_fn("gate_wait", move || -> i64 {
         match rx.lock().unwrap().recv_timeout(Duration::from_secs(30)) {
@@ -312,4 +352,128 @@ fn finish() -> str {
         message.contains("failed: memory limit of") && message.ends_with("exceeded"),
         "{message}"
     );
+}
+
+#[test]
+fn a_task_run_inline_has_a_memory_limit_state_of_its_own() {
+    // `hog` passes the limit and fails; `outer`, which joined it, is not in the grace state
+    // because of that: its own breach later is its first, and its `defer` runs. The same on a
+    // pool of one (`hog` runs inline in the join) and of three.
+    let source = r#"
+fn hog() -> int {
+    let mut xs: List[int] = []
+    while true {
+        xs.push(1)
+    }
+    return 0
+}
+
+fn outer() -> int {
+    defer print("outer cleanup")
+    match task.run(hog).join() {
+        ok(_) => print("b ok")
+        err(e) => print("b err: {e}")
+    }
+    let mut ys: List[int] = []
+    while true {
+        ys.push(1)
+    }
+    return 0
+}
+
+fn main() {
+    match task.run(outer).join() {
+        ok(v) => print("outer {v}")
+        err(e) => print("outer err: {e}")
+    }
+}
+"#;
+    let want = "b err: the task `hog` failed: memory limit of 8 MiB exceeded\nouter cleanup\nouter err: the task `outer` failed: memory limit of 8 MiB exceeded\n";
+    for workers in [1, 3] {
+        for _ in 0..3 {
+            let (mut vm, out) = vm_pool(workers, Some(8 * MIB), source);
+            vm.run_main().unwrap();
+            assert_eq!(out.text(), want, "{workers} workers");
+        }
+    }
+}
+
+#[test]
+fn nested_tasks_count_into_the_total_of_the_vm() {
+    // Each of two tasks holds 6 MiB at the same time under a limit of 10 MiB. Started by the
+    // program they fail alike, one of them; started by two tasks they must not escape the total.
+    let direct = r#"
+fn work() -> str {
+    defer release()
+    hold(6 * 1024 * 1024)
+    if meet() != 0 {
+        return "no meeting"
+    }
+    let mut s = 0
+    for i in 0..100000 {
+        s += i
+    }
+    return "ok"
+}
+
+fn answer(t: Task[str]) -> str {
+    match t.join() {
+        ok(v) => return v
+        err(e) => return e.message()
+    }
+}
+
+fn main() {
+    let a = task.run(work)
+    let b = task.run(work)
+    print("{answer(a)}")
+    print("{answer(b)}")
+}
+"#;
+    let nested = r#"
+fn work() -> str {
+    defer release()
+    hold(6 * 1024 * 1024)
+    if meet() != 0 {
+        return "no meeting"
+    }
+    let mut s = 0
+    for i in 0..100000 {
+        s += i
+    }
+    return "ok"
+}
+
+fn answer(t: Task[str]) -> str {
+    match t.join() {
+        ok(v) => return v
+        err(e) => return e.message()
+    }
+}
+
+fn outer() -> str {
+    return answer(task.run(work))
+}
+
+fn main() {
+    let a = task.run(outer)
+    let b = task.run(outer)
+    print("{a.join().expect("a")}")
+    print("{b.join().expect("b")}")
+}
+"#;
+    for (name, source) in [("direct", direct), ("nested", nested)] {
+        let (mut vm, out) = vm_pool(4, Some(10 * MIB), source);
+        vm.run_main().unwrap();
+        let text = out.text();
+        assert!(
+            text.contains("memory limit of 10 MiB exceeded"),
+            "{name}: both tasks held 6 MiB and none failed: {text}"
+        );
+        assert!(!text.contains("no meeting"), "{name}: {text}");
+        // And the one that went on is not blamed for the other's.
+        assert!(text.contains("ok"), "{name}: {text}");
+        // MEETING is process-wide: start the next program from zero.
+        *MEETING.0.lock().unwrap() = 0;
+    }
 }

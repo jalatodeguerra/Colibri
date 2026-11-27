@@ -870,6 +870,27 @@ fn finish(problems: Vec<String>) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_workers_directive_sets_the_size_of_the_pool() {
+        let d = parse_directives("// workers: 1\nfn main() {}\n");
+        assert_eq!(d.workers, Some(1));
+        assert!(d.malformed.is_empty());
+        let d = parse_directives("// workers: 3\nfn main() {}\n");
+        assert_eq!(d.workers, Some(3));
+        for bad in ["// workers: 0", "// workers: many", "// workers:"] {
+            let d = parse_directives(&format!("{bad}\nfn main() {{}}\n"));
+            assert_eq!(d.workers, None, "{bad}");
+            assert_eq!(d.malformed.len(), 1, "{bad}");
+        }
+        // And what it says reaches the `Vm`.
+        let out = colibri::SyncBuffer::new();
+        let temp = TempFolder::new();
+        for want in [1, 3] {
+            let (vm, _clock) = golden_vm(&out, &temp.0, &[], &[], Some(want));
+            assert_eq!(vm.worker_pool_size(), want);
+        }
+    }
+
     fn compiled(stdout: &str, panic: Option<&str>) -> Outcome {
         Outcome::Compiled {
             stdout: stdout.into(),
