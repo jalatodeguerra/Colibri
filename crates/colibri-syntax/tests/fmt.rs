@@ -965,6 +965,10 @@ fn mut_forms_round_trip() {
         "impl P {\n    fn step(mut self, dt: float) {}\n}\n",
     );
     check("let c=fn(mut x,y)=>x", "let c = fn(mut x, y) => x\n");
+    check(
+        "impl P{fn f(self,mut k:int=1,o:P){}}",
+        "impl P {\n    fn f(self, mut k: int = 1, o: P) {}\n}\n",
+    );
     check("const  K=1\nlet mut s=0", "const K = 1\nlet mut s = 0\n");
     // The AST is the same before and after.
     let src = "let mut s=0\nfn f(mut q:int){for mut e in xs{e+=q}}\nimpl P{fn g(mut self){}}";

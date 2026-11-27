@@ -258,6 +258,47 @@ fn main() {
 [warn] careful
 ```
 
+A parameter cannot be assigned to, like a `let`. Write `mut` before its name (`fn f(mut n: int)`)
+to get a local copy that the body may change. The caller's variable never changes: a number or a
+struct is copied in, so `n = n - 1` and `p.x = 0` stay inside the function. A list, map, set or
+class object is a reference, so `xs.push(1)` still reaches the caller's list, while `xs = []` only
+rebinds the parameter. `mut` is part of the body, not of the signature, so an `impl` may add or
+leave out the `mut` that its interface method has, and it has no effect on the type of the function.
+
+```colibri
+struct Point {
+    x: int
+    y: int
+}
+
+fn countdown(mut n: int) -> int {
+    let mut steps = 0
+    while n > 0 {
+        n -= 1
+        steps += 1
+    }
+    return steps
+}
+
+fn moved(mut p: Point, dx: int) -> Point {
+    p.x += dx
+    return p
+}
+
+fn main() {
+    let start = Point { x: 1, y: 2 }
+    print(countdown(3))
+    print(moved(start, 10))
+    print(start)
+}
+```
+
+```output
+3
+Point { x: 11, y: 2 }
+Point { x: 1, y: 2 }
+```
+
 ## Closures
 
 `fn(x) => x * 2` and `fn(x) { ... }` are values with function types. A closure captures variables

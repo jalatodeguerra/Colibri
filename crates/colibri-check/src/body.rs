@@ -617,6 +617,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             had_errors,
             &self.ck.host_typed,
             self.ck.facts.as_mut(),
+            param_count as usize,
         );
         let ret = self.infer.finalize(&ret).0;
         self.finish_closures(&mut diags, had_errors);

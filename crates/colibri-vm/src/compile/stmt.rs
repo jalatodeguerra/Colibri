@@ -31,7 +31,11 @@ impl FnCompiler<'_> {
     pub(super) fn function(&mut self) {
         let body = self.body;
         let span = body.span;
-        // A parameter that is captured and assigned lives in a cell, made on entry.
+        // A parameter that is captured and assigned lives in a cell, made on entry. The cell
+        // took the caller's value out of the register, so the cell is the callee's to drop on
+        // the way out (and on a panic, through the unwind table); the caller then drops an
+        // empty register. Without that the cell would stay in the caller's argument register,
+        // which it treats as a plain value of the argument's type (a scalar for an `int`).
         for (i, local) in body
             .locals
             .iter()
@@ -41,6 +45,7 @@ impl FnCompiler<'_> {
             if local.storage == Storage::Cell {
                 let r = i as Reg;
                 self.emit(Op::NewCell { l: r, s: r }, span);
+                self.push_item(Item::Reg(r));
             }
         }
         // The captured variables of a closure are installed by its caller and die with the

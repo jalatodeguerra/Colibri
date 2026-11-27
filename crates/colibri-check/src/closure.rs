@@ -427,6 +427,7 @@ impl FnCtx<'_, '_> {
                 had_errors,
                 &self.ck.host_typed,
                 self.ck.facts.as_mut(),
+                d.param_count as usize,
             );
             let ret = self.infer.finalize(&d.ret).0;
             let params: Vec<ParamInfo<'_>> = d
