@@ -7,29 +7,6 @@ use std::process::Command;
 
 mod common;
 
-/// `cmd.output()`, trying again while the system says the executable is busy.
-///
-/// A test writes an executable (`fs::write`, `fs::copy`) and starts it. Another test thread may
-/// `fork` between the open for writing and its close: the child holds a copy of the write
-/// descriptor until it reaches `exec` (the standard library marks its own descriptors close on
-/// exec, but that only helps once the child gets there), and running the file in that window
-/// fails with `ETXTBSY` ("Text file busy"). The window is a few microseconds, so a short,
-/// bounded wait is enough; anything else, or a window that does not close, is an error.
-fn output_of(cmd: &mut Command) -> std::io::Result<std::process::Output> {
-    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        match cmd.output() {
-            Err(e)
-                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
-                    && std::time::Instant::now() < give_up =>
-            {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            other => return other,
-        }
-    }
-}
-
 struct Out {
     stdout: String,
     stderr: String,
@@ -77,7 +54,7 @@ impl Dir {
         git_env(&mut cmd, &self.path("gitconfig"))
             .current_dir(&self.0)
             .env("COLIBRI_HOME", self.path("home"));
-        let out = output_of(&mut cmd).expect("the program runs");
+        let out = common::output_of(&mut cmd).expect("the program runs");
         Out {
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -326,7 +303,7 @@ fn the_output_never_replaces_the_running_tool() {
         .arg(&tool)
         .current_dir(&dir.0)
         .env("COLIBRI_HOME", dir.path("home"));
-    let out = output_of(&mut cmd).unwrap();
+    let out = common::output_of(&mut cmd).unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("running `colibri`"),
@@ -334,7 +311,7 @@ fn the_output_never_replaces_the_running_tool() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(fs::metadata(&tool).unwrap().len(), before);
-    let version = output_of(Command::new(&tool).arg("--version")).unwrap();
+    let version = common::output_of(Command::new(&tool).arg("--version")).unwrap();
     assert!(String::from_utf8_lossy(&version.stdout).starts_with("colibri "));
 }
 
@@ -560,7 +537,7 @@ fn a_git_dependency_is_inside_the_built_program() {
         .env("XDG_CACHE_HOME", dir.path("nowhere"))
         .env("LOCALAPPDATA", dir.path("nowhere"))
         .current_dir(&dir.0);
-    let out = output_of(&mut cmd).unwrap();
+    let out = common::output_of(&mut cmd).unwrap();
     let built = Out {
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),

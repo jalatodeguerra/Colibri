@@ -124,7 +124,8 @@ test "a control character in a name is refused" {
 test "repeated fields are kept as separate lines" {
     let h = common.accepted(fields(["Set-Cookie: a=1", "Set-Cookie: b=2"]))
     assert_eq(h.headers.get_all("set-cookie"), ["a=1", "b=2"])
-    assert_eq(h.headers.get("set-cookie"), some("a=1, b=2"))
+    // A cookie is not a list: its values are joined with a newline, not a comma.
+    assert_eq(h.headers.get("set-cookie"), some("a=1\nb=2"))
 }
 
 test "an empty line ends the head, and the lines after it are not read" {
