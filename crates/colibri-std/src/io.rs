@@ -71,7 +71,7 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
             write_stderr(cx, &format!("{text}\n"));
         }),
     )?;
-    // The next line without its line ending, or `none` at the end of the input.
+    // The next line without its line ending (one "\n" or "\r\n"), or `none` at the end of the input.
     needs(
         Cap::Os,
         m.register_fn_named("read_line", [], |cx: &mut Ctx| {
@@ -80,8 +80,13 @@ pub(crate) fn register(vm: &mut Vm) -> Result<(), Error> {
                 if input.read_line(&mut line)? == 0 {
                     return Ok(None);
                 }
-                while line.ends_with(['\n', '\r']) {
+                // Exactly one line ending: "\n" or "\r\n". A "\r" that is not part of one (an
+                // extra one before it, or one at the end of the input) belongs to the line.
+                if line.ends_with('\n') {
                     line.pop();
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
                 }
                 Ok(Some(line))
             })
