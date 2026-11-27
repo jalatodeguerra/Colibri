@@ -107,7 +107,7 @@ fn text(bytes: Vec<u8>) -> String {
 /// The command, with the environment of this program: the process's own (or the fixed one the
 /// `Vm` was built with, and nothing of the host's) plus whatever
 /// `os.set_env` changed, then the options' own variables on top. A fixed environment on Windows
-/// still gets `SystemRoot` and `windir` from the host (see [`system_variables`]).
+/// still gets the few system variables from the host (see [`system_variables`]).
 ///
 /// `raw` is text appended to the command line exactly as it is, after the arguments, with no
 /// quoting; only `shell` uses it, and only on Windows (elsewhere it is always `None`).
@@ -155,16 +155,18 @@ fn command(
     cmd
 }
 
-/// The variables Windows programs cannot start without, which a fixed environment gets from the
-/// host anyway: `SystemRoot` (Winsock and many programs fail to initialise without it) and
-/// `windir`. A variable the fixed environment sets itself wins (names compare without regard
-/// to case on Windows). `host` reads the host's environment.
+/// The variables Windows programs cannot start or find each other without, which a fixed
+/// environment gets from the host anyway: `SystemRoot` (Winsock and many programs fail to
+/// initialise without it), `windir`, `ComSpec`, and `PATH` and `PATHEXT` (Windows has no default
+/// search path, so `cmd` would find not even `findstr`; on Unix the C library's default path
+/// covers that). A variable the fixed environment sets itself wins (names compare without
+/// regard to case on Windows). `host` reads the host's environment.
 #[cfg(any(windows, test))]
 fn system_variables(
     fixed: &BTreeMap<String, String>,
     host: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Vec<(&'static str, std::ffi::OsString)> {
-    ["SystemRoot", "windir"]
+    ["SystemRoot", "windir", "ComSpec", "PATH", "PATHEXT"]
         .into_iter()
         .filter(|name| !fixed.keys().any(|k| k.eq_ignore_ascii_case(name)))
         .filter_map(|name| host(name).map(|value| (name, value)))
@@ -624,14 +626,24 @@ mod tests {
             system_variables(&fixed, host),
             [
                 ("SystemRoot", "host-SystemRoot".into()),
-                ("windir", "host-windir".into())
+                ("windir", "host-windir".into()),
+                ("ComSpec", "host-ComSpec".into()),
+                ("PATH", "host-PATH".into()),
+                ("PATHEXT", "host-PATHEXT".into())
             ]
         );
         // Set by the fixed environment (in any case), so the host's is not passed on.
-        let fixed = BTreeMap::from([("SYSTEMROOT".to_string(), "mine".to_string())]);
+        let fixed = BTreeMap::from([
+            ("SYSTEMROOT".to_string(), "mine".to_string()),
+            ("Path".to_string(), "mine".to_string()),
+        ]);
         assert_eq!(
             system_variables(&fixed, host),
-            [("windir", "host-windir".into())]
+            [
+                ("windir", "host-windir".into()),
+                ("ComSpec", "host-ComSpec".into()),
+                ("PATHEXT", "host-PATHEXT".into())
+            ]
         );
         // Not in the host's environment either: nothing to pass.
         assert!(system_variables(&BTreeMap::new(), |_| None).is_empty());

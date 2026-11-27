@@ -222,8 +222,10 @@ pub enum EnvSource {
     #[default]
     Process,
     /// Exactly these variables, whatever the process has. A child process (`process.run`) gets
-    /// them and nothing of the host's, except that on Windows `SystemRoot` and `windir` are
-    /// passed on unless set here: without them Winsock and many programs do not start.
+    /// them and nothing of the host's, except that on Windows `SystemRoot`, `windir`, `ComSpec`,
+    /// `PATH` and `PATHEXT` are passed on unless set here: without them Winsock and many programs
+    /// do not start, and `cmd` finds no program (on Unix a child without `PATH` still finds
+    /// `sh`, `grep` and the like through the system's default search path).
     Fixed(BTreeMap<String, String>),
 }
 
