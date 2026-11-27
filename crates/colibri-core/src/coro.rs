@@ -504,7 +504,7 @@ pub(crate) trait SchedInternal: Engine {
         for i in 0..count {
             let s = &mut self.core_mut().sched;
             let e = &s.entries[i];
-            if e.state != State::Suspended || e.ticked == s.frame {
+            if e.state != State::Suspended || e.ticked == s.frame || e.id < s.floor {
                 continue;
             }
             let due = match &e.wake {

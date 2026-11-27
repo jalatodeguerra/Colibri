@@ -604,3 +604,54 @@ fn main() {
         );
     }
 }
+
+#[test]
+fn a_task_run_inline_in_a_coroutine_can_join_a_coroutine_of_its_own() {
+    // `waiter` is a coroutine and joins `b`, which runs inline on a pool of one thread. `b` starts
+    // a coroutine and joins it: it is the main fiber of its own scope, as on a thread of its own,
+    // though the scheduler is busy with the tick that runs `waiter`.
+    let source = r#"
+fn work() -> int {
+    wait(0.01)
+    return 5
+}
+
+fn b() -> int {
+    let c = go work()
+    return c.join()
+}
+
+class Holder {
+    v: int
+}
+
+fn waiter(h: Holder) {
+    let t = task.run(b)
+    let mut k = 0
+    for i in 0..300000 {
+        k += 1
+    }
+    h.v = t.join().expect("b")
+}
+
+fn outer() -> int {
+    let h = Holder { v: 0 }
+    let w = go waiter(h)
+    w.join()
+    return h.v
+}
+
+fn main() {
+    print("outer {task.run(outer).join()}")
+}
+"#;
+    for workers in [1, 3] {
+        for _ in 0..3 {
+            assert_eq!(
+                run_on(workers, None, source),
+                "outer ok(5)\n",
+                "{workers} workers"
+            );
+        }
+    }
+}

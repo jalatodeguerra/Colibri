@@ -363,6 +363,7 @@ impl Shared {
                 closure,
                 completer,
                 serial: job.serial,
+                hash: job.hash,
             }),
             _ => None,
         }
@@ -686,7 +687,17 @@ impl TaskSpawner for WorkerLaunch {
     }
 
     fn steal(&self, key: u64) -> Option<StolenTask> {
-        self.shared.steal(key)
+        let stolen = self.shared.steal(key)?;
+        // One program per pool: a job of another program would run on an isolate built for this
+        // one.
+        debug_assert!(
+            self.now
+                .borrow()
+                .as_ref()
+                .is_none_or(|(_, hash, _)| *hash == stolen.hash),
+            "a task of another program was taken over"
+        );
+        Some(stolen)
     }
 
     /// The tasks that the task `serial` starts are numbered from it, and the counter of the task

@@ -76,7 +76,7 @@ impl Machine {
         let request = SpawnRequest {
             closure,
             budget: self.core.budget.allotment,
-            account: (self.core.mem.tag(), self.core.memory_limit()),
+            account: (self.core.mem.root_tag(), self.core.memory_limit()),
         };
         match self.core.start_task(&*spawner, request, &name) {
             Ok(handle) => Ok(handle),
@@ -165,6 +165,7 @@ impl Machine {
             closure,
             completer,
             serial,
+            hash: _,
         } = stolen;
         let budget = self.native_stack_budget;
         let rebuilt = on_walk_stack(WalkRole::Receiver, budget, |guard| {

@@ -69,6 +69,7 @@ impl MemLimit {
 pub struct InlineEntry {
     budget: Budget,
     memory: SavedMemState,
+    sched: crate::sched::SchedScope,
 }
 
 /// The memory state of the entry a fresh coroutine resumption interrupted (see
@@ -510,13 +511,19 @@ impl Core {
         let fresh = Budget::fresh(allotment, slice, self.safepoints.progress);
         let budget = std::mem::replace(&mut self.budget, fresh);
         let memory = self.begin_resumption_memory();
-        InlineEntry { budget, memory }
+        let sched = self.sched.enter_scope();
+        InlineEntry {
+            budget,
+            memory,
+            sched,
+        }
     }
 
     /// The inline entry is over: the joiner's budget and memory state come back. Gives the steps
     /// the entry used.
     pub fn end_inline_entry(&mut self, saved: InlineEntry) -> u64 {
         let steps = self.budget.used();
+        self.sched.leave_scope(saved.sched);
         self.end_resumption_memory(saved.memory);
         self.close_budget();
         self.budget = saved.budget;

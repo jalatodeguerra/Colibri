@@ -584,6 +584,19 @@ impl MemAccount {
         self.tag != 0
     }
 
+    /// The tag of the account that counts the whole `Vm`: this one's parent when it is a task's
+    /// account, else this one. A task is submitted with it, so that tasks that tasks start count
+    /// into the `Vm`'s total and not into a slot that closes when their parent ends.
+    pub fn root_tag(&self) -> u64 {
+        match lookup(self.tag) {
+            Some(slot) => match slot.parent.load(Ordering::Relaxed) {
+                0 => self.tag,
+                root => root,
+            },
+            None => self.tag,
+        }
+    }
+
     /// The tag recorded in the prefix of what is allocated under this account (0 when inert).
     pub fn tag(&self) -> u64 {
         self.tag

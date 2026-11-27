@@ -213,3 +213,55 @@ fn main() {
         assert_eq!(out.contents(), "2000000000\n0\n", "{workers} workers");
     }
 }
+
+const JOINER_COROUTINES: &str = r#"
+import rand
+
+fn b() -> int {
+    wait(0.05)
+    return 1
+}
+
+fn late() {
+    wait(0.05)
+    print("late ran")
+}
+
+fn tick() {
+    wait(0.005)
+    print("tick draws {rand.int(0, 1000000)}")
+    go late()
+}
+
+fn outer() -> int {
+    go tick()
+    let t = task.run(b)
+    let mut k = 0
+    for i in 0..300000 {
+        k += 1
+    }
+    let v = t.join().expect("b")
+    wait(0.2)
+    return v
+}
+
+fn main() {
+    print("outer {task.run(outer).join().expect("o")}")
+}
+"#;
+
+#[test]
+fn the_coroutines_of_a_joiner_do_not_run_inside_the_task_it_runs_inline() {
+    // `tick` is a coroutine of `outer`: it draws from the generator of `outer`, and the coroutine
+    // it starts is not cancelled with `b`, whether `b` ran on a thread or inline in the join.
+    // The reference is the order that every pool must give.
+    let on_thread = run_program(3, Some(42), JOINER_COROUTINES);
+    assert!(on_thread.contains("late ran"), "{on_thread}");
+    assert!(on_thread.ends_with("outer 1\n"), "{on_thread}");
+    for workers in [1, 3] {
+        for _ in 0..3 {
+            let text = run_program(workers, Some(42), JOINER_COROUTINES);
+            assert_eq!(text, on_thread, "{workers} workers");
+        }
+    }
+}

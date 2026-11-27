@@ -131,6 +131,15 @@ impl Hasher for IdHasher {
 /// A table keyed by scheduler ids.
 pub(crate) type IdMap<V> = HashMap<u64, V, BuildHasherDefault<IdHasher>>;
 
+/// What a joiner's scheduler was doing when a task began running inline in its join.
+pub(crate) struct SchedScope {
+    floor: u64,
+    in_tick: bool,
+    running: Vec<u64>,
+    failures: Vec<(u64, Box<PanicInfo>)>,
+    signaled: Vec<u64>,
+}
+
 /// The per-`Core` coroutine scheduler.
 #[doc(hidden)]
 pub struct Scheduler {
@@ -141,6 +150,9 @@ pub struct Scheduler {
     /// How many ticks have run.
     pub(crate) frame: u64,
     pub(crate) in_tick: bool,
+    /// Ticks and the event loop see only the coroutines with an id of `floor` or more: a task
+    /// that its joiner runs inline has the scheduler to itself (see [`Scheduler::enter_scope`]).
+    pub(crate) floor: u64,
     /// The coroutines whose stacks are active, outermost first.
     pub(crate) running: Vec<u64>,
     pub(crate) failures: Vec<(u64, Box<PanicInfo>)>,
@@ -175,6 +187,7 @@ impl Scheduler {
             time: 0.0,
             frame: 0,
             in_tick: false,
+            floor: 0,
             running: Vec::new(),
             failures: Vec::new(),
             finished: 0,
@@ -191,6 +204,28 @@ impl Scheduler {
             resumptions: 0,
             ext: Externals::new(),
         }
+    }
+
+    /// A scope of its own for a task that runs inline in a coroutine or in the main fiber: only
+    /// coroutines started from now on are ticked, waited for and driven; the ones that exist
+    /// wait (their timers go on, they do not run), and the task is the main fiber of the scope,
+    /// whatever the joiner was doing. [`Scheduler::leave_scope`] gives the joiner's view back.
+    pub(crate) fn enter_scope(&mut self) -> SchedScope {
+        SchedScope {
+            floor: std::mem::replace(&mut self.floor, self.next_id),
+            in_tick: std::mem::replace(&mut self.in_tick, false),
+            running: std::mem::take(&mut self.running),
+            failures: std::mem::take(&mut self.failures),
+            signaled: std::mem::take(&mut self.signaled),
+        }
+    }
+
+    pub(crate) fn leave_scope(&mut self, saved: SchedScope) {
+        self.floor = saved.floor;
+        self.in_tick = saved.in_tick;
+        self.running = saved.running;
+        self.failures = saved.failures;
+        self.signaled = saved.signaled;
     }
 
     pub(crate) fn find(&self, id: u64) -> Option<usize> {
@@ -520,7 +555,7 @@ impl Scheduler {
         let time = self.time;
         let mut any = false;
         for e in &self.entries {
-            if e.state == State::Finished {
+            if e.state == State::Finished || e.id < self.floor {
                 continue;
             }
             // A coroutine waiting for an event (a signal, the end of a coroutine or of a group)

@@ -128,6 +128,9 @@ pub struct StolenTask {
     pub completer: Completer<TaskOutcome>,
     /// What names the task for what is derived per task (see [`TaskScope`]).
     pub serial: u64,
+    /// The hash of the program the task was submitted for (the isolate that runs it inline must
+    /// have been built for the same one).
+    pub hash: u64,
 }
 
 /// What runs around a task so that it does not depend on which thread runs it or what that thread
