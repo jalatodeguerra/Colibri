@@ -57,6 +57,12 @@ pub trait Sched: Engine {
             );
             return Err(self.panic(fiber, span, message));
         };
+        if self.core().mutex_held().is_some() {
+            let message = format!(
+                "`{what}` cannot pause inside the callback of `Mutex.with`: the lock would stay held while the coroutine is suspended"
+            );
+            return Err(self.panic(fiber, span, message));
+        }
         if state.host_depth > 0 {
             let message = format!(
                 "`{what}` cannot pause inside a host function's callback: the host's stack frame cannot be suspended"
@@ -641,7 +647,9 @@ pub(crate) trait SchedInternal: Engine {
     /// The checks of a wait on the main fiber, as panics with a message that says why.
     fn check_drive(&mut self, fiber: &mut Self::Fiber, span: Span, what: &str) -> Eval<()> {
         let core = self.core();
-        let why = if Self::fiber_state(fiber).host_depth > 0 {
+        let why = if core.mutex_held().is_some() {
+            "inside the callback of `Mutex.with` (the lock would stay held while the loop runs)"
+        } else if Self::fiber_state(fiber).host_depth > 0 {
             "inside a host function's callback"
         } else if core.hook_depth > 0 {
             "inside a `Drop` hook"

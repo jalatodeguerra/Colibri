@@ -171,6 +171,7 @@ impl FnCtx<'_, '_> {
                     "BytesBuilder" => Some(self.check_bytes_builder_new(args, span)),
                     "Channel" => Some(self.check_channel_new(None, args, expected, span)),
                     "Shared" => Some(self.check_shared_new(args, expected, span)),
+                    "Mutex" => Some(self.check_mutex_new(args, expected, span)),
                     "CoGroup" | "Signal" => {
                         Some(self.check_group_or_signal_new(&id.name, args, span))
                     }
@@ -378,6 +379,44 @@ impl FnCtx<'_, '_> {
                 args: vec![hir::Arg::Value(value)],
             })),
             Ty::Adt(crate::types::SHARED_TYPE, vec![ty]),
+            span,
+        )
+    }
+
+    /// `Mutex(x)` (DESIGN §14.1): a value that threads change one at a time, with `get`, `set` and
+    /// `with`. `x` is copied in, as `Shared(x)` copies.
+    fn check_mutex_new(&mut self, args: &[ast::Arg], expected: Option<&Ty>, span: Span) -> Expr {
+        let [arg] = args else {
+            self.check_args_loosely(args);
+            self.ck.report(
+                Diagnostic::error("`Mutex` takes exactly one value", span)
+                    .with_hint("write `Mutex(0)` or `Mutex(Counts { hits: 0 })`"),
+            );
+            return self.error_expr(span);
+        };
+        if arg.name.is_some() {
+            self.check_args_loosely(args);
+            self.ck.report(Diagnostic::error(
+                "`Mutex` takes its value without a name",
+                span,
+            ));
+            return self.error_expr(span);
+        }
+        let want = match expected.map(|t| self.infer.shallow(t)) {
+            Some(Ty::Adt(crate::types::MUTEX_TYPE, a)) if a.len() == 1 => Some(a[0].clone()),
+            _ => None,
+        };
+        let value = self.check_expr(&arg.value, want.as_ref());
+        self.note_thread_boundary(&value);
+        let ty = value.ty.clone();
+        self.require_sendable(&ty, SendOrigin::MutexValue, arg.value.span);
+        self.mk(
+            hir::ExprKind::Call(Box::new(hir::Call {
+                callee: hir::Callee::Intrinsic(hir::Intrinsic::NewMutex),
+                type_args: Vec::new(),
+                args: vec![hir::Arg::Value(value)],
+            })),
+            Ty::Adt(crate::types::MUTEX_TYPE, vec![ty]),
             span,
         )
     }

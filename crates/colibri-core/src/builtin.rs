@@ -249,6 +249,11 @@ pub trait Builtins: Engine {
             // `get` gives the isolate its own frozen copy, rebuilt on a walk stack, which only an
             // engine can map.
             Builtin::SharedGet => return self.shared_get(fiber, &recv, span),
+            // The operations of a `Mutex` copy a value in or out on a walk stack, and `with` calls
+            // the program's code under the lock: the engine's.
+            Builtin::MutexGet | Builtin::MutexSet | Builtin::MutexWith => {
+                return self.mutex_builtin(fiber, op, args, span);
+            }
             // These pause the running coroutine: the VM compiles them to `Join`.
             Builtin::CoroutineJoin
             | Builtin::CoroutineJoinResult

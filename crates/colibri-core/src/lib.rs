@@ -40,6 +40,7 @@ pub mod release;
 pub(crate) mod results;
 pub mod safepoint;
 pub mod sched;
+pub mod mutex;
 pub mod shared;
 pub(crate) mod show;
 pub(crate) mod state;

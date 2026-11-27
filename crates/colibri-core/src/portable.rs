@@ -380,6 +380,9 @@ impl SendEnv for Core {
         if let Some(chan) = self.chan_of(v) {
             return Some(Arc::new(crate::chan::ChanHandle(chan)));
         }
+        if let Some(mutex) = self.mutex_of(v) {
+            return Some(Arc::new(crate::mutex::MutexHandle(mutex)));
+        }
         Some(Arc::new(crate::shared::SharedHandle(self.shared_of(v)?)))
     }
 
@@ -1436,6 +1439,8 @@ impl Rebuild<'_> {
                         self.core.chan_died(id);
                     } else if let Some(id) = crate::shared::shared_id_of(o) {
                         self.core.shared_died(id);
+                    } else if let Some(id) = crate::mutex::mutex_id_of(o) {
+                        self.core.mutex_died(id);
                     }
                     taken.extend(o.take_fields());
                 }
@@ -1454,7 +1459,7 @@ impl Rebuild<'_> {
 }
 
 mod frozen;
-pub use frozen::from_portable_frozen;
+pub use frozen::{from_portable_frozen, from_portable_ref};
 
 #[cfg(test)]
 mod tests;

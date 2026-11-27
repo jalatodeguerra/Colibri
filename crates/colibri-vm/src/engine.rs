@@ -43,6 +43,20 @@ impl Machine {
         args: Vec<Value>,
         closure: Option<&colibri_core::closure::ClosureObj>,
     ) -> (Eval, Option<Value>) {
+        self.enter_taking(fiber, chunk, args, closure, false)
+    }
+
+    /// [`Machine::enter_with`], optionally giving back the final value of the first parameter
+    /// like a `mut self` method does (`take_first`), whatever the function is. `Mutex.with` uses
+    /// it for the parameter its callback changes.
+    pub(crate) fn enter_taking(
+        &mut self,
+        fiber: &mut VmFiber,
+        chunk: std::rc::Rc<crate::bytecode::Chunk>,
+        args: Vec<Value>,
+        closure: Option<&colibri_core::closure::ClosureObj>,
+        take_first: bool,
+    ) -> (Eval, Option<Value>) {
         let body = std::rc::Rc::clone(&chunk.body);
         let nparams = chunk.nparams as usize;
         let base = match self.push_entry(fiber, chunk, args, closure) {
@@ -57,7 +71,48 @@ impl Machine {
             "a call left a mutation guard held"
         );
         fiber.holds.truncate(holds_mark);
-        self.finish_entry(fiber, base, nparams, body.mutates_self, result)
+        self.finish_entry(
+            fiber,
+            base,
+            nparams,
+            body.mutates_self || take_first,
+            result,
+        )
+    }
+
+    /// Calls the function value `f` with `args`, and gives back the final value of its first
+    /// parameter with the result, on every path (a function that changes its `mut` parameter
+    /// leaves the change there).
+    pub(crate) fn call_taking_first(
+        &mut self,
+        fiber: &mut VmFiber,
+        f: &Value,
+        args: Vec<Value>,
+        span: Span,
+    ) -> (Eval, Option<Value>) {
+        Self::note_position(fiber, span);
+        match f {
+            Value::Fn(id, _) => match self.chunk_of(*id) {
+                Some(Ok(chunk)) => self.enter_taking(fiber, chunk, args, None, true),
+                _ => {
+                    self.release_all(args);
+                    (Err(self.internal(fiber, span, "unknown function")), None)
+                }
+            },
+            Value::Closure(c) => match self.closure_chunk(c) {
+                Ok(chunk) => self.enter_taking(fiber, chunk, args, Some(c), true),
+                Err(msg) => {
+                    self.release_all(args);
+                    let ctl = self.panic(fiber, span, crate::calls::closure_message(&msg));
+                    (Err(ctl), None)
+                }
+            },
+            _ => {
+                self.release_all(args);
+                let ctl = self.internal(fiber, span, "a call of something that is not a function");
+                (Err(ctl), None)
+            }
+        }
     }
 
     /// Pushes the `NativeEntry` frame of `chunk` over `args`, which it owns, on top of every
@@ -358,6 +413,16 @@ impl Engine for Machine {
         span: Span,
     ) -> Eval {
         self.channel_ops(fiber, op, args, span)
+    }
+
+    fn mutex_builtin(
+        &mut self,
+        fiber: &mut VmFiber,
+        op: colibri_check::hir::Builtin,
+        args: &mut [Value],
+        span: Span,
+    ) -> Eval {
+        self.mutex_ops(fiber, op, args, span)
     }
 
     fn shared_get(&mut self, fiber: &mut VmFiber, recv: &Value, span: Span) -> Eval {

@@ -106,6 +106,7 @@ impl Core {
             || obj.ty() == colibri_check::types::TASK_TYPE
             || obj.ty() == colibri_check::types::CHANNEL_TYPE
             || obj.ty() == colibri_check::types::SHARED_TYPE
+            || obj.ty() == colibri_check::types::MUTEX_TYPE
             || obj.ty() == colibri_check::types::STR_BUILDER_TYPE
         {
             return;
@@ -217,6 +218,9 @@ pub trait Release: Engine {
                     self.core_mut().shared_died(id);
                     let dead = self.core_mut().sweep_shared();
                     self.release_all(dead);
+                } else if let Some(id) = crate::mutex::mutex_id_of(&rc) {
+                    // A `Mutex` handle dies: the value lives on while another handle holds it.
+                    self.core_mut().mutex_died(id);
                 }
                 // The `Drop` hook runs first; if it stores the object somewhere, the object
                 // lives on and dies (without a second hook) when that reference does.
@@ -549,6 +553,16 @@ mod tests {
         ) -> Eval {
             unreachable!("no channel is used in these tests")
         }
+        fn mutex_builtin(
+            &mut self,
+            _: &mut FiberState,
+            _: colibri_check::hir::Builtin,
+            _: &mut [Value],
+            _: Span,
+        ) -> Eval {
+            unreachable!()
+        }
+
         fn shared_get(&mut self, _: &mut FiberState, _: &Value, _: Span) -> Eval {
             unreachable!("no shared value is used in these tests")
         }

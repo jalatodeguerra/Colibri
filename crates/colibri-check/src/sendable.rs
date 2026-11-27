@@ -146,6 +146,8 @@ pub(crate) enum SendOrigin {
     ChannelElem,
     /// The value a `Shared` holds.
     SharedValue,
+    /// The value a `Mutex` holds.
+    MutexValue,
     /// A value passed to `send` whose type cannot be sent.
     SentValue,
 }
@@ -522,6 +524,10 @@ impl FnCtx<'_, '_> {
             SendOrigin::SharedValue => (
                 subject_of(bad, "the value of a `Shared`"),
                 "`Shared` keeps a frozen copy that every thread can read",
+            ),
+            SendOrigin::MutexValue => (
+                subject_of(bad, "the value of a `Mutex`"),
+                "`Mutex` keeps a copy that every thread can read and replace",
             ),
             SendOrigin::SentValue => (
                 subject_of(bad, "the value sent"),

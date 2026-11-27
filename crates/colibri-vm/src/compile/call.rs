@@ -859,6 +859,7 @@ impl FnCompiler<'_> {
             | Intrinsic::TaskRun
             | Intrinsic::NewChannel
             | Intrinsic::NewShared
+            | Intrinsic::NewMutex
             | Intrinsic::NewCoGroup
             | Intrinsic::NewSignal => {
                 let d = match dst {

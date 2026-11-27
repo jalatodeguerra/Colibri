@@ -1778,6 +1778,7 @@ impl Machine {
             }
             Intrinsic::NewChannel => self.new_channel(fiber, args, span),
             Intrinsic::NewShared => self.new_shared(fiber, args, span),
+            Intrinsic::NewMutex => self.new_mutex(fiber, args, span),
             Intrinsic::HostAlive => Ok(Value::Bool(match &fiber.regs[args.start] {
                 Value::Host(r) => self.core.host_alive(r.index, r.generation),
                 _ => false,

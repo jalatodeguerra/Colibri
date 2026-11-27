@@ -119,7 +119,18 @@ impl Core {
     /// holds it). The copies of graphs that are gone are freed by [`Core::sweep_shared`], which
     /// the engine calls next because it can release them.
     pub fn shared_died(&mut self, id: u64) {
-        self.shareds.entries.remove(&id);
+        let Some(inner) = self.shareds.entries.remove(&id) else {
+            return;
+        };
+        // When this was the last handle anywhere, the copies that other isolates cached are
+        // garbage, and an idle worker does not look until its next task: tell the pool.
+        let graph = Arc::downgrade(&inner);
+        drop(inner);
+        if graph.strong_count() == 0
+            && let Some(spawner) = self.task_spawner()
+        {
+            spawner.shared_gone();
+        }
     }
 
     /// The frozen copy this isolate made of `inner`, if it has one.
