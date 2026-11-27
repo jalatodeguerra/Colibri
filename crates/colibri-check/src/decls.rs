@@ -936,7 +936,7 @@ impl<'a> Checker<'a> {
         let contains = def
             .fields()
             .iter()
-            .any(|f| self.contains_by_value(&f.ty, id, &mut seen));
+            .any(|f| self.contains_by_value(&f.ty, id, 0, &mut seen));
         if contains {
             let (name, span) = (def.name.clone(), def.span);
             self.report(
@@ -950,21 +950,23 @@ impl<'a> Checker<'a> {
     /// Whether a value of `ty` holds a struct of `target` inside itself, by value: directly, in
     /// a tuple, or in the fields of a struct. A generic struct is looked at with its arguments
     /// filled in (`Wrap[Bad]` has the field `x: Bad`), so `struct Bad { w: Wrap[Bad] }` counts.
-    fn contains_by_value(&self, ty: &Ty, target: TypeId, seen: &mut Vec<Ty>) -> bool {
+    fn contains_by_value(&self, ty: &Ty, target: TypeId, depth: usize, seen: &mut Vec<Ty>) -> bool {
         // Instantiating a generic struct can keep producing new types (`P[T]` holding `Q[P[T]]`
-        // holding `P[Q[P[T]]]` ...); no sensible declaration nests this deep.
+        // holding `P[Q[P[T]]]` ...); no sensible declaration nests this deep. This counts how
+        // deep the walk is, not how many types it has seen: a struct with many fields is wide,
+        // not deep.
         const DEPTH: usize = 32;
         match ty {
             Ty::Tuple(items) => items
                 .iter()
-                .any(|t| self.contains_by_value(t, target, seen)),
+                .any(|t| self.contains_by_value(t, target, depth, seen)),
             Ty::Adt(id, _) if *id == target => true,
             // A class is held by reference, so it never makes a struct infinite.
             Ty::Adt(id, _) if self.types[id.0 as usize].is_class() => false,
             Ty::Adt(id, args) => {
                 // The same instantiation twice is either a cycle that does not pass through
                 // `target` or work already done.
-                if seen.contains(ty) || seen.len() >= DEPTH {
+                if seen.contains(ty) || depth >= DEPTH {
                     return false;
                 }
                 seen.push(ty.clone());
@@ -975,7 +977,7 @@ impl<'a> Checker<'a> {
                 // make a wide generic declaration cost exponentially.
                 def.fields()
                     .iter()
-                    .any(|f| self.contains_by_value(&f.ty.subst(&map), target, seen))
+                    .any(|f| self.contains_by_value(&f.ty.subst(&map), target, depth + 1, seen))
             }
             _ => false,
         }
