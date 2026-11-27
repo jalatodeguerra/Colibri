@@ -323,8 +323,7 @@ fn lower(paths: &Paths, ident: &Ident, ty: &Type) -> Result<Lowered> {
     };
     let elem = &*r.elem;
     if r.mutability.is_some() {
-        if matches!(elem, Type::Slice(_))
-            || matches!(elem, Type::Path(p) if p.path.is_ident("str"))
+        if matches!(elem, Type::Slice(_)) || matches!(elem, Type::Path(p) if p.path.is_ident("str"))
         {
             return Err(Error::new_spanned(
                 ty,
@@ -347,16 +346,16 @@ fn lower(paths: &Paths, ident: &Ident, ty: &Type) -> Result<Lowered> {
 
 /// A reference result cannot be converted: the script's value would have to borrow from the host.
 fn check_output(sig: &Signature) -> Result<()> {
-    if let syn::ReturnType::Type(_, ty) = &sig.output {
-        if matches!(&**ty, Type::Reference(_)) {
-            return Err(Error::new_spanned(
-                ty,
-                format!(
-                    "`{}` returns a reference, which a script cannot hold: return an owned value (a copy, a `String`, a `Vec`, or a `Handle`)",
-                    sig.ident
-                ),
-            ));
-        }
+    if let syn::ReturnType::Type(_, ty) = &sig.output
+        && matches!(&**ty, Type::Reference(_))
+    {
+        return Err(Error::new_spanned(
+            ty,
+            format!(
+                "`{}` returns a reference, which a script cannot hold: return an owned value (a copy, a `String`, a `Vec`, or a `Handle`)",
+                sig.ident
+            ),
+        ));
     }
     Ok(())
 }
@@ -556,7 +555,10 @@ fn export_fn(
     let vis = &item.vis;
     let names = e.param_names();
     let module = ident;
-    let has_refs = e.params.iter().any(|(_, t)| matches!(t, Type::Reference(_)));
+    let has_refs = e
+        .params
+        .iter()
+        .any(|(_, t)| matches!(t, Type::Reference(_)));
     // A function with reference parameters is called through a closure that owns them.
     let (imports, callee) = if has_refs {
         let lowered = e
@@ -565,12 +567,15 @@ fn export_fn(
             .map(|(n, t)| lower(paths, n, t))
             .collect::<Result<Vec<_>>>()?;
         let pats: Vec<&TokenStream> = lowered.iter().map(|l| &l.pat).collect();
-    let types: Vec<&TokenStream> = lowered.iter().map(|l| &l.ty).collect();
+        let types: Vec<&TokenStream> = lowered.iter().map(|l| &l.ty).collect();
         let args: Vec<&TokenStream> = lowered.iter().map(|l| &l.arg).collect();
         let ctx_param = e.ctx.as_ref().map(|(n, t)| quote!(#n: #t,));
         let ctx_arg = e.ctx.as_ref().map(|(n, _)| quote!(#n,));
         (
-            quote!(#[allow(unused_imports)] use super::*;),
+            quote!(
+                #[allow(unused_imports)]
+                use super::*;
+            ),
             quote!(|#ctx_param #(#pats: #types),*| super::#ident(#ctx_arg #(#args),*)),
         )
     } else {
@@ -725,7 +730,10 @@ mod tests {
     #[test]
     fn a_str_parameter_is_a_string_local_that_is_borrowed() {
         let out = run("", "impl W { pub fn say(&self, text: &str) {} }");
-        assert!(out.contains("text : < str as :: colibri_runtime :: __private :: RefParam > :: Owned"), "{out}");
+        assert!(
+            out.contains("text : < str as :: colibri_runtime :: __private :: RefParam > :: Owned"),
+            "{out}"
+        );
         assert!(out.contains("Self :: say (this , & text)"), "{out}");
         assert!(out.contains("[\"text\"]"), "{out}");
         assert!(!out.contains("compile_error"), "{out}");
@@ -733,8 +741,14 @@ mod tests {
 
     #[test]
     fn a_slice_parameter_is_a_vec_local() {
-        let out = run("", "impl W { pub fn sum(&self, xs: &[f32]) -> f32 { 0.0 } }");
-        assert!(out.contains("< [f32] as :: colibri_runtime :: __private :: RefParam > :: Owned"), "{out}");
+        let out = run(
+            "",
+            "impl W { pub fn sum(&self, xs: &[f32]) -> f32 { 0.0 } }",
+        );
+        assert!(
+            out.contains("< [f32] as :: colibri_runtime :: __private :: RefParam > :: Owned"),
+            "{out}"
+        );
         assert!(out.contains("Self :: sum (this , & xs)"), "{out}");
     }
 
@@ -744,18 +758,30 @@ mod tests {
             "",
             "impl World { pub fn pos(&self, body: &Body) {} pub fn push(&mut self, body: &mut Body, by: f32) {} }",
         );
-        assert!(out.contains("body : < Body as :: colibri_runtime :: __private :: RefParam > :: Owned"), "{out}");
+        assert!(
+            out.contains("body : < Body as :: colibri_runtime :: __private :: RefParam > :: Owned"),
+            "{out}"
+        );
         assert!(out.contains("Self :: pos (this , & body)"), "{out}");
         assert!(out.contains("mut body : < Body as :: colibri_runtime :: __private :: MutParam > :: Owned , by : f32"), "{out}");
-        assert!(out.contains("Self :: push (this , & mut body , by)"), "{out}");
+        assert!(
+            out.contains("Self :: push (this , & mut body , by)"),
+            "{out}"
+        );
     }
 
     #[test]
     fn a_static_fn_and_a_function_take_references_too() {
         let out = run("", "impl W { pub fn named(name: &str) -> W { todo!() } }");
         assert!(out.contains("Self :: named (& name)"), "{out}");
-        let out = run("", "pub fn join(a: &str, n: i64, b: &mut Body) -> i64 { 0 }");
-        assert!(out.contains("register_exported (vm , \"join\" , [\"a\" , \"n\" , \"b\"] , | a :"), "{out}");
+        let out = run(
+            "",
+            "pub fn join(a: &str, n: i64, b: &mut Body) -> i64 { 0 }",
+        );
+        assert!(
+            out.contains("register_exported (vm , \"join\" , [\"a\" , \"n\" , \"b\"] , | a :"),
+            "{out}"
+        );
         assert!(out.contains("super :: join (& a , n , & mut b)"), "{out}");
         assert!(out.contains("use super :: *"), "{out}");
         // Without references the function itself is registered, as before.

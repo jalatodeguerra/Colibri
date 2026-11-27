@@ -357,10 +357,22 @@ print(w.describe_owned("l", [1.0, 2.5], Vec3 { x: 4.0, y: 0.0, z: 0.0 }))
 fn a_str_parameter_and_a_string_parameter_have_the_same_interface_text() {
     let (vm, _) = engine();
     let text = vm.interface_text();
-    assert!(text.contains("fn shout(text: str, times: int) -> str\n"), "{text}");
-    assert!(text.contains("fn shout_owned(text: str, times: int) -> str\n"), "{text}");
-    assert!(text.contains("fn grow(body: RigidBody, by: f32) -> f32\n"), "{text}");
-    assert!(text.contains("fn merge_into(target: RigidBody, source: RigidBody)\n"), "{text}");
+    assert!(
+        text.contains("fn shout(text: str, times: int) -> str\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("fn shout_owned(text: str, times: int) -> str\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("fn grow(body: RigidBody, by: f32) -> f32\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("fn merge_into(target: RigidBody, source: RigidBody)\n"),
+        "{text}"
+    );
     assert!(
         text.contains("fn describe(self, label: str, weights: List[f32], offset: Vec3) -> str\n"),
         "{text}"
@@ -399,9 +411,7 @@ fn panic_message(r: Result<(), colibri::Error>) -> String {
 #[test]
 fn a_mutable_conflict_is_the_already_in_use_panic() {
     // `&mut` and `&` of one object in one call.
-    let (r, _) = run_main(
-        "fn main() {\nlet a = spawn_body(0.0, 0.0, 0.0)\nmerge_into(a, a)\n}\n",
-    );
+    let (r, _) = run_main("fn main() {\nlet a = spawn_body(0.0, 0.0, 0.0)\nmerge_into(a, a)\n}\n");
     let message = panic_message(r);
     assert!(message.contains("already in use"), "{message}");
     // `&mut self` and `&mut` of the same world.
@@ -410,7 +420,9 @@ fn a_mutable_conflict_is_the_already_in_use_panic() {
     );
     let message = panic_message(r);
     assert!(
-        message.contains("host object `World` is already in use by an enclosing call (`World.swap_with`)"),
+        message.contains(
+            "host object `World` is already in use by an enclosing call (`World.swap_with`)"
+        ),
         "{message}"
     );
     // Two different objects are fine.
