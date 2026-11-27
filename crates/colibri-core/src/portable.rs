@@ -209,6 +209,9 @@ const _: () = {
     const fn assert_send<T: Send>() {}
     assert_send::<Portable>();
     assert_send::<NotSendable>();
+    // A `Shared` keeps one graph that every thread reads at the same time.
+    const fn assert_sync<T: Sync>() {}
+    assert_sync::<Portable>();
 };
 
 impl Portable {
@@ -374,7 +377,10 @@ impl SendEnv for Core {
     }
 
     fn crosses_as_is(&self, v: &Value) -> Option<Arc<dyn CrossesAsIs>> {
-        Some(Arc::new(crate::chan::ChanHandle(self.chan_of(v)?)))
+        if let Some(chan) = self.chan_of(v) {
+            return Some(Arc::new(crate::chan::ChanHandle(chan)));
+        }
+        Some(Arc::new(crate::shared::SharedHandle(self.shared_of(v)?)))
     }
 
     fn type_name(&self, ty: TypeId) -> String {
@@ -1428,6 +1434,8 @@ impl Rebuild<'_> {
                     // A channel handle made for the copy lets go of its channel.
                     if let Some(id) = crate::chan::chan_id_of(o) {
                         self.core.chan_died(id);
+                    } else if let Some(id) = crate::shared::shared_id_of(o) {
+                        self.core.shared_died(id);
                     }
                     taken.extend(o.take_fields());
                 }
@@ -1444,6 +1452,9 @@ impl Rebuild<'_> {
         self.built.clear();
     }
 }
+
+mod frozen;
+pub use frozen::from_portable_frozen;
 
 #[cfg(test)]
 mod tests;

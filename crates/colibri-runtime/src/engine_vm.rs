@@ -279,6 +279,10 @@ impl RuntimeEngine for VmEngine {
         self.machine.release_in_entry(value);
     }
 
+    fn free_dead_shared_copies(&mut self) {
+        self.machine.free_dead_shared_copies();
+    }
+
     fn cancel_all_coroutines(&mut self) {
         self.machine.cancel_all_coroutines();
     }

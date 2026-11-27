@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use colibri_check::hir::ValueProj;
 use colibri_core::ctl::{Ctl, Eval};
+use colibri_core::heap::FROZEN_MESSAGE;
 use colibri_core::prelude::*;
 use colibri_core::value::Value;
 use colibri_syntax::Span;
@@ -128,6 +129,16 @@ impl Machine {
                 }
             }
             Op::PlaceHold { a } => {
+                // The write back that ends a place is unguarded, so a frozen collection must
+                // refuse the place itself: nothing of it can be updated through one.
+                let frozen = match &fiber.regs[r(a)] {
+                    Value::List(l) => l.guard().is_frozen(),
+                    Value::Map(m) => m.guard().is_frozen(),
+                    _ => false,
+                };
+                if frozen {
+                    return Err(self.panic(fiber, span, FROZEN_MESSAGE));
+                }
                 let token = match (site.anchor, &fiber.regs[r(a)]) {
                     (AnchorKind::Elem, Value::List(l)) => l.place_hold(&site.name),
                     (AnchorKind::Entry, Value::Map(m)) => m.place_hold(&site.name),
@@ -260,6 +271,9 @@ impl Machine {
                 .get_mut(g as usize)
                 .and_then(|root| replace_at(root, path, new)),
             AnchorKind::Field(idx) => match &fiber.regs[ra] {
+                Value::Obj(o) if o.is_frozen() => {
+                    return Err(self.panic(fiber, span, FROZEN_MESSAGE));
+                }
                 Value::Obj(o) => o
                     .update_field(usize::from(idx), |root| replace_at(root, path, new))
                     .flatten(),
@@ -649,6 +663,10 @@ impl Machine {
                     return Err(self.internal(fiber, span, "a hold without its name"));
                 };
                 let at = base + usize::from(r);
+                // (As for `PlaceHold`: a `for mut` loop writes its elements back unguarded.)
+                if matches!(&fiber.regs[at], Value::List(l) if l.guard().is_frozen()) {
+                    return Err(self.panic(fiber, span, FROZEN_MESSAGE));
+                }
                 let token = match &fiber.regs[at] {
                     Value::List(l) => {
                         // The slot of an element may be lent only while nobody else can see the

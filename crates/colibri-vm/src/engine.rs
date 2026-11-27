@@ -360,6 +360,10 @@ impl Engine for Machine {
         self.channel_ops(fiber, op, args, span)
     }
 
+    fn shared_get(&mut self, fiber: &mut VmFiber, recv: &Value, span: Span) -> Eval {
+        self.shared_copy(fiber, recv, span)
+    }
+
     fn channel_next(
         &mut self,
         fiber: &mut VmFiber,

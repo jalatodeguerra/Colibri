@@ -40,6 +40,7 @@ pub mod release;
 pub(crate) mod results;
 pub mod safepoint;
 pub mod sched;
+pub mod shared;
 pub(crate) mod show;
 pub(crate) mod state;
 pub(crate) mod strfn;
@@ -47,7 +48,7 @@ pub mod taskrun;
 pub mod value;
 
 #[doc(hidden)]
-pub use builtin::{THREADS_NOT_BUILT, work_of};
+pub use builtin::work_of;
 #[doc(hidden)]
 pub use iter::item_of;
 pub use state::Core;

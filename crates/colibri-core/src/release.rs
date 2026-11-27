@@ -105,6 +105,7 @@ impl Core {
             || obj.ty() == colibri_check::types::SIGNAL_TYPE
             || obj.ty() == colibri_check::types::TASK_TYPE
             || obj.ty() == colibri_check::types::CHANNEL_TYPE
+            || obj.ty() == colibri_check::types::SHARED_TYPE
             || obj.ty() == colibri_check::types::STR_BUILDER_TYPE
         {
             return;
@@ -208,6 +209,14 @@ pub trait Release: Engine {
                     // A channel handle dies: the channel lives on while another handle holds it,
                     // and a channel is closed only by `close()`.
                     self.core_mut().chan_died(id);
+                } else if let Some(id) = crate::shared::shared_id_of(&rc) {
+                    // A `Shared` handle dies: the graph lives on while another handle holds it.
+                    // This isolate's frozen copies of graphs that no handle holds any more die
+                    // with it (the last handle may be in another isolate: the next sweep, at a
+                    // `get` or at the start of a task, finds those).
+                    self.core_mut().shared_died(id);
+                    let dead = self.core_mut().sweep_shared();
+                    self.release_all(dead);
                 }
                 // The `Drop` hook runs first; if it stores the object somewhere, the object
                 // lives on and dies (without a second hook) when that reference does.
@@ -369,6 +378,9 @@ pub trait Release: Engine {
             return false;
         }
         core.hook_depth += 1;
+        // A frozen object (a copy of a `Shared`) is dying: its hook may write its own fields.
+        // What the object holds stays frozen, as other copies may still share it.
+        obj.unfreeze();
         let result = self.call_detached(f, vec![Value::Obj(Rc::clone(obj))]);
         let core = self.core_mut();
         core.hook_depth -= 1;
@@ -444,6 +456,13 @@ mod tests {
         fn new() -> Bare {
             Bare {
                 core: Core::new(Box::new(std::io::sink())),
+            }
+        }
+
+        /// What a worker does at the start of a task.
+        fn free_dead_copies_for_test(&mut self) {
+            for copy in self.core.sweep_shared() {
+                self.release(copy);
             }
         }
     }
@@ -529,6 +548,9 @@ mod tests {
             _: Span,
         ) -> Eval {
             unreachable!("no channel is used in these tests")
+        }
+        fn shared_get(&mut self, _: &mut FiberState, _: &Value, _: Span) -> Eval {
+            unreachable!("no shared value is used in these tests")
         }
         fn channel_next(&mut self, _: &mut FiberState, _: &Value, _: Span) -> Eval<Option<Value>> {
             unreachable!("no channel is used in these tests")
@@ -652,6 +674,116 @@ mod tests {
         engine.release(second);
         assert_eq!(engine.core.chan_count(), 0);
         assert_eq!(std::sync::Arc::strong_count(&inner), 1);
+    }
+
+    /// The last handle of a `Shared` in this engine lets go of its graph, and the engine's copy of
+    /// the graph goes with it when no handle of it is left anywhere, and not before.
+    #[test]
+    fn the_last_handle_to_a_shared_frees_the_copy_and_not_before() {
+        use crate::portable::{StackGuard, Unnamed, from_portable_frozen, to_portable};
+        let mut engine = Bare::new();
+        let root = to_portable(
+            &Value::list(vec![Value::Int(1)]),
+            &Unnamed,
+            StackGuard::here(1 << 20),
+        )
+        .unwrap();
+        let inner = crate::shared::SharedInner::new(root);
+        let first = engine.core.shared_handle(std::sync::Arc::clone(&inner));
+        let second = engine.core.shared_handle(std::sync::Arc::clone(&inner));
+        let copy = from_portable_frozen(inner.root(), &mut engine.core, StackGuard::here(1 << 20))
+            .unwrap();
+        engine.core.shared_cache(&inner, copy);
+        assert_eq!(
+            (engine.core.shared_count(), engine.core.shared_copies()),
+            (2, 1)
+        );
+        // Another isolate holds the graph too: the copy stays after both of this one's handles.
+        let theirs = std::sync::Arc::clone(&inner);
+        drop(inner);
+        engine.release(first);
+        assert_eq!(
+            (engine.core.shared_count(), engine.core.shared_copies()),
+            (1, 1)
+        );
+        engine.release(second);
+        assert_eq!(
+            (engine.core.shared_count(), engine.core.shared_copies()),
+            (0, 1)
+        );
+        // The other isolate's handle dies: whoever looks next finds the graph gone.
+        drop(theirs);
+        engine.free_dead_copies_for_test();
+        assert_eq!(engine.core.shared_copies(), 0);
+        // With no other holder, the last handle's death frees the copy by itself.
+        let root = to_portable(
+            &Value::list(vec![Value::Int(2)]),
+            &Unnamed,
+            StackGuard::here(1 << 20),
+        )
+        .unwrap();
+        let alone = crate::shared::SharedInner::new(root);
+        let handle = engine.core.shared_handle(std::sync::Arc::clone(&alone));
+        let copy = from_portable_frozen(alone.root(), &mut engine.core, StackGuard::here(1 << 20))
+            .unwrap();
+        engine.core.shared_cache(&alone, copy);
+        drop(alone);
+        assert_eq!(engine.core.shared_copies(), 1);
+        engine.release(handle);
+        assert_eq!(
+            (engine.core.shared_count(), engine.core.shared_copies()),
+            (0, 0)
+        );
+    }
+
+    /// A string builder of a frozen copy can be asked for its text any number of times without
+    /// being rewritten: its pieces stay as they were, which `to_str` does to an ordinary builder.
+    #[test]
+    fn a_frozen_string_builder_is_read_without_being_rewritten() {
+        use crate::strfn::StrOps;
+        let mut engine = Bare::new();
+        let chunks = crate::heap::ListObj::new(vec![Value::str("a"), Value::str("b")]);
+        let builder = ClassObj::new_exact(
+            colibri_check::types::STR_BUILDER_TYPE,
+            ObjFields::from(vec![Value::List(Rc::clone(&chunks)), Value::Int(2)]),
+        );
+        let args = [Value::Obj(Rc::clone(&builder))];
+        let (mut fiber, span) = (
+            FiberState::default(),
+            Span::new(colibri_syntax::FileId(0), 0, 0),
+        );
+        let to_str = colibri_check::hir::Builtin::StrBuilderToStr;
+        // An ordinary builder joins its pieces into one the first time it is asked.
+        let text = engine
+            .str_builder_op(&mut fiber, to_str, &args, span)
+            .unwrap();
+        assert_eq!(text, Value::str("ab"));
+        assert_eq!(chunks.len(), 1);
+        // A frozen one does not.
+        let chunks = crate::heap::ListObj::new(vec![Value::str("a"), Value::str("b")]);
+        builder
+            .set_field(0, Value::List(Rc::clone(&chunks)))
+            .unwrap();
+        builder.freeze();
+        chunks.freeze();
+        for _ in 0..3 {
+            let text = engine
+                .str_builder_op(&mut fiber, to_str, &args, span)
+                .unwrap();
+            assert_eq!(text, Value::str("ab"));
+            assert_eq!(chunks.len(), 2);
+        }
+        // And it cannot be added to.
+        let push = colibri_check::hir::Builtin::StrBuilderPush;
+        let with = [args[0].clone(), Value::str("c")];
+        assert!(
+            engine
+                .str_builder_op(&mut fiber, push, &with, span)
+                .is_err()
+        );
+        assert_eq!(chunks.len(), 2);
+        drop(builder.take_fields());
+        drop(chunks.take_all());
     }
 
     #[test]

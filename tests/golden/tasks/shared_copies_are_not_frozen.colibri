@@ -1,0 +1,36 @@
+// workers: 2
+// Only what `get()` gives is frozen. A `clone()`, a value a task returns or a channel carries, and
+// the new lists that `sorted()`, `map` and `filter` make are ordinary values that can be changed.
+// The value that was shared is not frozen either: `Shared(x)` copies `x`, and `x` stays yours.
+fn main() {
+    let mut mine = [3, 1, 2]
+    let s = Shared(mine)
+    mine.push(4)
+    let mut clone = s.get().clone()
+    clone.push(10)
+    let mut sorted = s.get().sorted()
+    sorted.push(11)
+    let mut mapped = s.get().map(fn(x) => x * 2)
+    mapped.push(12)
+    let mut returned = task.run(fn() => s.get()).join().expect("task")
+    returned.push(13)
+    let ch = Channel[List[int]]()
+    ch.send(s.get().clone())
+    let mut received = ch.recv().expect("a list")
+    received.push(14)
+    print("mine {mine}")
+    print("clone {clone}")
+    print("sorted {sorted}")
+    print("mapped {mapped}")
+    print("returned {returned}")
+    print("received {received}")
+    print("shared {s.get()}")
+}
+
+// expect: mine [3, 1, 2, 4]
+// expect: clone [3, 1, 2, 10]
+// expect: sorted [1, 2, 3, 11]
+// expect: mapped [6, 2, 4, 12]
+// expect: returned [3, 1, 2, 13]
+// expect: received [3, 1, 2, 14]
+// expect: shared [3, 1, 2]

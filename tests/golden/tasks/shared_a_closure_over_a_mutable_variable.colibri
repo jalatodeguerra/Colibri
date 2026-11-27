@@ -1,0 +1,15 @@
+// allow: unused
+// A closure that captures a `let mut` variable cannot be put in a `Shared`: the variable is shared
+// with the function that declared it, and the copy is frozen. A closure that captures plain
+// values (and lists, which freeze with the copy) can.
+fn main() {
+    let base = 10
+    let reads = Shared(fn(x: int) => x + base)
+    print("reads: {reads.get()(5)}")
+    let mut count = 0
+    let writes = Shared(fn() { count += 1 })
+    print("not reached")
+}
+
+// expect: reads: 15
+// panic: a `Shared` cannot hold a closure that captures a `let mut` variable: its copy is frozen

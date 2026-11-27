@@ -24,7 +24,17 @@ use crate::value::{ObjFields, Value};
 
 // ---- the guard ----
 
+/// The top bit of `iterations`: the collection is frozen (see [`Guard::freeze`]).
+const FROZEN: u32 = 1 << 31;
+
+/// What a write to a frozen value panics with: the value came from a `Shared` (DESIGN §14.1).
+pub const FROZEN_MESSAGE: &str = "cannot modify a frozen value (it came from `Shared`)";
+
 /// Counts the live iterations and places of one collection.
+///
+/// A frozen collection (the copy a `Shared` hands out) holds its guard for ever: one iteration is
+/// added that nothing releases, so `check` fails for every write through the one comparison it
+/// always made, and only the failure path looks at the `FROZEN` bit that says why.
 #[derive(Debug)]
 pub struct Guard {
     iterations: Cell<u32>,
@@ -64,9 +74,26 @@ impl Guard {
         self.violation()
     }
 
+    /// Freezes the collection: every later change is refused, with the message of a frozen value.
+    pub(crate) fn freeze(&self) {
+        let held = self.iterations.get();
+        if held & FROZEN == 0 {
+            self.iterations.set((held + 1) | FROZEN);
+        }
+    }
+
+    /// Whether the collection is frozen.
+    #[inline]
+    pub fn is_frozen(&self) -> bool {
+        self.iterations.get() & FROZEN != 0
+    }
+
     #[cold]
     #[inline(never)]
     fn violation(&self) -> Result<(), Violation> {
+        if self.is_frozen() {
+            return Err(Violation(FROZEN_MESSAGE.to_string()));
+        }
         if self.places.get() > 0 {
             let name = self.place_name.borrow().clone();
             return Err(Violation(format!(
@@ -271,6 +298,11 @@ impl ListObj {
     #[inline]
     pub(crate) fn check_guard(&self) -> Result<(), Violation> {
         self.guard.check()
+    }
+
+    /// Freezes the list: no later change is accepted (a `Shared`'s copy).
+    pub fn freeze(&self) {
+        self.guard.freeze();
     }
 
     #[inline]
@@ -517,6 +549,11 @@ impl MapObj {
         &self.guard
     }
 
+    /// Freezes the map: no later change is accepted (a `Shared`'s copy).
+    pub fn freeze(&self) {
+        self.guard.freeze();
+    }
+
     #[inline]
     pub fn insert(&self, key: Value, value: Value) -> Result<Replaced, Rejected<(Value, Value)>> {
         if let Err(violation) = self.guard.check() {
@@ -637,6 +674,11 @@ impl SetObj {
         &self.guard
     }
 
+    /// Freezes the set: no later change is accepted (a `Shared`'s copy).
+    pub fn freeze(&self) {
+        self.guard.freeze();
+    }
+
     /// Adds an element; returns whether it was new, and the argument back if it was not
     /// (the caller releases it).
     #[inline]
@@ -698,6 +740,9 @@ pub struct ClassObj {
     released: Cell<bool>,
     /// The object's `Drop` hook has run (or is running); it runs at most once.
     hooked: Cell<bool>,
+    /// The object is part of a `Shared`'s copy: its fields cannot be written (the three flags
+    /// and the type id fit the space the struct has anyway).
+    frozen: Cell<bool>,
 }
 
 impl ClassObj {
@@ -710,6 +755,7 @@ impl ClassObj {
             fields: RefCell::new(fields),
             released: Cell::new(false),
             hooked: Cell::new(false),
+            frozen: Cell::new(false),
         })
     }
 
@@ -721,6 +767,7 @@ impl ClassObj {
             fields: RefCell::new(fields),
             released: Cell::new(false),
             hooked: Cell::new(false),
+            frozen: Cell::new(false),
         })
     }
 
@@ -733,6 +780,23 @@ impl ClassObj {
     #[inline]
     pub fn ty(&self) -> TypeId {
         self.ty
+    }
+
+    /// Freezes the object: a write to one of its fields panics (a `Shared`'s copy).
+    pub fn freeze(&self) {
+        self.frozen.set(true);
+    }
+
+    /// Lets the object be written again. Only a dying object's own `Drop` hook uses it: nothing
+    /// else can see the object then, and what it holds stays frozen.
+    pub fn unfreeze(&self) {
+        self.frozen.set(false);
+    }
+
+    /// Whether the object is frozen.
+    #[inline]
+    pub fn is_frozen(&self) -> bool {
+        self.frozen.get()
     }
 
     #[inline]
@@ -866,6 +930,134 @@ mod tests {
         assert!(set.add(Value::Int(1)).is_err());
         drop(token);
         assert!(set.add(Value::Int(1)).is_ok());
+    }
+
+    fn frozen_error<T: fmt::Debug>(r: Result<T, Violation>) {
+        assert_eq!(r.unwrap_err().0, FROZEN_MESSAGE);
+    }
+
+    #[test]
+    fn every_change_of_a_frozen_list_is_refused_with_the_frozen_message() {
+        let list = ListObj::new(ints(&[3, 1, 2]));
+        assert!(list.push(Value::Int(0)).is_ok());
+        list.freeze();
+        assert!(list.guard().is_frozen());
+        let items = list.snapshot();
+        let rejected = list.push(Value::Int(9)).expect_err("frozen");
+        assert_eq!(
+            (rejected.violation.0.as_str(), rejected.args),
+            (FROZEN_MESSAGE, Value::Int(9))
+        );
+        frozen_error(list.pop());
+        frozen_error(list.clear());
+        frozen_error(list.reverse());
+        frozen_error(list.check_guard());
+        let (err, back) = list.insert(0, Value::Int(9)).unwrap_err();
+        assert_eq!(
+            (err, back),
+            (
+                ListError::Guard(Violation(FROZEN_MESSAGE.into())),
+                Value::Int(9)
+            )
+        );
+        assert_eq!(
+            list.remove(0).unwrap_err(),
+            ListError::Guard(Violation(FROZEN_MESSAGE.into()))
+        );
+        let rejected = list.extend(ints(&[1])).expect_err("frozen");
+        assert_eq!(rejected.violation.0, FROZEN_MESSAGE);
+        let (err, _) = list.assign(0, Value::Int(9)).unwrap_err();
+        assert_eq!(err, ListError::Guard(Violation(FROZEN_MESSAGE.into())));
+        // A guarded `update` (a write of user code into the element) is refused as well.
+        assert!(list.update(0, true, |v| *v = Value::Int(9)).is_err());
+        // Nothing changed, however many were tried.
+        assert_eq!(list.snapshot(), items);
+        // Reading and iterating are not changes: an iteration takes a hold and gives it back.
+        assert_eq!(list.get(1), Ok(Value::Int(1)));
+        drop(list.iter_hold());
+        frozen_error(list.pop());
+    }
+
+    #[test]
+    fn every_change_of_a_frozen_map_and_set_is_refused_with_the_frozen_message() {
+        let map = MapObj::new(OrderedMap::new());
+        assert!(map.insert(Value::Int(1), Value::Int(1)).is_ok());
+        map.freeze();
+        let rejected = map
+            .insert(Value::Int(2), Value::Int(2))
+            .err()
+            .expect("frozen");
+        assert_eq!(rejected.violation.0, FROZEN_MESSAGE);
+        let rejected = map
+            .assign(Value::Int(1), Value::Int(5))
+            .err()
+            .expect("frozen");
+        assert_eq!(rejected.violation.0, FROZEN_MESSAGE);
+        // The fast path for `int` and `str` keys hands the value back, as a held map does.
+        assert!(map.insert_plain(&Value::Int(1), Value::Int(5)).is_err());
+        frozen_error(map.remove(&Value::Int(1)));
+        frozen_error(map.clear());
+        frozen_error(map.update(&Value::Int(1), true, |v| *v = Value::Int(5)));
+        assert_eq!(map.get(&Value::Int(1)), Some(Value::Int(1)));
+        assert_eq!(map.len(), 1);
+
+        let set = SetObj::new(OrderedMap::new());
+        assert!(set.add(Value::Int(1)).is_ok());
+        set.freeze();
+        let rejected = set.add(Value::Int(2)).expect_err("frozen");
+        assert_eq!(rejected.violation.0, FROZEN_MESSAGE);
+        frozen_error(set.remove(&Value::Int(1)));
+        frozen_error(set.clear());
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn freezing_is_permanent_and_idempotent_and_a_place_cannot_unfreeze_it() {
+        let list = ListObj::new(ints(&[1]));
+        list.freeze();
+        list.freeze();
+        // Iterations and places come and go, and each leaves the list as frozen as it found it.
+        for _ in 0..3 {
+            let iter = list.iter_hold();
+            let place = list.place_hold("xs");
+            frozen_error(list.pop());
+            drop((iter, place));
+            frozen_error(list.pop());
+        }
+        assert!(list.guard().is_frozen());
+        // The frozen message wins over the other two reasons.
+        let _place = list.place_hold("xs");
+        assert_eq!(list.pop().unwrap_err().0, FROZEN_MESSAGE);
+    }
+
+    #[test]
+    fn a_collection_that_is_not_frozen_is_untouched_by_the_flag() {
+        let list = ListObj::new(ints(&[1]));
+        let other = ListObj::new(ints(&[2]));
+        other.freeze();
+        assert!(!list.guard().is_frozen());
+        assert!(list.push(Value::Int(2)).is_ok());
+        assert!(list.pop().is_ok());
+        // The guard messages are the ones they were.
+        let _hold = list.iter_hold();
+        assert_eq!(list.pop().unwrap_err().0, "list modified during iteration");
+    }
+
+    #[test]
+    fn a_frozen_object_says_so_and_the_flag_costs_no_space() {
+        let obj = ClassObj::new(TypeId(1), ints(&[1]));
+        assert!(!obj.is_frozen());
+        obj.freeze();
+        assert!(obj.is_frozen());
+        // Fields can still be read and, for the engine that built it, taken out when it dies.
+        assert_eq!(obj.field(0), Some(Value::Int(1)));
+        assert_eq!(obj.take_fields().into_vec(), ints(&[1]));
+        // The frozen bits live where space was spare: the sizes are what they were before them.
+        assert_eq!(std::mem::size_of::<Guard>(), 48);
+        assert_eq!(
+            std::mem::size_of::<ClassObj>(),
+            std::mem::size_of::<RefCell<ObjFields>>() + 8
+        );
     }
 
     #[test]

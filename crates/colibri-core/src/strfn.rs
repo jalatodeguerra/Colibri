@@ -44,6 +44,15 @@ pub trait StrOps: Engine {
             Some(Value::Int(n)) => n,
             _ => 0,
         };
+        // A builder in a `Shared`'s copy is frozen: it can be read, not added to or cleared.
+        if obj.is_frozen()
+            && matches!(
+                op,
+                Builtin::StrBuilderPush | Builtin::StrBuilderPushChar | Builtin::StrBuilderClear
+            )
+        {
+            return Err(self.panic(fiber, span, crate::heap::FROZEN_MESSAGE));
+        }
         let text = match (op, args.get(1)) {
             (Builtin::StrBuilderPush, Some(Value::Str(s))) => Some(Rc::clone(s)),
             (Builtin::StrBuilderPushChar, Some(Value::Char(c))) => {
@@ -80,7 +89,7 @@ pub trait StrOps: Engine {
                 // Join once and keep the joined text as the only chunk, so asking again (or
                 // appending a little more) does not walk the pieces a second time.
                 let joined: Rc<str> = Rc::from(builder_text(obj));
-                if !joined.is_empty() {
+                if !joined.is_empty() && !obj.is_frozen() {
                     let old = chunks.replace_all(vec![Value::Str(Rc::clone(&joined))]);
                     self.release_all(old);
                 }

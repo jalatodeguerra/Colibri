@@ -1,0 +1,32 @@
+// workers: 2
+// A `Shared` keeps sharing and the `weak` back-references of what it copies: a tree whose child
+// points back at its parent comes out the same in each thread's copy, and the copy is freed with
+// the `Shared` (no leak; `drops:` shows the objects of the original go as usual).
+class Node {
+    name: str
+    children: List[Node] = []
+    parent: weak Node
+}
+
+fn tree() -> Node {
+    let root = Node { name: "root" }
+    let child = Node { name: "child", parent: root }
+    root.children.push(child)
+    return root
+}
+
+fn describe(s: Shared[Node]) -> str {
+    let root = s.get()
+    let child = root.children[0]
+    return "{root.name} has {child.name}, whose parent is {child.parent.expect("parent").name}, the same object: {child.parent.expect("parent") == root}"
+}
+
+fn main() {
+    let s = Shared(tree())
+    print(describe(s))
+    print(task.run(fn() => describe(s)).join().expect("task"))
+}
+
+// expect: root has child, whose parent is root, the same object: true
+// expect: root has child, whose parent is root, the same object: true
+// drops: root, child, root, child

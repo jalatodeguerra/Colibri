@@ -202,6 +202,10 @@ pub trait Engine: Sized {
         span: Span,
     ) -> Eval;
 
+    /// `get` of a `Shared` (`recv` is the handle): the frozen copy this isolate keeps, made on
+    /// the first call. Rebuilding it needs a walk stack, which only an engine can map.
+    fn shared_get(&mut self, fiber: &mut Self::Fiber, recv: &Value, span: Span) -> Eval;
+
     /// The next value of a channel's iterator (`for x in ch` outside the instruction that waits
     /// properly, `ch.iter().enumerate()`): `None` when the channel is closed and empty. It waits
     /// by blocking this thread where it cannot pause.

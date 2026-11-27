@@ -276,6 +276,7 @@ impl Vm {
         // included, is charged to the parent's account.
         let entry_account = self.engine.core_mut().mem.enter();
         let restore = self.engine.core_mut().enter_task_scope(serial);
+        self.engine.free_dead_shared_copies();
         let outcome = self.run_task_in(entry);
         restore(self.engine.core_mut());
         // A coroutine the task left must not run inside the next task of this isolate (nor hold

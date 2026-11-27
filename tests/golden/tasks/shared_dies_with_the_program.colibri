@@ -1,0 +1,18 @@
+// A `Shared` that still has a copy when the program ends loses it with the program: here the graph
+// is kept alive by a message nobody receives, so the last handle goes without a `get()` or a task
+// to look at the copy, and the end of the program frees it (`drops:` lists the objects as they go,
+// the original of the shared value first, and the copy of it last).
+class Item {
+    name: str
+}
+
+let ch = Channel[Shared[Item]](capacity: 1)
+
+fn main() {
+    let s = Shared(Item { name: "shared" })
+    print("read {s.get().name}")
+    ch.send(s)
+}
+
+// expect: read shared
+// drops: shared, shared

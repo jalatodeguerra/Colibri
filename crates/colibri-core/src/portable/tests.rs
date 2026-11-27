@@ -1810,3 +1810,253 @@ fn two_kinds_of_handle_at_one_address_are_not_one_handle() {
         (Value::Int(1), Value::Int(2), Value::Int(1))
     ));
 }
+
+// ---- the frozen copy of a `Shared` (L20) ----
+
+/// A graph with every kind of reference object and no variable that a closure changes: lists,
+/// maps, sets and class objects (one of them in a cycle, one reached through a `weak`), a closure
+/// that captures by value (when `closure`), strings, and a struct and a tuple that more than one
+/// thing holds.
+fn frozen_graph(closure: bool) -> Value {
+    let target = obj(NODE, vec![Value::Int(1), Value::Unit]);
+    let again = obj(NODE, vec![Value::Obj(Rc::clone(&target)), Value::Unit]);
+    target.set_field(1, Value::Obj(Rc::clone(&again))).unwrap();
+    let kept = point(4);
+    let map = {
+        let mut m = OrderedMap::new();
+        m.insert(Value::str("a"), strs(&["x", "y"]));
+        m.insert(Value::Int(2), kept.clone());
+        Value::Map(MapObj::new(m))
+    };
+    let set = {
+        let mut s = OrderedMap::new();
+        s.insert(Value::Int(10), Value::Unit);
+        Value::Set(SetObj::new(s))
+    };
+    let closure = if closure {
+        Value::Closure(Rc::new(ClosureObj {
+            f: FnId(5),
+            generation: 2,
+            captures: vec![Captured {
+                inner: LocalId(0),
+                mode: CaptureMode::ByValue,
+                value: strs(&["captured"]),
+            }],
+        }))
+    } else {
+        Value::Unit
+    };
+    Value::tuple(vec![
+        Value::Obj(target),
+        map,
+        set,
+        strs(&["one", "two"]),
+        Value::tuple(vec![kept, Value::str("s")]),
+        closure,
+        Value::Weak(Rc::downgrade(&again)),
+        Value::Obj(again),
+    ])
+}
+
+/// Every list, map, set and class object reachable from `v` (each once), by a walk of its own.
+fn reference_objects(v: &Value) -> Vec<Value> {
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut found = Vec::new();
+    let mut work = vec![v.clone()];
+    while let Some(v) = work.pop() {
+        let first = |addr: usize, seen: &mut HashSet<usize>| seen.insert(addr);
+        match &v {
+            Value::Obj(o) if first(Rc::as_ptr(o) as usize, &mut seen) => {
+                work.extend(o.snapshot());
+                found.push(v.clone());
+            }
+            Value::SomeObj(o) if first(Rc::as_ptr(o) as usize, &mut seen) => {
+                work.extend(o.snapshot());
+                found.push(Value::Obj(Rc::clone(o)));
+            }
+            Value::List(l) if first(Rc::as_ptr(l) as usize, &mut seen) => {
+                work.extend(l.snapshot());
+                found.push(v.clone());
+            }
+            Value::Set(s) if first(Rc::as_ptr(s) as usize, &mut seen) => {
+                work.extend(s.snapshot());
+                found.push(v.clone());
+            }
+            Value::Map(m) if first(Rc::as_ptr(m) as usize, &mut seen) => {
+                work.extend(m.snapshot().into_iter().flat_map(|(k, v)| [k, v]));
+                found.push(v.clone());
+            }
+            Value::Struct(s) => work.extend(s.fields.iter().cloned()),
+            Value::Tuple(t) => work.extend(t.iter().cloned()),
+            Value::Enum(e) => work.extend(e.payload.iter().cloned()),
+            Value::Dyn(d) => work.push(d.val.clone()),
+            Value::Closure(c) => work.extend(c.captures.iter().map(|c| c.value.clone())),
+            _ => {}
+        }
+    }
+    found
+}
+
+fn is_frozen(v: &Value) -> bool {
+    match v {
+        Value::Obj(o) => o.is_frozen(),
+        Value::List(l) => l.guard().is_frozen(),
+        Value::Map(m) => m.guard().is_frozen(),
+        Value::Set(s) => s.guard().is_frozen(),
+        _ => panic!("not a reference object"),
+    }
+}
+
+#[test]
+fn a_frozen_rebuild_is_the_same_graph_with_every_reference_object_frozen() {
+    let mut core = core();
+    let root = frozen_graph(true);
+    let p = to_portable(&root, &core, stack()).expect("sendable");
+    let frozen = from_portable_frozen(&p, &mut core, stack()).expect("rebuilt");
+    assert_eq!(dump(&frozen), dump(&root));
+    let objects = reference_objects(&frozen);
+    // The two objects of the cycle, the map, the set, and the three lists (one in the map, one
+    // captured by the closure): none is missed.
+    assert_eq!(objects.len(), 7);
+    assert!(objects.iter().all(is_frozen));
+    // The graph it came from is not frozen, and shares nothing with the copy.
+    let originals = reference_objects(&root);
+    assert!(originals.iter().all(|o| !is_frozen(o)));
+    let theirs: HashSet<usize> = dump_all(&[&root]).1.into_iter().collect();
+    assert!(dump_all(&[&frozen]).1.iter().all(|a| !theirs.contains(a)));
+    dispose(vec![root, frozen]);
+}
+
+#[test]
+fn a_frozen_rebuild_does_not_consume_the_graph_and_can_be_made_again() {
+    let mut core = core();
+    let root = frozen_graph(true);
+    let p = to_portable(&root, &core, stack()).unwrap();
+    let first = from_portable_frozen(&p, &mut core, stack()).unwrap();
+    let second = from_portable_frozen(&p, &mut core, stack()).unwrap();
+    // Each is a graph of its own: the same shape, no object in common.
+    assert_eq!(dump(&first), dump(&second));
+    let a: HashSet<usize> = dump_all(&[&first]).1.into_iter().collect();
+    assert!(dump_all(&[&second]).1.iter().all(|x| !a.contains(x)));
+    // The graph still rebuilds as an ordinary, unfrozen one (it was not emptied as it was read).
+    let plain = from_portable(p, &mut core, stack()).unwrap();
+    assert_eq!(dump(&plain), dump(&root));
+    assert!(reference_objects(&plain).iter().all(|o| !is_frozen(o)));
+    dispose(vec![root, first, second, plain]);
+}
+
+#[test]
+fn a_clone_and_a_copy_of_a_frozen_graph_are_not_frozen() {
+    let mut core = core();
+    // (A closure is not copied by `clone`, so what it captured stays what it was: left out.)
+    let root = frozen_graph(false);
+    let p = to_portable(&root, &core, stack()).unwrap();
+    let frozen = from_portable_frozen(&p, &mut core, stack()).unwrap();
+    assert!(reference_objects(&frozen).iter().all(is_frozen));
+    let mut cloner = Cloner::new(crate::stack_position(), 1 << 20);
+    let cloned = cloner.clone_value(&frozen, &mut Plain).unwrap();
+    assert!(reference_objects(&cloned).iter().all(|o| !is_frozen(o)));
+    let again = round_trip(&mut core, &frozen);
+    assert!(reference_objects(&again).iter().all(|o| !is_frozen(o)));
+    dispose(vec![root, frozen, cloned, again]);
+}
+
+#[test]
+fn a_frozen_graph_that_holds_a_cell_is_found_by_the_scan_and_refused_by_the_rebuild() {
+    let mut core = core();
+    let (root, _target) = everything(false);
+    let p = to_portable(&root, &core, stack()).unwrap();
+    assert!(crate::shared::holds_a_cell(&p));
+    assert_eq!(
+        from_portable_frozen(&p, &mut core, stack()).unwrap_err(),
+        RebuildError::Malformed
+    );
+    // Nothing is left half-built: no class object is dropped unreleased (which asserts).
+    assert!(core.find_leaks(&|_| None).is_empty());
+    // A graph with no cell is clear, however the closure that holds it is shaped.
+    let plain = to_portable(&frozen_graph(true), &core, stack()).unwrap();
+    assert!(!crate::shared::holds_a_cell(&plain));
+    dispose(vec![root]);
+}
+
+#[test]
+fn a_frozen_rebuild_of_a_deep_graph_fails_with_too_deep_and_leaves_nothing() {
+    let mut core = core();
+    core.set_track_leaks(true);
+    let mut v = Value::Unit;
+    for _ in 0..100 {
+        v = Value::list(vec![v]);
+    }
+    let p = to_portable(&v, &Unnamed, StackGuard::here(1 << 20)).expect("the sender has room");
+    let err = from_portable_frozen(&p, &mut core, StackGuard::here(64 * 1024)).unwrap_err();
+    assert_eq!(err, RebuildError::TooDeep);
+    assert!(core.find_leaks(&|_| None).is_empty());
+    // The graph is intact, and rebuilds where there is room.
+    let ok = from_portable_frozen(&p, &mut core, StackGuard::here(1 << 20)).unwrap();
+    assert_eq!(dump(&ok), dump(&v));
+    dispose(vec![v, ok]);
+}
+
+#[test]
+fn a_shared_handle_inside_a_graph_crosses_as_the_arc_and_is_one_handle_when_reached_twice() {
+    let mut sender = core();
+    let inner = crate::shared::SharedInner::new(Portable::Int(5));
+    let one = sender.shared_handle(Arc::clone(&inner));
+    let two = sender.shared_handle(Arc::clone(&inner));
+    // A handle of another graph is not merged with them.
+    let other = sender.shared_handle(crate::shared::SharedInner::new(Portable::Int(6)));
+    // Two handles of one graph, and one handle twice: the graph crosses once in each case.
+    let root = Value::tuple(vec![one.clone(), one, two, other]);
+    let p = to_portable(&root, &sender, stack()).unwrap();
+    let Portable::Tuple { items, .. } = &p else {
+        panic!("{p:?}")
+    };
+    assert!(matches!(items[0], Portable::Handle { .. }));
+    assert!(matches!(items[1], Portable::Ref(_)));
+    assert!(matches!(items[2], Portable::Ref(_)));
+    assert!(matches!(items[3], Portable::Handle { .. }));
+    // The `Arc` is shared, not copied: the sender's two handles and the one in flight.
+    assert_eq!(Arc::strong_count(&inner), 4);
+    let mut receiver = core();
+    let Value::Tuple(out) = from_portable(p, &mut receiver, stack()).unwrap() else {
+        panic!()
+    };
+    let (Value::Obj(a), Value::Obj(b), Value::Obj(c), Value::Obj(d)) =
+        (&out[0], &out[1], &out[2], &out[3])
+    else {
+        panic!()
+    };
+    assert!(Rc::ptr_eq(a, b) && Rc::ptr_eq(b, c) && !Rc::ptr_eq(c, d));
+    assert_eq!(receiver.shared_count(), 2);
+    // The one in flight is the receiver's now: this test, the sender's two and the receiver's one.
+    assert_eq!(Arc::strong_count(&inner), 4);
+    dispose(vec![root, Value::Tuple(out)]);
+}
+
+#[test]
+fn a_shared_handle_made_for_a_copy_that_fails_lets_go_of_its_graph() {
+    let mut sender = core();
+    let inner = crate::shared::SharedInner::new(Portable::Int(5));
+    let handle = sender.shared_handle(Arc::clone(&inner));
+    let mut chain = Value::Unit;
+    for _ in 0..100 {
+        chain = Value::list(vec![chain]);
+    }
+    let root = Value::tuple(vec![handle, chain]);
+    let p = to_portable(&root, &sender, StackGuard::here(1 << 20)).unwrap();
+    assert_eq!(Arc::strong_count(&inner), 3);
+    let mut receiver = core();
+    let err = from_portable(p, &mut receiver, StackGuard::here(64 * 1024)).unwrap_err();
+    assert_eq!(err, RebuildError::TooDeep);
+    // Whatever the failed copy made is gone: no handle in the receiver, and no `Arc` left of it.
+    assert_eq!(receiver.shared_count(), 0);
+    assert_eq!(Arc::strong_count(&inner), 2);
+    // The same holds for the frozen rebuild of a graph that holds a handle.
+    let p = to_portable(&root, &sender, StackGuard::here(1 << 20)).unwrap();
+    let err = from_portable_frozen(&p, &mut receiver, StackGuard::here(64 * 1024)).unwrap_err();
+    assert_eq!(err, RebuildError::TooDeep);
+    assert_eq!(receiver.shared_count(), 0);
+    drop(p);
+    assert_eq!(Arc::strong_count(&inner), 2);
+    dispose(vec![root]);
+}

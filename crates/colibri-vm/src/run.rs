@@ -1777,7 +1777,7 @@ impl Machine {
                 self.task_run(fiber, f, span)
             }
             Intrinsic::NewChannel => self.new_channel(fiber, args, span),
-            Intrinsic::NewShared => Err(self.panic(fiber, span, colibri_core::THREADS_NOT_BUILT)),
+            Intrinsic::NewShared => self.new_shared(fiber, args, span),
             Intrinsic::HostAlive => Ok(Value::Bool(match &fiber.regs[args.start] {
                 Value::Host(r) => self.core.host_alive(r.index, r.generation),
                 _ => false,
