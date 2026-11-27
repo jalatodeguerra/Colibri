@@ -17,6 +17,13 @@
 //! * `#[colibri::export] fn name(..)`: a function, registered with `name::register(&mut vm)`.
 //!   The macro writes a module of that name next to the function.
 //!
+//! * `#[colibri::module] fn name(m: &mut colibri::Module<'_>) -> Result<(), colibri::Error>`: the
+//!   registration function of a binding crate. The function stays, and a hidden
+//!   `__colibri_binding` module next to it (put the function at the crate root) has `NAME`, the
+//!   Rust name, and `register(vm, import_name)`, which a generated runner calls with the name
+//!   the manifest chose. Inside, `m.add_class::<T>()?` registers a class or value type and
+//!   `m.add_fn(f::export)?` an exported function.
+//!
 //! An option `crate = path` names the runtime crate when it is not `colibri_runtime`:
 //! `#[colibri::export(value, crate = my_engine::colibri)]`.
 
@@ -28,4 +35,10 @@ use proc_macro::TokenStream;
 #[proc_macro_attribute]
 pub fn export(args: TokenStream, item: TokenStream) -> TokenStream {
     expand::export(args.into(), item.into()).into()
+}
+
+/// Marks the registration function of a binding crate. See the [crate documentation](crate).
+#[proc_macro_attribute]
+pub fn module(args: TokenStream, item: TokenStream) -> TokenStream {
+    expand::module(args.into(), item.into()).into()
 }

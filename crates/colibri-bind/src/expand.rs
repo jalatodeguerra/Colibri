@@ -630,6 +630,156 @@ fn export_fn(
             ) -> ::core::result::Result<#runtime::Registration<'_>, #runtime::Error> {
                 #runtime::__private::register_exported(vm, #name, [#(#names),*], #callee)
             }
+            /// Registers the function into a module: `module.add_fn(name::export)?`.
+            pub fn export(
+                module: &mut #runtime::HostModule<'_>,
+            ) -> ::core::result::Result<(), #runtime::Error> {
+                #runtime::__private::register_exported_in(module, #name, [#(#names),*], #callee)
+            }
+        }
+    })
+}
+
+// ---- the binding module ----
+
+/// `#[colibri::module]`: checks `fn(&mut Module<'_>) -> Result<(), Error>`, keeps the function
+/// and writes the hidden `__colibri_binding` module next to it.
+pub fn module(args: TokenStream, item: TokenStream) -> TokenStream {
+    let parsed = Options::parse.parse2(args);
+    let item_copy = item.clone();
+    let result = parsed.and_then(|options| {
+        for (span, word) in [(options.value, "value"), (options.no_methods, "no_methods")] {
+            if let Some(span) = span {
+                return Err(Error::new(
+                    span,
+                    format!(
+                        "`{word}` is for `#[colibri::export]`: `#[colibri::module]` takes only `crate = path`"
+                    ),
+                ));
+            }
+        }
+        let item: ItemFn = syn::parse2(item).map_err(|e| {
+            Error::new(
+                e.span(),
+                "`#[colibri::module]` goes on a function: `fn name(m: &mut colibri::Module<'_>) -> Result<(), colibri::Error>`",
+            )
+        })?;
+        let runtime = match &options.runtime {
+            Some(path) => quote!(#path),
+            None => quote!(::colibri_runtime),
+        };
+        module_fn(item, &runtime)
+    });
+    match result {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            let error = error.to_compile_error();
+            quote!(#item_copy #error)
+        }
+    }
+}
+
+const MODULE_SHAPE: &str =
+    "a binding module is `fn name(m: &mut colibri::Module<'_>) -> Result<(), colibri::Error>`";
+
+/// The last segment of a type path, when it is one.
+fn last_segment(ty: &Type) -> Option<&syn::PathSegment> {
+    match strip(ty) {
+        Type::Path(p) if p.qself.is_none() => p.path.segments.last(),
+        _ => None,
+    }
+}
+
+fn module_fn(item: ItemFn, runtime: &TokenStream) -> Result<TokenStream> {
+    let sig = &item.sig;
+    let ident = &sig.ident;
+    if let Some(t) = &sig.asyncness {
+        return Err(Error::new(t.span, "a binding module cannot be `async`"));
+    }
+    if let syn::Safety::Unsafe(t) = &sig.safety {
+        return Err(Error::new_spanned(t, "a binding module cannot be `unsafe`"));
+    }
+    if let Some(abi) = &sig.abi {
+        return Err(Error::new_spanned(
+            abi,
+            "a binding module cannot have an `extern` ABI",
+        ));
+    }
+    if sig
+        .generics
+        .params
+        .iter()
+        .any(|p| !matches!(p, syn::GenericParam::Lifetime(_)))
+        || sig.generics.where_clause.is_some()
+    {
+        return Err(Error::new_spanned(
+            &sig.generics,
+            format!("a binding module cannot be generic: {MODULE_SHAPE}"),
+        ));
+    }
+    let mut inputs = sig.inputs.iter();
+    let (Some(FnArg::Typed(param)), None) = (inputs.next(), inputs.next()) else {
+        return Err(Error::new_spanned(
+            &sig.inputs,
+            format!("`{ident}` must take exactly one parameter, the module: {MODULE_SHAPE}"),
+        ));
+    };
+    let is_module = matches!(strip(&param.ty), Type::Reference(r)
+        if r.mutability.is_some()
+            && last_segment(&r.elem).is_some_and(|s| s.ident == "Module" || s.ident == "HostModule"));
+    if !is_module {
+        return Err(Error::new_spanned(
+            &param.ty,
+            format!("the parameter must be `&mut colibri::Module<'_>`: {MODULE_SHAPE}"),
+        ));
+    }
+    let returns_result = match &sig.output {
+        syn::ReturnType::Type(_, ty) => last_segment(ty).is_some_and(|seg| {
+            let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+                return false;
+            };
+            let types: Vec<&Type> = args
+                .args
+                .iter()
+                .filter_map(|a| match a {
+                    syn::GenericArgument::Type(t) => Some(t),
+                    _ => None,
+                })
+                .collect();
+            seg.ident == "Result"
+                && types.len() == 2
+                && matches!(strip(types[0]), Type::Tuple(t) if t.elems.is_empty())
+                && last_segment(types[1]).is_some_and(|s| s.ident == "Error")
+        }),
+        syn::ReturnType::Default => false,
+    };
+    if !returns_result {
+        return Err(Error::new_spanned(
+            &sig.output,
+            format!(
+                "`{ident}` must return `Result<(), colibri::Error>`, because registering can fail: {MODULE_SHAPE}"
+            ),
+        ));
+    }
+    let name = ident.unraw().to_string();
+    Ok(quote! {
+        #item
+        /// What a generated runner calls: `__colibri_binding::register(&mut vm, "native")`
+        /// registers the binding under the import name the manifest chose.
+        #[doc(hidden)]
+        pub mod __colibri_binding {
+            /// The Rust name of the binding function. Informational: the import name is the
+            /// manifest key.
+            pub const NAME: &str = #name;
+            /// Registers the binding's module under `name` in `vm`. A second registration
+            /// under the same name is an error.
+            pub fn register(
+                vm: &mut #runtime::Vm,
+                name: &str,
+            ) -> ::core::result::Result<(), #runtime::Error> {
+                let mut module = #runtime::__private::bind_module(vm, name)?;
+                super::#ident(&mut module)
+            }
         }
     })
 }
@@ -727,6 +877,122 @@ mod tests {
         assert!(error_of("", "impl<T> W<T> { pub fn f(&self) {} }").contains("cannot be generic"));
         assert!(error_of("", "impl Show for W { pub fn f(&self) {} }").contains("inherent"));
         assert!(error_of("value", "impl W { }").contains("not for an `impl`"));
+    }
+
+    fn module_run(args: &str, item: &str) -> String {
+        module(args.parse().unwrap(), item.parse().unwrap()).to_string()
+    }
+
+    #[test]
+    fn a_function_module_has_an_export_that_registers_into_a_module() {
+        let out = run("", "pub fn greet(who: &str) -> String { todo!() }");
+        assert!(
+            out.contains("pub fn export (module : & mut :: colibri_runtime :: HostModule"),
+            "{out}"
+        );
+        assert!(
+            out.contains("register_exported_in (module , \"greet\""),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_binding_module_writes_name_and_register() {
+        let out = module_run(
+            "",
+            "fn physics(m: &mut colibri::Module<'_>) -> Result<(), colibri::Error> { Ok(()) }",
+        );
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(out.contains("mod __colibri_binding"), "{out}");
+        assert!(out.contains("const NAME : & str = \"physics\""), "{out}");
+        assert!(
+            out.contains("fn register (vm : & mut :: colibri_runtime :: Vm , name : & str ,)"),
+            "{out}"
+        );
+        assert!(out.contains("bind_module (vm , name)"), "{out}");
+        assert!(out.contains("super :: physics (& mut module)"), "{out}");
+        // The spellings a crate may use.
+        for sig in [
+            "pub fn p(m: &mut Module) -> Result<(), Error> { Ok(()) }",
+            "fn p<'a>(m: &mut colibri::HostModule<'a>) -> ::core::result::Result<(), colibri_runtime::Error> { Ok(()) }",
+        ] {
+            let out = module_run("", sig);
+            assert!(!out.contains("compile_error"), "{sig}: {out}");
+        }
+        let renamed = module_run(
+            "crate = my::rt",
+            "fn p(m: &mut Module<'_>) -> Result<(), Error> { Ok(()) }",
+        );
+        assert!(renamed.contains("my :: rt :: Vm"), "{renamed}");
+    }
+
+    #[test]
+    fn a_binding_module_of_the_wrong_shape_says_the_shape() {
+        for (item, why) in [
+            (
+                "fn p() -> Result<(), Error> { Ok(()) }",
+                "exactly one parameter",
+            ),
+            (
+                "fn p(m: &mut Module<'_>, n: i64) -> Result<(), Error> { Ok(()) }",
+                "exactly one parameter",
+            ),
+            (
+                "fn p(m: &Module<'_>) -> Result<(), Error> { Ok(()) }",
+                "`&mut colibri::Module<'_>`",
+            ),
+            (
+                "fn p(m: &mut Vm) -> Result<(), Error> { Ok(()) }",
+                "`&mut colibri::Module<'_>`",
+            ),
+            (
+                "fn p(m: Module<'_>) -> Result<(), Error> { Ok(()) }",
+                "`&mut colibri::Module<'_>`",
+            ),
+            (
+                "fn p(m: &mut Module<'_>) {}",
+                "must return `Result<(), colibri::Error>`",
+            ),
+            (
+                "fn p(m: &mut Module<'_>) -> Result<i64, Error> { todo!() }",
+                "must return",
+            ),
+            (
+                "fn p(m: &mut Module<'_>) -> Result<(), String> { todo!() }",
+                "must return",
+            ),
+            (
+                "fn p(m: &mut Module<'_>) -> Option<()> { todo!() }",
+                "must return",
+            ),
+            (
+                "fn p<T>(m: &mut Module<'_>) -> Result<(), Error> { Ok(()) }",
+                "cannot be generic",
+            ),
+            (
+                "async fn p(m: &mut Module<'_>) -> Result<(), Error> { Ok(()) }",
+                "async",
+            ),
+            (
+                "unsafe fn p(m: &mut Module<'_>) -> Result<(), Error> { Ok(()) }",
+                "unsafe",
+            ),
+            ("struct S;", "goes on a function"),
+        ] {
+            let out = module_run("", item);
+            assert!(out.contains("compile_error"), "{item}: {out}");
+            assert!(out.contains(why), "{item}: {out}");
+            // The function is kept, so the editor still knows it.
+            if item.contains("fn p") {
+                assert!(out.contains("fn p"), "{item}: {out}");
+                assert!(!out.contains("mod __colibri_binding"), "{item}: {out}");
+            }
+        }
+        let out = module_run(
+            "value",
+            "fn p(m: &mut Module<'_>) -> Result<(), Error> { Ok(()) }",
+        );
+        assert!(out.contains("takes only `crate = path`"), "{out}");
     }
 
     #[test]

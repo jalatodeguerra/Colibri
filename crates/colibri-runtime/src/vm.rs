@@ -377,6 +377,7 @@ impl VmBuilder {
             host_fns: Vec::new(),
             no_await: Vec::new(),
             host_consts: Vec::new(),
+            bound: Vec::new(),
             modules: Vec::new(),
             pending: Vec::new(),
             source_modules: Vec::new(),
@@ -423,6 +424,9 @@ pub struct Vm {
     no_await: Vec<(String, Vec<String>)>,
     /// The constants of named modules (`math.PI`).
     host_consts: Vec<ConstEntry>,
+    /// The names that `#[colibri::module]` bindings registered under (`__private::bind_module`),
+    /// so the same binding cannot register twice, whatever it registers.
+    bound: Vec<String>,
     /// The named host modules (`vm.module("physics")`) that have something registered, in the
     /// order they got it. The default `host` module always exists and is not listed.
     modules: Vec<String>,
@@ -645,6 +649,31 @@ impl Vm {
             name: name.to_string(),
             std: false,
         }
+    }
+
+    /// Claims `name` for one `#[colibri::module]` binding: a second claim of the same name is
+    /// an error, even for a binding that registers only classes.
+    pub(crate) fn claim_binding(&mut self, name: &str) -> Result<(), Error> {
+        let fail = |message: String| Error::Registration {
+            name: name.to_string(),
+            message,
+        };
+        if let Some(e) = reserved(name) {
+            return Err(e);
+        }
+        Self::check_module_name(name).map_err(fail)?;
+        if name == DEFAULT_MODULE {
+            return Err(fail(
+                "a binding needs a module name of its own, not the default module".to_string(),
+            ));
+        }
+        if self.bound.iter().any(|b| b == name) {
+            return Err(fail(format!(
+                "the module `{name}` is already registered: a binding registers once per `Vm`"
+            )));
+        }
+        self.bound.push(name.to_string());
+        Ok(())
     }
 
     /// The module `name` of the standard library: what `import name` and `import std.name`
@@ -2852,6 +2881,10 @@ fn trampoline(name: &str, module: &str, raw: crate::host::RawHostFn) -> HostFnIm
     })
 }
 
+/// The name a binding crate gives the type of its registration function's parameter
+/// (`fn physics(m: &mut colibri::Module<'_>)`, see `#[colibri::module]`).
+pub type Module<'a> = HostModule<'a>;
+
 /// A host module: a namespace of functions and types that scripts reach with `import`
 /// ([`Vm::module`]).
 pub struct HostModule<'vm> {
@@ -2903,6 +2936,22 @@ impl HostModule<'_> {
         };
         self.vm
             .register_const_in(&self.name, name, ConstValue::Int(value))
+    }
+
+    /// Registers the host class `T` in this module: [`HostModule::register_type`] under the
+    /// name a binding crate uses (`m.add_class::<World>()?`).
+    pub fn add_class<T: crate::IntoColibri>(&mut self) -> Result<(), Error> {
+        self.register_type::<T>()
+    }
+
+    /// Registers an exported function in this module: the `export` item that
+    /// `#[colibri::export] fn name` writes next to the function (`m.add_fn(name::export)?`).
+    pub fn add_fn(
+        &mut self,
+        export: impl FnOnce(&mut HostModule<'_>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.guard()?;
+        export(self)
     }
 
     /// Like [`Vm::register_fn`], into this module.

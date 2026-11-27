@@ -169,7 +169,7 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 ///     y: f32,
 /// }
 /// ```
-pub use colibri_bind::export;
+pub use colibri_bind::{export, module};
 pub use colibri_check::package::{
     AssetPatterns, Build, Manifest, asset_path_problem, parse_manifest,
 };
@@ -208,7 +208,7 @@ pub use reload::{ReloadOptions, ReloadOutcome};
 pub use render::{render_diagnostic, render_diagnostics};
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
 pub use vm::{
-    DEFAULT_MAX_CALL_DEPTH, HostModule, SessionCheck, SessionError, TestInfo, Vm, VmBuilder,
+    DEFAULT_MAX_CALL_DEPTH, HostModule, Module, SessionCheck, SessionError, TestInfo, Vm, VmBuilder,
 };
 
 /// The debugger interface (L10), hidden until it has settled: what `colibri debug` builds on,
@@ -245,7 +245,24 @@ pub mod __private {
     pub use crate::handle::{MutParam, RefParam};
     pub use crate::types::{TypeDesc, TypeRegistry};
 
-    use crate::{HostFn, Registration, Vm};
+    use crate::{HostFn, HostModule, Registration, Vm};
+
+    /// Starts the registration of a binding under `name` (the manifest key): the module to
+    /// register into, or an error when a binding already registered under that name.
+    pub fn bind_module<'a>(vm: &'a mut Vm, name: &str) -> Result<HostModule<'a>, Error> {
+        vm.claim_binding(name)?;
+        Ok(vm.module(name))
+    }
+
+    /// Registers an exported function into a module.
+    pub fn register_exported_in<M, F: HostFn<M>, const N: usize>(
+        module: &mut HostModule<'_>,
+        name: &str,
+        params: [&str; N],
+        f: F,
+    ) -> Result<(), Error> {
+        module.register_fn_named(name, params, f).map(|_| ())
+    }
 
     /// The `i`th field of a struct value, or the error that says what was wrong.
     pub fn field(value: &Value, i: usize, type_name: &str) -> Result<Value, Error> {
