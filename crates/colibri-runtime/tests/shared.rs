@@ -629,3 +629,100 @@ fn main() {
         "<Shared>\n",
     );
 }
+
+/// Runs `source` on `workers` threads to the end of the Vm, so that what a worker's copy prints
+/// when it is freed at shutdown is in the output. Gives what `run_main` returned and the output.
+fn run_to_the_end(workers: usize, source: &str) -> (Result<(), String>, String) {
+    let source = source.to_string();
+    within_a_minute(move || {
+        let out = Out::default();
+        let mut vm = colibri::Vm::builder()
+            .worker_threads(workers)
+            .stdout_shared(Box::new(out.clone()))
+            .build();
+        vm.load_source("shared.colibri", &source).unwrap();
+        let main = vm.run_main().map_err(|e| e.to_string());
+        if main.is_ok() {
+            vm.run_event_loop().unwrap();
+        }
+        drop(vm);
+        (main, out.text())
+    })
+}
+
+const OWN_FIELD_HOOK: &str = r#"
+class Res { n: int }
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.n}")
+        self.n = 0
+        print("wrote {self.n}")
+    }
+}
+"#;
+
+#[test]
+fn a_drop_hook_may_write_the_fields_of_its_own_frozen_object() {
+    for workers in [1, 3] {
+        // The copy that main reads. The hook of the original (not frozen) runs when it is
+        // copied into the `Shared`, and the hook of the frozen copy when the handle dies.
+        let main = format!(
+            "{OWN_FIELD_HOOK}\nfn main() {{\n    let s = Shared(Res {{ n: 7 }})\n    print(\"got {{s.get().n}}\")\n}}\n"
+        );
+        let (result, text) = run_to_the_end(workers, &main);
+        assert_eq!(result, Ok(()), "{workers} workers");
+        assert_eq!(
+            text, "drop 7\nwrote 0\ngot 7\ndrop 7\nwrote 0\n",
+            "{workers} workers"
+        );
+        // The copy that a task reads, freed when the Vm ends.
+        let worker = format!(
+            "{OWN_FIELD_HOOK}\nfn main() {{\n    let s = Shared(Res {{ n: 8 }})\n    let n = task.run(fn() => s.get().n).join().expect(\"task\")\n    print(\"got {{n}}\")\n}}\n"
+        );
+        let (result, text) = run_to_the_end(workers, &worker);
+        assert_eq!(result, Ok(()), "{workers} workers");
+        assert_eq!(
+            text, "drop 8\nwrote 0\ngot 8\ndrop 8\nwrote 0\n",
+            "{workers} workers"
+        );
+    }
+}
+
+const CHILD_HOOK: &str = r#"
+class Res { items: List[int] }
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.items.len()}")
+        self.items.push(9)
+        print("pushed")
+    }
+}
+"#;
+
+#[test]
+fn a_drop_hook_that_writes_a_frozen_child_still_panics_where_main_sees_it_and_a_worker_does_not() {
+    for workers in [1, 3] {
+        // On main the hook's panic is the result of `run_main`.
+        let main = format!(
+            "{CHILD_HOOK}\nfn main() {{\n    let s = Shared(Res {{ items: [1, 2] }})\n    print(\"got {{s.get().items.len()}}\")\n}}\n"
+        );
+        let (result, text) = run_to_the_end(workers, &main);
+        let err = result.expect_err("the hook of the frozen copy panics");
+        assert!(err.contains(FROZEN), "{workers} workers: {err}");
+        assert!(text.contains("got 2\ndrop 2\n"), "{text}");
+        assert_eq!(text.matches("pushed").count(), 1, "{text}");
+        // In a worker the panic is dropped: the hook stops before `pushed`, and the program is
+        // not an error.
+        let worker = format!(
+            "{CHILD_HOOK}\nfn main() {{\n    let s = Shared(Res {{ items: [1, 2, 3] }})\n    let n = task.run(fn() => s.get().items.len()).join().expect(\"task\")\n    print(\"got {{n}}\")\n}}\n"
+        );
+        let (result, text) = run_to_the_end(workers, &worker);
+        assert_eq!(result, Ok(()), "{workers} workers");
+        assert_eq!(
+            text.matches("drop 3").count(),
+            2,
+            "{workers} workers: {text}"
+        );
+        assert_eq!(text.matches("pushed").count(), 1, "{text}");
+    }
+}

@@ -378,6 +378,9 @@ pub trait Release: Engine {
             return false;
         }
         core.hook_depth += 1;
+        // A frozen object (a copy of a `Shared`) is dying: its hook may write its own fields.
+        // What the object holds stays frozen, as other copies may still share it.
+        obj.unfreeze();
         let result = self.call_detached(f, vec![Value::Obj(Rc::clone(obj))]);
         let core = self.core_mut();
         core.hook_depth -= 1;

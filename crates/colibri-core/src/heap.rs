@@ -787,6 +787,12 @@ impl ClassObj {
         self.frozen.set(true);
     }
 
+    /// Lets the object be written again. Only a dying object's own `Drop` hook uses it: nothing
+    /// else can see the object then, and what it holds stays frozen.
+    pub fn unfreeze(&self) {
+        self.frozen.set(false);
+    }
+
     /// Whether the object is frozen.
     #[inline]
     pub fn is_frozen(&self) -> bool {

@@ -1298,7 +1298,8 @@ To change the data, make a new value from it. A `clone()` of a frozen value, a v
 back through a task result or a channel, and a result of `sorted`, `map` and the like are ordinary
 copies and are not frozen. The copy is built by the same rules as a task's closure, so a `Shared`
 can hold what a task can be sent. One more thing is refused: a closure that captures a `let mut`
-variable (even only to read it), because that variable would have to be changed by every copy.
+variable that is written somewhere (a `let mut` that is never written is fine), because that
+variable would have to be changed by every copy.
 Strings are copied, not frozen, as they are never changed in place.
 
 Things to know:
@@ -1309,7 +1310,10 @@ Things to know:
 - The copies are freed when the last handle is gone. A worker thread that is idle keeps its copy
   until its next task begins, and the end of the program frees everything.
 - A type with an `impl Drop` in a `Shared` has its hook run once for each copy that is freed, not
-  once for the value, and a hook that changes the (frozen) object panics.
+  once for the value. The hook may write the fields of its own object (it is dying, and nothing else
+  can see it), but what the object holds stays frozen: a hook that pushes to a list in a field
+  panics. That panic is the result of `main` when the copy is main's, and is lost when the copy is
+  a worker's.
 - `Shared` is for data that is read. `Mutex`, for data that tasks change, is not built yet.
 
 ## Bytes and JSON
