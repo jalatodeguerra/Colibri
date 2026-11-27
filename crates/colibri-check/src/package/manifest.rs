@@ -19,6 +19,70 @@ pub struct Dependency {
     pub default_features: bool,
 }
 
+/// A crate listed in `[rust-dependencies]` (DESIGN §15.5): a Rust crate that registers a binding
+/// module, built into the project's runner. Nothing here calls cargo: the key is the module name
+/// (`import native`), and `<key>.cbi` next to the manifest is what `colibri check` reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RustDependency {
+    /// The key: the name `import` uses and the module name of the `.cbi` header.
+    pub name: String,
+    /// Where the key is written.
+    pub span: Span,
+    pub source: RustSource,
+    /// `features = [..]`, passed to cargo, with the place of each name.
+    pub features: Vec<(String, Span)>,
+    /// `default-features = false` is passed to cargo.
+    pub default_features: bool,
+}
+
+/// Where the crate of a [`RustDependency`] comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RustSource {
+    /// `{ binding = "colibri-rapier", version = "0.1" }`: a crate of the registry.
+    Binding { crate_name: String, version: String },
+    /// `{ path = "native/" }`: a crate in the project (its package name is read from its
+    /// `Cargo.toml` when the runner is made, not here).
+    Path { path: String },
+    /// `{ git = "https://..", rev = "..", crate = "x" }`.
+    Git {
+        url: String,
+        spec: GitSpec,
+        crate_name: String,
+    },
+}
+
+impl RustSource {
+    /// A text that is equal for two sources that name one crate. A git url is compared without
+    /// a trailing `/` or `.git`. A path is compared by where it points: in the manifest's
+    /// folder `dir` when given (so two packages' `native/` differ), else as written.
+    pub(super) fn identity(&self, dir: Option<&std::path::Path>) -> String {
+        match self {
+            RustSource::Binding { crate_name, .. } => format!("crate {crate_name}"),
+            RustSource::Git {
+                crate_name, url, ..
+            } => {
+                let url = url.trim_end_matches('/');
+                let url = url.strip_suffix(".git").unwrap_or(url);
+                let url = url.trim_end_matches('/');
+                format!("git {url} crate {crate_name}")
+            }
+            RustSource::Path { path } => {
+                let trimmed = path.trim_end_matches(['/', '\\']);
+                let trimmed = trimmed.strip_prefix("./").unwrap_or(trimmed);
+                match dir {
+                    Some(dir) => format!(
+                        "path {}",
+                        super::fs::normalize(&dir.join(trimmed))
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    ),
+                    None => format!("path {trimmed}"),
+                }
+            }
+        }
+    }
+}
+
 /// Where a dependency comes from.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
@@ -81,6 +145,13 @@ pub struct Manifest {
     pub allow_ffi: Vec<String>,
     /// Where each name of `allow_ffi` is written.
     pub allow_ffi_spans: Vec<Span>,
+    /// `[rust-dependencies]`: the Rust crates that provide binding modules (DESIGN §15.5).
+    pub rust_dependencies: Vec<RustDependency>,
+    /// `allow-rust = ["name"]` in `[package]`: the git dependencies that may declare
+    /// `[rust-dependencies]`. Only the root package's list counts.
+    pub allow_rust: Vec<String>,
+    /// Where each name of `allow_rust` is written.
+    pub allow_rust_spans: Vec<Span>,
     /// `[features]`: the feature flags `@when(name)` can test (DESIGN §3.6).
     pub features: Features,
     /// `[build]`: what `colibri build` adds to the program.
@@ -192,7 +263,9 @@ pub fn from_tables(
     let mut name = None;
     let mut ffi = false;
     let mut allow_ffi: Vec<(String, Span)> = Vec::new();
+    let mut allow_rust: Vec<(String, Span)> = Vec::new();
     let mut dependencies: Vec<Dependency> = Vec::new();
+    let mut rust_dependencies: Vec<RustDependency> = Vec::new();
     let mut features = Features::default();
     let mut build = Build::default();
     for table in &tables {
@@ -206,7 +279,32 @@ pub fn from_tables(
                     ));
                 }
             }
-            ["package"] => package(table, &mut name, &mut ffi, &mut allow_ffi, &mut errors),
+            ["package"] => package(
+                table,
+                &mut name,
+                &mut ffi,
+                &mut allow_ffi,
+                &mut allow_rust,
+                &mut errors,
+            ),
+            ["rust-dependencies"] => {
+                for entry in &table.entries {
+                    rust_dependency(
+                        &entry.key,
+                        entry.key_span,
+                        &entry.value,
+                        &mut rust_dependencies,
+                        &mut errors,
+                    );
+                }
+            }
+            ["rust-dependencies", dep] => {
+                let value = toml::Value {
+                    span: table.span,
+                    kind: ValueKind::Table(table.entries.clone()),
+                };
+                rust_dependency(dep, table.span, &value, &mut rust_dependencies, &mut errors);
+            }
             ["features"] => parse_features(table, &mut features, &mut errors),
             ["build"] => parse_build(table, &mut build, &mut errors),
             ["dependencies"] => {
@@ -234,11 +332,12 @@ pub fn from_tables(
                     table.span,
                 )
                 .with_hint(
-                    "`colibri.toml` has `[package]`, `[dependencies]`, `[features]` and `[build]`",
+                    "`colibri.toml` has `[package]`, `[dependencies]`, `[rust-dependencies]`, `[features]` and `[build]`",
                 ),
             ),
         }
     }
+    check_rust_clashes(&dependencies, &rust_dependencies, &mut errors);
     let Some((name, name_span)) = name else {
         if errors.is_empty() {
             errors.push(
@@ -258,6 +357,9 @@ pub fn from_tables(
         ffi,
         allow_ffi_spans: allow_ffi.iter().map(|(_, s)| *s).collect(),
         allow_ffi: allow_ffi.into_iter().map(|(n, _)| n).collect(),
+        rust_dependencies,
+        allow_rust_spans: allow_rust.iter().map(|(_, s)| *s).collect(),
+        allow_rust: allow_rust.into_iter().map(|(n, _)| n).collect(),
         features,
         build,
     })
@@ -397,6 +499,7 @@ fn package(
     name: &mut Option<(String, Span)>,
     ffi: &mut bool,
     allow_ffi: &mut Vec<(String, Span)>,
+    allow_rust: &mut Vec<(String, Span)>,
     errors: &mut Vec<Diagnostic>,
 ) {
     for entry in &table.entries {
@@ -442,12 +545,32 @@ fn package(
                 )
                 .with_hint("write `allow-ffi = [\"name\"]`"),
             ),
+            ("allow-rust", ValueKind::Array(items)) => {
+                for item in items {
+                    match &item.kind {
+                        ValueKind::Str(n) if is_name(n) => allow_rust.push((n.clone(), item.span)),
+                        _ => errors.push(
+                            Diagnostic::error("`allow-rust` lists package names", item.span)
+                                .with_hint(
+                                    "write `allow-rust = [\"name\"]`: the name `import` uses",
+                                ),
+                        ),
+                    }
+                }
+            }
+            ("allow-rust", _) => errors.push(
+                Diagnostic::error(
+                    "`allow-rust` must be a list of package names",
+                    entry.value.span,
+                )
+                .with_hint("write `allow-rust = [\"name\"]`"),
+            ),
             (other, _) => errors.push(
                 Diagnostic::error(
                     format!("unknown key `{other}` in `[package]`"),
                     entry.key_span,
                 )
-                .with_hint("the keys are `name`, `ffi` and `allow-ffi`"),
+                .with_hint("the keys are `name`, `ffi`, `allow-ffi` and `allow-rust`"),
             ),
         }
     }
@@ -675,6 +798,340 @@ fn dependency(
                 "write `{name} = {{ path = \"../{name}\" }}` or `{name} = {{ git = \"<url>\" }}`"
             )),
         ),
+    }
+}
+
+/// A crate name as cargo takes it: letters, digits, `-` and `_`, starting with a letter.
+fn is_crate_name(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn rust_dependency(
+    name: &str,
+    name_span: Span,
+    value: &toml::Value,
+    out: &mut Vec<RustDependency>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if !is_name(name) {
+        errors.push(
+            Diagnostic::error(
+                format!("`{name}` is not a valid name for a Rust dependency"),
+                name_span,
+            )
+            .with_hint(
+                "the key is the module name `import` uses: letters, digits and `_`, not a keyword",
+            ),
+        );
+        return;
+    }
+    if let Some(prev) = out.iter().find(|d| d.name == name) {
+        errors.push(
+            Diagnostic::error(
+                format!("the Rust dependency `{name}` is listed more than once"),
+                name_span,
+            )
+            .with_label(prev.span, "first listed here"),
+        );
+        return;
+    }
+    let ValueKind::Table(entries) = &value.kind else {
+        errors.push(
+            Diagnostic::error(
+                format!("the Rust dependency `{name}` must say where the crate is"),
+                value.span,
+            )
+            .with_hint(format!(
+                "write `{name} = {{ path = \"native/\" }}`, `{{ binding = \"crate\", version = \"0.1\" }}` or `{{ git = \"<url>\", crate = \"crate\" }}`"
+            )),
+        );
+        return;
+    };
+    let before = errors.len();
+    let string = |key: &str, vspan: Span, errors: &mut Vec<Diagnostic>, v: &str| {
+        let empty = v.trim().is_empty();
+        if empty {
+            errors.push(Diagnostic::error(format!("`{key}` is empty"), vspan));
+        }
+        (!empty).then(|| (v.to_string(), vspan))
+    };
+    let mut binding: Option<(String, Span)> = None;
+    let mut version: Option<(String, Span)> = None;
+    let mut path: Option<(String, Span)> = None;
+    let mut git: Option<(String, Span)> = None;
+    let mut crate_name: Option<(String, Span)> = None;
+    let mut specs: Vec<(&'static str, String, Span, Span)> = Vec::new();
+    let mut features: Vec<(String, Span)> = Vec::new();
+    let mut default_features = true;
+    // The keys that choose a source, in the order written, for the "more than one" message.
+    let mut sources: Vec<(&'static str, Span)> = Vec::new();
+    for entry in entries {
+        let vspan = entry.value.span;
+        let kspan = entry.key_span;
+        match (entry.key.as_str(), &entry.value.kind) {
+            ("binding", ValueKind::Str(v)) => {
+                sources.push(("binding", kspan));
+                binding = string("binding", vspan, errors, v);
+            }
+            ("path", ValueKind::Str(v)) => {
+                sources.push(("path", kspan));
+                path = string("path", vspan, errors, v);
+            }
+            ("git", ValueKind::Str(v)) => {
+                sources.push(("git", kspan));
+                git = string("git", vspan, errors, v);
+            }
+            ("version", ValueKind::Str(v)) => version = string("version", vspan, errors, v),
+            ("crate", ValueKind::Str(v)) => crate_name = string("crate", vspan, errors, v),
+            (key @ ("binding" | "path" | "git" | "version" | "crate"), _) => errors
+                .push(Diagnostic::error(format!("`{key}` must be a string"), vspan)),
+            (key @ ("rev" | "tag" | "branch"), ValueKind::Str(v)) => {
+                let key = match key {
+                    "rev" => "rev",
+                    "tag" => "tag",
+                    _ => "branch",
+                };
+                specs.push((key, v.clone(), kspan, vspan));
+            }
+            ("rev" | "tag" | "branch", _) => errors.push(Diagnostic::error(
+                format!("`{}` must be a string", entry.key),
+                vspan,
+            )),
+            ("features", ValueKind::Array(items)) => {
+                for item in items {
+                    match &item.kind {
+                        // Cargo's feature names, not Colibri's: any non-empty text.
+                        ValueKind::Str(f) if !f.is_empty() => {
+                            if !features.iter().any(|(n, _)| n == f) {
+                                features.push((f.clone(), item.span));
+                            }
+                        }
+                        _ => errors.push(
+                            Diagnostic::error("`features` lists feature names", item.span)
+                                .with_hint("write `features = [\"serde\"]`"),
+                        ),
+                    }
+                }
+            }
+            ("features", _) => errors.push(
+                Diagnostic::error("`features` must be a list of feature names", vspan)
+                    .with_hint("write `features = [\"serde\"]`"),
+            ),
+            ("default-features", ValueKind::Bool(b)) => default_features = *b,
+            ("default-features", _) => errors.push(
+                Diagnostic::error("`default-features` must be `true` or `false`", vspan)
+                    .with_hint("write `default-features = false` to leave the crate's default features off"),
+            ),
+            (other, _) => errors.push(
+                Diagnostic::error(
+                    format!("unknown key `{other}` in the Rust dependency `{name}`"),
+                    kspan,
+                )
+                .with_hint("a Rust dependency is `binding` with `version`, or `path`, or `git` with `crate` and optionally `rev`, `tag` or `branch`; it may have `features` and `default-features`"),
+            ),
+        }
+    }
+    if let [first, second, ..] = sources.as_slice() {
+        errors.push(
+            Diagnostic::error(
+                format!(
+                    "the Rust dependency `{name}` says both `{}` and `{}`: use only one of `binding`, `path` and `git`",
+                    first.0, second.0
+                ),
+                second.1,
+            )
+            .with_label(first.1, "first given here"),
+        );
+    } else if sources.is_empty() && errors.len() == before {
+        errors.push(
+            Diagnostic::error(
+                format!("the Rust dependency `{name}` has no `binding`, `path` or `git`"),
+                value.span,
+            )
+            .with_hint(format!(
+                "write `{name} = {{ path = \"native/\" }}`, `{{ binding = \"crate\", version = \"0.1\" }}` or `{{ git = \"<url>\", crate = \"crate\" }}`"
+            )),
+        );
+    }
+    let key_span = |key: &str| {
+        entries
+            .iter()
+            .find(|e| e.key == key)
+            .map_or(value.span, |e| e.key_span)
+    };
+    if let [first, second, ..] = specs.as_slice() {
+        errors.push(
+            Diagnostic::error(
+                format!(
+                    "the Rust dependency `{name}` says both `{}` and `{}`: use only one of `rev`, `tag` and `branch`",
+                    first.0, second.0
+                ),
+                second.2,
+            )
+            .with_label(first.2, "first given here"),
+        );
+    }
+    if git.is_none() {
+        if let Some((key, _, kspan, _)) = specs.first() {
+            errors.push(
+                Diagnostic::error(
+                    format!("`{key}` in the Rust dependency `{name}` only goes with `git`"),
+                    *kspan,
+                )
+                .with_hint("a crate from the registry or a folder has no revision here"),
+            );
+        }
+        if crate_name.is_some() {
+            errors.push(
+                Diagnostic::error(
+                    format!("`crate` in the Rust dependency `{name}` only goes with `git`"),
+                    key_span("crate"),
+                )
+                .with_hint("`binding` already names the crate"),
+            );
+        }
+    }
+    if binding.is_none() && version.is_some() {
+        errors.push(
+            Diagnostic::error(
+                format!("`version` in the Rust dependency `{name}` only goes with `binding`"),
+                key_span("version"),
+            )
+            .with_hint("a `path` crate has its version in its own `Cargo.toml`"),
+        );
+    }
+    if binding.is_some() && version.is_none() {
+        errors.push(
+            Diagnostic::error(
+                format!("the Rust dependency `{name}` has `binding` but no `version`"),
+                key_span("binding"),
+            )
+            .with_hint(format!(
+                "write `{name} = {{ binding = \"{}\", version = \"0.1\" }}`",
+                binding.as_ref().map_or("crate", |(b, _)| b.as_str())
+            )),
+        );
+    }
+    if git.is_some() && crate_name.is_none() {
+        errors.push(
+            Diagnostic::error(
+                format!("the Rust dependency `{name}` has `git` but no `crate`"),
+                key_span("git"),
+            )
+            .with_hint(
+                "`crate` names the package inside the repository: `crate = \"colibri-rapier\"`",
+            ),
+        );
+    }
+    for (key, found) in [("binding", &binding), ("crate", &crate_name)] {
+        if let Some((n, span)) = found
+            && !is_crate_name(n)
+        {
+            errors.push(
+                Diagnostic::error(format!("`{n}` is not a crate name"), *span).with_hint(format!(
+                    "`{key}` is a Cargo package name: letters, digits, `-` and `_`"
+                )),
+            );
+        }
+    }
+    if errors.len() > before {
+        return;
+    }
+    let source = match (binding, version, path, git, crate_name) {
+        (Some((crate_name, _)), Some((version, _)), None, None, None) => RustSource::Binding {
+            crate_name,
+            version,
+        },
+        (None, None, Some((path, _)), None, None) => RustSource::Path { path },
+        (None, None, None, Some((url, url_span)), Some((crate_name, _))) => {
+            if let Some(why) = super::git::userinfo_problem(&url) {
+                errors.push(
+                    Diagnostic::error(
+                        format!(
+                            "the url of the Rust dependency `{name}` has credentials in it: {why}"
+                        ),
+                        url_span,
+                    )
+                    .with_hint(
+                        "keep credentials out of `colibri.toml`: use a git credential helper or an ssh key",
+                    ),
+                );
+                return;
+            }
+            if let Some(d) = bad_url(&url, url_span) {
+                errors.push(d);
+                return;
+            }
+            let spec = match specs.pop() {
+                None => GitSpec::DefaultBranch,
+                Some((key, value, _, vspan)) => {
+                    if let Some(d) = bad_spec(key, &value, vspan) {
+                        errors.push(d);
+                        return;
+                    }
+                    match key {
+                        "rev" => GitSpec::Rev(value),
+                        "tag" => GitSpec::Tag(value),
+                        _ => GitSpec::Branch(value),
+                    }
+                }
+            };
+            RustSource::Git {
+                url: super::git::lower_scheme(&url),
+                spec,
+                crate_name,
+            }
+        }
+        // Every other combination was reported above.
+        _ => return,
+    };
+    out.push(RustDependency {
+        name: name.to_string(),
+        span: name_span,
+        source,
+        features,
+        default_features,
+    });
+}
+
+/// The rules between tables: a Rust dependency's key may not be a `[dependencies]` key (both are
+/// names for `import`), and one crate may not be listed under two keys (it would be
+/// registered twice).
+fn check_rust_clashes(
+    dependencies: &[Dependency],
+    rust: &[RustDependency],
+    errors: &mut Vec<Diagnostic>,
+) {
+    for (i, r) in rust.iter().enumerate() {
+        if let Some(d) = dependencies.iter().find(|d| d.name == r.name) {
+            errors.push(
+                Diagnostic::error(
+                    format!(
+                        "`{}` is both a dependency and a Rust dependency: one name cannot be imported two ways",
+                        r.name
+                    ),
+                    r.span,
+                )
+                .with_label(d.name_span, "listed in `[dependencies]` here")
+                .with_hint("rename one of them: the key of a Rust dependency is its module name"),
+            );
+        }
+        let id = r.source.identity(None);
+        if let Some(first) = rust[..i].iter().find(|o| o.source.identity(None) == id) {
+            errors.push(
+                Diagnostic::error(
+                    format!(
+                        "the Rust dependency `{}` is the same crate as `{}`",
+                        r.name, first.name
+                    ),
+                    r.span,
+                )
+                .with_label(first.span, "first listed here")
+                .with_hint("a crate registers one module: list it once, under the name `import` should use"),
+            );
+        }
     }
 }
 
@@ -1347,6 +1804,252 @@ mod tests {
         assert_eq!(
             bad("default-features = \"no\""),
             "`default-features` must be `true` or `false`"
+        );
+    }
+
+    fn rust(text: &str) -> Vec<RustDependency> {
+        ok(&format!(
+            "[package]\nname = \"x\"\n[rust-dependencies]\n{text}\n"
+        ))
+        .rust_dependencies
+    }
+
+    fn rust_errs(text: &str) -> Vec<String> {
+        errs(&format!(
+            "[package]\nname = \"x\"\n[rust-dependencies]\n{text}\n"
+        ))
+    }
+
+    /// The message and the text its span covers, for the first error.
+    fn rust_err_at(text: &str) -> (String, String) {
+        let full = format!("[package]\nname = \"x\"\n[rust-dependencies]\n{text}\n");
+        let d = parse(FileId(0), &full).expect_err("an error").remove(0);
+        let at = full[d.span.start as usize..d.span.end as usize].to_string();
+        (d.message, at)
+    }
+
+    #[test]
+    fn rust_dependencies_in_each_form() {
+        let all = rust(
+            "rapier = { binding = \"colibri-rapier\", version = \"0.1\" }\nnative = { path = \"native/\" }\nextra = { git = \"https://example.com/x.git\", rev = \"abc1234\", crate = \"x\" }",
+        );
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].name, "rapier");
+        assert_eq!(
+            all[0].source,
+            RustSource::Binding {
+                crate_name: "colibri-rapier".into(),
+                version: "0.1".into()
+            }
+        );
+        assert_eq!(
+            all[1].source,
+            RustSource::Path {
+                path: "native/".into()
+            }
+        );
+        assert_eq!(
+            all[2].source,
+            RustSource::Git {
+                url: "https://example.com/x.git".into(),
+                spec: GitSpec::Rev("abc1234".into()),
+                crate_name: "x".into()
+            }
+        );
+        assert!(
+            all.iter()
+                .all(|r| r.default_features && r.features.is_empty())
+        );
+    }
+
+    #[test]
+    fn rust_git_takes_a_tag_a_branch_or_nothing() {
+        let spec = |extra: &str| match &rust(&format!(
+            "x = {{ git = \"https://example.com/x.git\", crate = \"x\"{extra} }}"
+        ))[0]
+            .source
+        {
+            RustSource::Git { spec, .. } => spec.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(spec(""), GitSpec::DefaultBranch);
+        assert_eq!(spec(", tag = \"v1\""), GitSpec::Tag("v1".into()));
+        assert_eq!(spec(", branch = \"dev\""), GitSpec::Branch("dev".into()));
+    }
+
+    #[test]
+    fn rust_dependency_as_its_own_table_with_features() {
+        let m = ok(
+            "[package]\nname = \"x\"\n[rust-dependencies.native]\npath = \"native\"\nfeatures = [\"a\", \"b\"]\ndefault-features = false\n",
+        );
+        let r = &m.rust_dependencies[0];
+        assert_eq!(r.name, "native");
+        let names: Vec<&str> = r.features.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+        assert!(!r.default_features);
+    }
+
+    #[test]
+    fn no_rust_dependencies_by_default() {
+        let m = ok("[package]\nname = \"x\"\n");
+        assert!(m.rust_dependencies.is_empty() && m.allow_rust.is_empty());
+    }
+
+    #[test]
+    fn allow_rust_lists_names_with_their_places() {
+        let m = ok("[package]\nname = \"x\"\nallow-rust = [\"physics\", \"audio\"]\n");
+        assert_eq!(m.allow_rust, ["physics", "audio"]);
+        assert_eq!(m.allow_rust_spans.len(), 2);
+        assert!(
+            errs("[package]\nname = \"x\"\nallow-rust = \"a\"\n")[0].contains("must be a list")
+        );
+        assert!(
+            errs("[package]\nname = \"x\"\nallow-rust = [\"fn\"]\n")[0]
+                .contains("lists package names")
+        );
+    }
+
+    #[test]
+    fn rust_unknown_keys_are_reported_at_the_key() {
+        let (m, at) = rust_err_at("n = { path = \"p\", colour = \"red\" }");
+        assert!(m.contains("unknown key `colour`"), "{m}");
+        assert_eq!(at, "colour");
+        // `registry` and `optional` are cargo's, not ours.
+        assert!(rust_errs("n = { path = \"p\", optional = true }")[0].contains("unknown key"));
+    }
+
+    #[test]
+    fn rust_needs_exactly_one_source() {
+        let (m, at) = rust_err_at("n = { features = [\"a\"] }");
+        assert!(m.contains("has no `binding`, `path` or `git`"), "{m}");
+        assert!(at.contains("features"), "{at}");
+        let (m, at) = rust_err_at("n = { path = \"p\", binding = \"c\", version = \"1\" }");
+        assert!(m.contains("both `path` and `binding`"), "{m}");
+        assert_eq!(at, "binding");
+        let (m, at) =
+            rust_err_at("n = { path = \"p\", git = \"https://example.com/x.git\", crate = \"c\" }");
+        assert!(m.contains("both `path` and `git`"), "{m}");
+        assert_eq!(at, "git");
+        assert!(rust_errs("n = \"p\"")[0].contains("must say where the crate is"));
+    }
+
+    #[test]
+    fn rust_binding_needs_a_version_and_only_it_takes_one() {
+        let (m, at) = rust_err_at("n = { binding = \"colibri-x\" }");
+        assert!(m.contains("`binding` but no `version`"), "{m}");
+        assert_eq!(at, "binding");
+        let (m, at) = rust_err_at("n = { path = \"p\", version = \"1\" }");
+        assert!(
+            m.contains("`version`") && m.contains("only goes with `binding`"),
+            "{m}"
+        );
+        assert_eq!(at, "version");
+    }
+
+    #[test]
+    fn rust_git_needs_a_crate_and_only_it_takes_one() {
+        let (m, at) = rust_err_at("n = { git = \"https://example.com/x.git\" }");
+        assert!(m.contains("`git` but no `crate`"), "{m}");
+        assert_eq!(at, "git");
+        let (m, at) = rust_err_at("n = { binding = \"c\", version = \"1\", crate = \"c\" }");
+        assert!(
+            m.contains("`crate`") && m.contains("only goes with `git`"),
+            "{m}"
+        );
+        assert_eq!(at, "crate");
+        let (m, at) = rust_err_at("n = { path = \"p\", rev = \"abc1234\" }");
+        assert!(
+            m.contains("`rev`") && m.contains("only goes with `git`"),
+            "{m}"
+        );
+        assert_eq!(at, "rev");
+        let (m, _) = rust_err_at(
+            "n = { git = \"https://example.com/x.git\", crate = \"c\", rev = \"abc1234\", tag = \"t\" }",
+        );
+        assert!(
+            m.contains("use only one of `rev`, `tag` and `branch`"),
+            "{m}"
+        );
+        // The url and revision rules of `[dependencies]` apply too.
+        assert!(rust_errs("n = { git = \"../x\", crate = \"c\" }")[0].contains("relative path"));
+        assert!(
+            rust_errs("n = { git = \"https://u:s3cret@example.com/x\", crate = \"c\" }")[0]
+                .contains("user name and password")
+        );
+        assert!(
+            rust_errs("n = { git = \"https://example.com/x\", crate = \"c\", rev = \"zz\" }")[0]
+                .contains("not a commit hash")
+        );
+    }
+
+    #[test]
+    fn rust_key_must_be_a_module_name() {
+        for key in ["fn", "my-lib", "1x", "a.b"] {
+            // A dotted key is a nested table in TOML, so quote it.
+            let (m, at) = rust_err_at(&format!("\"{key}\" = {{ path = \"p\" }}"));
+            assert!(
+                m.contains("not a valid name for a Rust dependency"),
+                "{key}: {m}"
+            );
+            assert!(at.contains(key), "{key}: {at}");
+        }
+    }
+
+    #[test]
+    fn rust_key_may_not_repeat_or_match_a_dependency() {
+        let (m, at) = rust_err_at("n = { path = \"a\" }\n[rust-dependencies.n]\npath = \"b\"");
+        assert!(m.contains("listed more than once"), "{m}");
+        assert!(at.contains("rust-dependencies.n"), "{at}");
+        let text = "[package]\nname = \"x\"\n[dependencies]\nnative = { path = \"../n\" }\n[rust-dependencies]\nnative = { path = \"native\" }\n";
+        let d = parse(FileId(0), text).expect_err("a clash").remove(0);
+        assert!(
+            d.message
+                .contains("both a dependency and a Rust dependency")
+        );
+        assert_eq!(&text[d.span.start as usize..d.span.end as usize], "native");
+        // The rust key, not the dependency key, is the one the error points at.
+        assert!(d.span.start as usize > text.find("[rust-dependencies]").unwrap());
+    }
+
+    #[test]
+    fn one_crate_under_two_keys_is_an_error_at_the_second() {
+        let text = "[package]\nname = \"x\"\n[rust-dependencies]\na = { binding = \"colibri-x\", version = \"0.1\" }\nb = { binding = \"colibri-x\", version = \"0.2\" }\n";
+        let d = parse(FileId(0), text).expect_err("same crate").remove(0);
+        assert!(
+            d.message.contains("`b` is the same crate as `a`"),
+            "{}",
+            d.message
+        );
+        assert_eq!(&text[d.span.start as usize..d.span.end as usize], "b");
+        // The same folder written two ways, and the same crate from the registry and from git.
+        assert!(
+            rust_errs("a = { path = \"native\" }\nb = { path = \"./native/\" }")[0]
+                .contains("same crate")
+        );
+        assert!(
+            rust_errs(
+                "a = { binding = \"c\", version = \"1\" }\nb = { binding = \"c\", version = \"1\" }"
+            )[0]
+            .contains("same crate")
+        );
+        // Different crates, or the same name from another place, are fine.
+        assert_eq!(
+            rust("a = { path = \"one\" }\nb = { path = \"two\" }").len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_git_crate_is_the_same_with_or_without_dot_git_and_a_slash() {
+        let e = rust_errs(
+            "a = { git = \"https://example.com/r.git\", crate = \"c\" }\nb = { git = \"https://example.com/r/\", crate = \"c\" }",
+        );
+        assert!(e[0].contains("same crate"), "{e:?}");
+        // Another crate of the same repository is another crate.
+        assert_eq!(
+            rust("a = { git = \"https://example.com/r\", crate = \"c\" }\nb = { git = \"https://example.com/r\", crate = \"d\" }")
+                .len(),
+            2
         );
     }
 }

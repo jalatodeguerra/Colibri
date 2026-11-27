@@ -1055,6 +1055,81 @@ fn a_git_dependency_with_ffi_must_be_allowed_by_the_root() {
 }
 
 #[test]
+fn a_git_dependency_with_rust_dependencies_must_be_allowed_by_the_root() {
+    let sb = Sandbox::new("allow_rust");
+    let repo = sb.repo("bound");
+    let mut vm = colibri_runtime::Vm::builder().build();
+    vm.module("native")
+        .register_fn("add", |a: i64, b: i64| a + b)
+        .unwrap();
+    let mut files = lib_files(
+        "bound",
+        "b",
+        "\n[rust-dependencies]\nnative = { path = \"native/\" }\n",
+    );
+    files.push(("native.cbi".into(), vm.module("native").interface_text()));
+    repo.commit(&files, "bound");
+    // A second package declares the table but did not commit the interface.
+    let bare = sb.repo("bare");
+    bare.commit(
+        &lib_files(
+            "bare",
+            "b",
+            "\n[rust-dependencies]\nother = { path = \"other/\" }\n",
+        ),
+        "bare",
+    );
+    let dep = format!("bound = {{ git = \"{}\" }}", repo.url());
+    let app_with = |folder: &str, package_extra: &str| {
+        let app = sb.app(folder, &dep, &["bound"]);
+        fs::write(
+            app.join("colibri.toml"),
+            format!("[package]\nname = \"app\"\n{package_extra}[dependencies]\n{dep}\n"),
+        )
+        .unwrap();
+        app
+    };
+    let app = app_with("app", "");
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    for want in [
+        "the git dependency `bound` declares `[rust-dependencies]`",
+        "needed by `app`",
+        "allow-rust = [\"bound\"]",
+    ] {
+        assert!(out.stderr.contains(want), "{want}: {}", out.stderr);
+    }
+    // Its author must commit the interface: the hint says so.
+    let bare_dep = format!("bare = {{ git = \"{}\" }}", bare.url());
+    let app = sb.app("app_bare", &bare_dep, &["bare"]);
+    fs::write(
+        app.join("colibri.toml"),
+        format!("[package]\nname = \"app\"\nallow-rust = [\"bare\"]\n[dependencies]\n{bare_dep}\n"),
+    )
+    .unwrap();
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    for want in [
+        "`other` is a Rust binding",
+        "the author of this git package must generate it and commit it",
+    ] {
+        assert!(out.stderr.contains(want), "{want}: {}", out.stderr);
+    }
+    // `allow-ffi` is another capability: it does not allow this one.
+    let app = app_with("app2", "allow-ffi = [\"bound\"]\n");
+    assert_eq!(sb.colibri(&["check", app.to_str().unwrap()]).code, 1);
+    let app = app_with("app3", "allow-rust = [\"other\", \"bound\"]\n");
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    // A name that matches no dependency is a warning, as for `allow-ffi`.
+    assert!(
+        out.stderr.contains("`allow-rust` lists `other`") && !out.stderr.contains("lists `bound`"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
 fn loading_never_fetches_it_says_to_run_the_tool() {
     // This is what the language server does: it loads through the library, which has no
     // network code, so a dependency that is not in the cache is a diagnostic.

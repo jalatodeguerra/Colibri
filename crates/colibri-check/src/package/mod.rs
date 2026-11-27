@@ -29,14 +29,15 @@ pub use fs::{
 };
 pub use git::{COMPLETE_MARKER, HOME_VAR, cache_root, checkout_dir, redact, redact_url};
 pub use loader::{
-    CACHE_TAG_FILE, Entry, LoadError, LoadOptions, MANIFEST_FILE, is_hidden_or_cache, load,
-    load_with, not_a_script, not_a_script_plainly, skipped_folder,
+    CACHE_TAG_FILE, Entry, LoadError, LoadOptions, MANIFEST_FILE, binding_interface_name,
+    is_hidden_or_cache, load, load_with, not_a_script, not_a_script_plainly, rust_binding_files,
+    skipped_folder,
 };
 pub use lock::{LOCK_FILE, Lock, LockEntry};
 pub use manifest::parse as parse_manifest;
 pub use manifest::{
-    Build, Dependency, Features, GitSource, GitSpec, Manifest, Source, feature_name_problem,
-    is_name as is_package_name,
+    Build, Dependency, Features, GitSource, GitSpec, Manifest, RustDependency, RustSource, Source,
+    feature_name_problem, is_name as is_package_name,
 };
 pub use sync::{SyncOptions, SyncReport, Update, sync};
 
@@ -107,6 +108,20 @@ pub struct Loaded {
     /// The problems among `diagnostics` that mean code or a module was left out of the
     /// program (a tool that must know every use of a name cannot trust it then).
     pub dropped: Vec<Dropped>,
+    /// The Rust bindings declared by the packages of the program (the root's and every
+    /// dependency's `[rust-dependencies]`), each with the interface file it needs.
+    pub rust_bindings: Vec<RustBinding>,
+}
+
+/// One key of a `[rust-dependencies]` table of some package of the program.
+#[derive(Clone, Debug)]
+pub struct RustBinding {
+    /// The key: the module name.
+    pub key: String,
+    /// Where the key is written (in the package's `colibri.toml`).
+    pub span: colibri_syntax::Span,
+    /// `<key>.cbi` in the folder of the package that declares the key (it may not exist).
+    pub interface: std::path::PathBuf,
 }
 
 /// Why part of a program is missing from a [`Loaded`].

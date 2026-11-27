@@ -16,8 +16,8 @@ use super::sync::inside;
 use super::toml;
 use super::{
     Dropped, DroppedKind, ImportTarget, LATER_STD_MODULES, LIB_FILE, Loaded, MAIN_FILE,
-    MISSING_STD_HINTS, ModuleMeta, PackageNode, SOURCE_EXT, WEB_OS, WEB_UNAVAILABLE_STD,
-    std_module,
+    MISSING_STD_HINTS, ModuleMeta, PackageNode, RustBinding, SOURCE_EXT, WEB_OS,
+    WEB_UNAVAILABLE_STD, std_module,
 };
 
 /// The manifest's file name.
@@ -55,6 +55,11 @@ struct Tree {
     allow_ffi: Vec<String>,
     /// Where each name of `allow_ffi` is written, with the manifest's file.
     allow_ffi_spans: Vec<Span>,
+    /// `allow-rust` of the manifest, as `allow_ffi`.
+    allow_rust: Vec<String>,
+    allow_rust_spans: Vec<Span>,
+    /// The first key of the manifest's `[rust-dependencies]`, if it has any.
+    declares_rust: Option<Span>,
     deps: Vec<(String, usize)>,
     /// The feature names `@when` knows in this package's files, and those that are on.
     known_features: HashSet<String>,
@@ -146,6 +151,38 @@ struct Loader<'a> {
     clashes: HashSet<(usize, usize)>,
     /// Trees already reported for `ffi = true` without the root's `allow-ffi`.
     ffi_reported: HashSet<usize>,
+    /// The same for `[rust-dependencies]` without the root's `allow-rust`.
+    rust_reported: HashSet<usize>,
+    /// The keys of every `[rust-dependencies]` seen so far, with what each names (module
+    /// names are global to the program), in the order the packages were loaded.
+    rust_bindings: Vec<RustBinding>,
+    rust_identities: Vec<(String, String, Span)>,
+}
+
+/// The interface file of the binding module `key`: `<key>.cbi`, next to `colibri.toml`.
+pub fn binding_interface_name(key: &str) -> String {
+    format!("{key}.cbi")
+}
+
+/// The Rust bindings of the package in `dir`: each key of its `[rust-dependencies]` with the
+/// interface file `colibri check` reads for it (`<key>.cbi` in `dir`, which may not exist yet).
+/// Empty when there is no manifest or it does not parse: the loader reports that. No other
+/// `.cbi` in the folder is a binding. Nothing here calls cargo.
+pub fn rust_binding_files(fs: &dyn SourceFs, dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(text) = fs.read(&dir.join(MANIFEST_FILE)) else {
+        return Vec::new();
+    };
+    let Ok(manifest) = manifest::parse(FileId(0), &text) else {
+        return Vec::new();
+    };
+    manifest
+        .rust_dependencies
+        .into_iter()
+        .map(|r| {
+            let file = dir.join(binding_interface_name(&r.name));
+            (r.name, file)
+        })
+        .collect()
 }
 
 /// The file that marks a folder as a cache (the standard marker, written by Cargo's `target`
@@ -300,6 +337,7 @@ pub fn load_with(
             message,
         })?;
     loader.warn_unknown_allow_ffi();
+    loader.warn_unknown_allow_rust();
     loader.resolve_features();
     let entry_path = match entry {
         Entry::File(path) => path.to_path_buf(),
@@ -356,6 +394,9 @@ impl<'a> Loader<'a> {
             lock_read: false,
             clashes: HashSet::new(),
             ffi_reported: HashSet::new(),
+            rust_reported: HashSet::new(),
+            rust_bindings: Vec::new(),
+            rust_identities: Vec::new(),
         }
     }
 
@@ -521,6 +562,17 @@ impl<'a> Loader<'a> {
                 .as_ref()
                 .map(|(m, _)| m.allow_ffi_spans.clone())
                 .unwrap_or_default(),
+            allow_rust: manifest
+                .as_ref()
+                .map(|(m, _)| m.allow_rust.clone())
+                .unwrap_or_default(),
+            allow_rust_spans: manifest
+                .as_ref()
+                .map(|(m, _)| m.allow_rust_spans.clone())
+                .unwrap_or_default(),
+            declares_rust: manifest
+                .as_ref()
+                .and_then(|(m, _)| m.rust_dependencies.first().map(|r| r.span)),
             deps: Vec::new(),
             known_features: HashSet::new(),
             enabled_features: HashSet::new(),
@@ -529,6 +581,7 @@ impl<'a> Loader<'a> {
         });
         self.trees_by_dir.insert(key, tree);
         if let Some((m, _)) = &manifest {
+            self.check_rust_dependencies(dir, m, git_root.is_some());
             for dep in &m.dependencies {
                 let (dep_dir, dep_root, span) = match &dep.source {
                     Source::Path { path, path_span } => {
@@ -603,6 +656,7 @@ impl<'a> Loader<'a> {
                             default_features: dep.default_features,
                         });
                         self.check_ffi_allowed(tree, t, dep.name_span);
+                        self.check_rust_allowed(tree, t, dep.name_span);
                         self.report_clash(t, dep.name_span);
                         self.trees[tree].deps.push((dep.name.clone(), t));
                     }
@@ -646,6 +700,157 @@ impl<'a> Loader<'a> {
                 self.fs.display_name(&root_manifest)
             )),
         );
+    }
+
+    /// The keys of `[rust-dependencies]` become module names, so they may not take a name that
+    /// the standard library has (`math = { path = ".." }` would hide `import math`). The root's
+    /// keys of every package also need their `<key>.cbi` next to that package's manifest
+    /// (`colibri bindings` writes it), and a key may be used once in the whole program: host
+    /// modules are global, so two packages with one key (or one crate under two keys) would
+    /// register the same module twice.
+    fn check_rust_dependencies(&mut self, dir: &Path, m: &Manifest, from_git: bool) {
+        for r in &m.rust_dependencies {
+            let std_name = std_module(&[r.name.as_str()], self.host_modules)
+                .or_else(|| self.std_source_name(&[r.name.as_str()]))
+                .or_else(|| {
+                    LATER_STD_MODULES
+                        .iter()
+                        .find(|(n, _)| *n == r.name)
+                        .map(|_| format!("{}{}", crate::host::STD_PREFIX, r.name))
+                });
+            if let Some(std_name) = std_name {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "the Rust dependency `{}` has the name of the standard library module `{std_name}`",
+                            r.name
+                        ),
+                        r.span,
+                    )
+                    .with_hint("the key is the module name `import` uses: choose another"),
+                );
+                continue;
+            }
+            if r.name == "std" {
+                self.diags.push(
+                    Diagnostic::error("`std` is reserved for the standard library", r.span)
+                        .with_hint("the key is the module name `import` uses: choose another"),
+                );
+                continue;
+            }
+            let id = r.source.identity(Some(dir));
+            if let Some((_, _, first)) = self.rust_identities.iter().find(|(k, _, _)| *k == r.name)
+            {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "the Rust dependency `{}` is already declared by another package: a key names one module in the whole program",
+                            r.name
+                        ),
+                        r.span,
+                    )
+                    .with_label(*first, "first declared here")
+                    .with_hint("rename one of the keys; the key is the module name `import` uses"),
+                );
+                continue;
+            }
+            if let Some((first_key, _, first)) =
+                self.rust_identities.iter().find(|(_, i, _)| *i == id)
+            {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "the Rust dependency `{}` is the same crate as `{first_key}`, which another package declares",
+                            r.name
+                        ),
+                        r.span,
+                    )
+                    .with_label(*first, "first declared here")
+                    .with_hint("a crate registers one module: declare it once in the whole program"),
+                );
+                continue;
+            }
+            self.rust_identities.push((r.name.clone(), id, r.span));
+            let cbi = dir.join(binding_interface_name(&r.name));
+            if !self.fs.is_file(&cbi) {
+                let mut d = Diagnostic::error(
+                    format!(
+                        "`{0}` is a Rust binding: run `colibri bindings` to generate `{0}.cbi`",
+                        r.name
+                    ),
+                    r.span,
+                );
+                d = d.with_hint(if from_git {
+                    "the file sits next to this `colibri.toml`; the author of this git package must generate it and commit it"
+                } else {
+                    "the file sits next to `colibri.toml`; commit it so `colibri check` needs no Rust toolchain"
+                });
+                self.diags.push(d);
+            }
+            self.rust_bindings.push(RustBinding {
+                key: r.name.clone(),
+                span: r.span,
+                interface: cbi,
+            });
+        }
+    }
+
+    /// A package from git that declares `[rust-dependencies]` must be listed in the root
+    /// package's `allow-rust`: building its crates runs Rust build scripts, which a package
+    /// nobody read must not be able to ask for just by saying so (as for `allow-ffi`).
+    fn check_rust_allowed(&mut self, dependent: usize, t: usize, span: Span) {
+        let Some(_) = self.trees[t].declares_rust else {
+            return;
+        };
+        if !self.trees[t].from_git || !self.rust_reported.insert(t) {
+            return;
+        }
+        let name = self.trees[t].name.clone();
+        if self.trees[0].allow_rust.contains(&name) {
+            return;
+        }
+        let root = &self.trees[0];
+        let root_manifest = root.root.join(MANIFEST_FILE);
+        self.diags.push(
+            Diagnostic::error(
+                format!(
+                    "the git dependency `{name}` declares `[rust-dependencies]` (it may build Rust code), and the package `{}` has not allowed it; it is needed by `{}`",
+                    root.name, self.trees[dependent].name
+                ),
+                span,
+            )
+            .with_hint(format!(
+                "to allow it, add `allow-rust = [\"{name}\"]` to the `[package]` table of `{}`",
+                self.fs.display_name(&root_manifest)
+            )),
+        );
+    }
+
+    /// A name in the root package's `allow-rust` that is no dependency allows nothing.
+    fn warn_unknown_allow_rust(&mut self) {
+        let Some(root) = self.trees.first() else {
+            return;
+        };
+        let unknown: Vec<(String, Span)> = root
+            .allow_rust
+            .iter()
+            .zip(&root.allow_rust_spans)
+            .filter(|(name, _)| !self.trees.iter().any(|t| t.is_dep && t.name == **name))
+            .map(|(n, s)| (n.clone(), *s))
+            .collect();
+        for (name, span) in unknown {
+            self.diags.push(
+                Diagnostic::warning(
+                    format!(
+                        "`allow-rust` lists `{name}`, which is not a dependency of this package"
+                    ),
+                    span,
+                )
+                .with_hint(
+                    "check the spelling: the name is the one before `=` in `[dependencies]`",
+                ),
+            );
+        }
     }
 
     /// A name in the root package's `allow-ffi` that is no dependency (direct or transitive)
@@ -1041,6 +1246,9 @@ impl<'a> Loader<'a> {
                     from_git: false,
                     allow_ffi: Vec::new(),
                     allow_ffi_spans: Vec::new(),
+                    allow_rust: Vec::new(),
+                    allow_rust_spans: Vec::new(),
+                    declares_rust: None,
                     deps: Vec::new(),
                     known_features: HashSet::new(),
                     enabled_features: HashSet::new(),
@@ -1352,6 +1560,7 @@ impl<'a> Loader<'a> {
             packages: self.packages,
             diagnostics: self.diags,
             dropped: self.dropped,
+            rust_bindings: self.rust_bindings,
         }
     }
 
