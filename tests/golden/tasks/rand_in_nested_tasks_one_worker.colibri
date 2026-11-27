@@ -1,0 +1,30 @@
+// workers: 1
+// A task that a worker runs inside its own join (the pool has no other thread) draws the numbers
+// it would draw on a thread of its own: the same as `rand_in_nested_tasks_three_workers`.
+import rand
+
+fn draw(n: int) -> List[int] {
+    let mut out = []
+    for _ in 0..n {
+        out.push(rand.int(0, 1000))
+    }
+    return out
+}
+
+fn outer() -> Result[List[List[int]]] {
+    let a = task.run(fn() => draw(3))
+    let b = task.run(fn() => draw(3))
+    return ok([draw(2), a.join()?, b.join()?])
+}
+
+fn main() -> Result[()] {
+    let rows = task.run(outer).join()??
+    for r in rows {
+        print("{r}")
+    }
+    return ok(())
+}
+
+// expect: [189, 8]
+// expect: [336, 970, 491]
+// expect: [485, 613, 241]

@@ -456,7 +456,10 @@ fn finished() -> bool {
     gate.tx.send(()).unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while !finished.call(&mut vm, ()).unwrap() {
-        assert!(std::time::Instant::now() < deadline, "done never turned true");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "done never turned true"
+        );
         std::thread::yield_now();
     }
 }

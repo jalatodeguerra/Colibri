@@ -1191,7 +1191,11 @@ impl Rebuild<'_> {
     }
 
     #[inline(never)]
-    fn tuple_value(&mut self, id: Option<u32>, items: &mut [Portable]) -> Result<Value, RebuildError> {
+    fn tuple_value(
+        &mut self,
+        id: Option<u32>,
+        items: &mut [Portable],
+    ) -> Result<Value, RebuildError> {
         let mut out = Vec::with_capacity(items.len());
         for p in items.iter_mut() {
             out.push(self.value(p)?);
