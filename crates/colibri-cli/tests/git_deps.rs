@@ -1058,13 +1058,26 @@ fn a_git_dependency_with_ffi_must_be_allowed_by_the_root() {
 fn a_git_dependency_with_rust_dependencies_must_be_allowed_by_the_root() {
     let sb = Sandbox::new("allow_rust");
     let repo = sb.repo("bound");
-    repo.commit(
-        &lib_files(
-            "bound",
-            "b",
-            "\n[rust-dependencies]\nnative = { path = \"native/\" }\n",
-        ),
+    let mut vm = colibri_runtime::Vm::builder().build();
+    vm.module("native")
+        .register_fn("add", |a: i64, b: i64| a + b)
+        .unwrap();
+    let mut files = lib_files(
         "bound",
+        "b",
+        "\n[rust-dependencies]\nnative = { path = \"native/\" }\n",
+    );
+    files.push(("native.cbi".into(), vm.module("native").interface_text()));
+    repo.commit(&files, "bound");
+    // A second package declares the table but did not commit the interface.
+    let bare = sb.repo("bare");
+    bare.commit(
+        &lib_files(
+            "bare",
+            "b",
+            "\n[rust-dependencies]\nother = { path = \"other/\" }\n",
+        ),
+        "bare",
     );
     let dep = format!("bound = {{ git = \"{}\" }}", repo.url());
     let app_with = |folder: &str, package_extra: &str| {
@@ -1083,6 +1096,22 @@ fn a_git_dependency_with_rust_dependencies_must_be_allowed_by_the_root() {
         "the git dependency `bound` declares `[rust-dependencies]`",
         "needed by `app`",
         "allow-rust = [\"bound\"]",
+    ] {
+        assert!(out.stderr.contains(want), "{want}: {}", out.stderr);
+    }
+    // Its author must commit the interface: the hint says so.
+    let bare_dep = format!("bare = {{ git = \"{}\" }}", bare.url());
+    let app = sb.app("app_bare", &bare_dep, &["bare"]);
+    fs::write(
+        app.join("colibri.toml"),
+        format!("[package]\nname = \"app\"\nallow-rust = [\"bare\"]\n[dependencies]\n{bare_dep}\n"),
+    )
+    .unwrap();
+    let out = sb.colibri(&["check", app.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    for want in [
+        "`other` is a Rust binding",
+        "the author of this git package must generate it and commit it",
     ] {
         assert!(out.stderr.contains(want), "{want}: {}", out.stderr);
     }

@@ -52,18 +52,32 @@ pub enum RustSource {
 }
 
 impl RustSource {
-    /// A text that is equal for two sources that name one crate (a path is compared by where
-    /// it is written to point, not by what is found there).
-    fn identity(&self) -> String {
+    /// A text that is equal for two sources that name one crate. A git url is compared without
+    /// a trailing `/` or `.git`. A path is compared by where it points: in the manifest's
+    /// folder `dir` when given (so two packages' `native/` differ), else as written.
+    pub(super) fn identity(&self, dir: Option<&std::path::Path>) -> String {
         match self {
             RustSource::Binding { crate_name, .. } => format!("crate {crate_name}"),
             RustSource::Git {
                 crate_name, url, ..
-            } => format!("git {url} crate {crate_name}"),
+            } => {
+                let url = url.trim_end_matches('/');
+                let url = url.strip_suffix(".git").unwrap_or(url);
+                let url = url.trim_end_matches('/');
+                format!("git {url} crate {crate_name}")
+            }
             RustSource::Path { path } => {
                 let trimmed = path.trim_end_matches(['/', '\\']);
                 let trimmed = trimmed.strip_prefix("./").unwrap_or(trimmed);
-                format!("path {trimmed}")
+                match dir {
+                    Some(dir) => format!(
+                        "path {}",
+                        super::fs::normalize(&dir.join(trimmed))
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    ),
+                    None => format!("path {trimmed}"),
+                }
             }
         }
     }
@@ -1104,8 +1118,8 @@ fn check_rust_clashes(
                 .with_hint("rename one of them: the key of a Rust dependency is its module name"),
             );
         }
-        let id = r.source.identity();
-        if let Some(first) = rust[..i].iter().find(|o| o.source.identity() == id) {
+        let id = r.source.identity(None);
+        if let Some(first) = rust[..i].iter().find(|o| o.source.identity(None) == id) {
             errors.push(
                 Diagnostic::error(
                     format!(
@@ -2021,6 +2035,20 @@ mod tests {
         // Different crates, or the same name from another place, are fine.
         assert_eq!(
             rust("a = { path = \"one\" }\nb = { path = \"two\" }").len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_git_crate_is_the_same_with_or_without_dot_git_and_a_slash() {
+        let e = rust_errs(
+            "a = { git = \"https://example.com/r.git\", crate = \"c\" }\nb = { git = \"https://example.com/r/\", crate = \"c\" }",
+        );
+        assert!(e[0].contains("same crate"), "{e:?}");
+        // Another crate of the same repository is another crate.
+        assert_eq!(
+            rust("a = { git = \"https://example.com/r\", crate = \"c\" }\nb = { git = \"https://example.com/r\", crate = \"d\" }")
+                .len(),
             2
         );
     }

@@ -323,6 +323,7 @@ fn empty_program() -> Loaded {
         packages: Vec::new(),
         diagnostics: Vec::new(),
         dropped: Vec::new(),
+        rust_bindings: Vec::new(),
     }
 }
 

@@ -16,8 +16,8 @@ use super::sync::inside;
 use super::toml;
 use super::{
     Dropped, DroppedKind, ImportTarget, LATER_STD_MODULES, LIB_FILE, Loaded, MAIN_FILE,
-    MISSING_STD_HINTS, ModuleMeta, PackageNode, SOURCE_EXT, WEB_OS, WEB_UNAVAILABLE_STD,
-    std_module,
+    MISSING_STD_HINTS, ModuleMeta, PackageNode, RustBinding, SOURCE_EXT, WEB_OS,
+    WEB_UNAVAILABLE_STD, std_module,
 };
 
 /// The manifest's file name.
@@ -153,6 +153,10 @@ struct Loader<'a> {
     ffi_reported: HashSet<usize>,
     /// The same for `[rust-dependencies]` without the root's `allow-rust`.
     rust_reported: HashSet<usize>,
+    /// The keys of every `[rust-dependencies]` seen so far, with what each names (module
+    /// names are global to the program), in the order the packages were loaded.
+    rust_bindings: Vec<RustBinding>,
+    rust_identities: Vec<(String, String, Span)>,
 }
 
 /// The interface file of the binding module `key`: `<key>.cbi`, next to `colibri.toml`.
@@ -391,6 +395,8 @@ impl<'a> Loader<'a> {
             clashes: HashSet::new(),
             ffi_reported: HashSet::new(),
             rust_reported: HashSet::new(),
+            rust_bindings: Vec::new(),
+            rust_identities: Vec::new(),
         }
     }
 
@@ -575,7 +581,7 @@ impl<'a> Loader<'a> {
         });
         self.trees_by_dir.insert(key, tree);
         if let Some((m, _)) = &manifest {
-            self.check_rust_dependencies(dir, m, is_dep);
+            self.check_rust_dependencies(dir, m, git_root.is_some());
             for dep in &m.dependencies {
                 let (dep_dir, dep_root, span) = match &dep.source {
                     Source::Path { path, path_span } => {
@@ -698,8 +704,11 @@ impl<'a> Loader<'a> {
 
     /// The keys of `[rust-dependencies]` become module names, so they may not take a name that
     /// the standard library has (`math = { path = ".." }` would hide `import math`). The root's
-    /// keys also need their `<key>.cbi` next to the manifest (`colibri bindings` writes it).
-    fn check_rust_dependencies(&mut self, dir: &Path, m: &Manifest, is_dep: bool) {
+    /// keys of every package also need their `<key>.cbi` next to that package's manifest
+    /// (`colibri bindings` writes it), and a key may be used once in the whole program: host
+    /// modules are global, so two packages with one key (or one crate under two keys) would
+    /// register the same module twice.
+    fn check_rust_dependencies(&mut self, dir: &Path, m: &Manifest, from_git: bool) {
         for r in &m.rust_dependencies {
             let std_name = std_module(&[r.name.as_str()], self.host_modules)
                 .or_else(|| self.std_source_name(&[r.name.as_str()]))
@@ -729,21 +738,60 @@ impl<'a> Loader<'a> {
                 );
                 continue;
             }
-            let cbi = dir.join(binding_interface_name(&r.name));
-            if !is_dep && !self.fs.is_file(&cbi) {
+            let id = r.source.identity(Some(dir));
+            if let Some((_, _, first)) = self.rust_identities.iter().find(|(k, _, _)| *k == r.name)
+            {
                 self.diags.push(
                     Diagnostic::error(
                         format!(
-                            "`{0}` is a Rust binding: run `colibri bindings` to generate `{0}.cbi`",
+                            "the Rust dependency `{}` is already declared by another package: a key names one module in the whole program",
                             r.name
                         ),
                         r.span,
                     )
-                    .with_hint(
-                        "the file sits next to `colibri.toml`; commit it so `colibri check` needs no Rust toolchain",
-                    ),
+                    .with_label(*first, "first declared here")
+                    .with_hint("rename one of the keys; the key is the module name `import` uses"),
                 );
+                continue;
             }
+            if let Some((first_key, _, first)) =
+                self.rust_identities.iter().find(|(_, i, _)| *i == id)
+            {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "the Rust dependency `{}` is the same crate as `{first_key}`, which another package declares",
+                            r.name
+                        ),
+                        r.span,
+                    )
+                    .with_label(*first, "first declared here")
+                    .with_hint("a crate registers one module: declare it once in the whole program"),
+                );
+                continue;
+            }
+            self.rust_identities.push((r.name.clone(), id, r.span));
+            let cbi = dir.join(binding_interface_name(&r.name));
+            if !self.fs.is_file(&cbi) {
+                let mut d = Diagnostic::error(
+                    format!(
+                        "`{0}` is a Rust binding: run `colibri bindings` to generate `{0}.cbi`",
+                        r.name
+                    ),
+                    r.span,
+                );
+                d = d.with_hint(if from_git {
+                    "the file sits next to this `colibri.toml`; the author of this git package must generate it and commit it"
+                } else {
+                    "the file sits next to `colibri.toml`; commit it so `colibri check` needs no Rust toolchain"
+                });
+                self.diags.push(d);
+            }
+            self.rust_bindings.push(RustBinding {
+                key: r.name.clone(),
+                span: r.span,
+                interface: cbi,
+            });
         }
     }
 
@@ -1512,6 +1560,7 @@ impl<'a> Loader<'a> {
             packages: self.packages,
             diagnostics: self.diags,
             dropped: self.dropped,
+            rust_bindings: self.rust_bindings,
         }
     }
 

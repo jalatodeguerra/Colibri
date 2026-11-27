@@ -28,7 +28,9 @@ impl Pkg {
     }
 
     fn write(&self, rel: &str, text: &str) {
-        fs::write(self.0.join(rel), text).unwrap();
+        let full = self.0.join(rel);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(full, text).unwrap();
     }
 
     fn check(&self) -> Out {
@@ -160,6 +162,85 @@ fn manifest_errors_are_reported_by_check() {
     assert_eq!(out.code, 1);
     assert!(
         out.stderr.contains("`binding` but no `version`"),
+        "{}",
+        out.stderr
+    );
+}
+
+// ---- bindings declared by a dependency ----
+
+const LIB_MAIN: &str = "import lib\nfn main() {\n    print(lib.total())\n}\n";
+const LIB_SRC: &str = "import native\npub fn total() -> int {\n    return native.add(1, 2)\n}\n";
+
+/// A root with a path dependency `lib` whose manifest has `lib_extra` after its `[package]`.
+fn with_lib(name: &str, root_extra: &str, lib_extra: &str) -> Pkg {
+    let pkg = Pkg::new(
+        name,
+        &format!("{root_extra}\n[dependencies]\nlib = {{ path = \"lib\" }}\n"),
+        LIB_MAIN,
+    );
+    pkg.write(
+        "lib/colibri.toml",
+        &format!("[package]\nname = \"lib\"\n{lib_extra}"),
+    );
+    pkg.write("lib/lib.colibri", LIB_SRC);
+    pkg
+}
+
+const LIB_NATIVE: &str = "\n[rust-dependencies]\nnative = { path = \"native/\" }\n";
+
+#[test]
+fn a_path_dependency_may_declare_and_use_a_binding_without_allow_rust() {
+    let pkg = with_lib("dep_ok", "", LIB_NATIVE);
+    pkg.write("lib/native.cbi", &interface_of("native"));
+    let out = pkg.check();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+}
+
+#[test]
+fn a_dependency_binding_without_its_interface_is_reported_at_its_key() {
+    let pkg = with_lib("dep_missing", "", LIB_NATIVE);
+    let out = pkg.check();
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("`native` is a Rust binding: run `colibri bindings`"),
+        "{}",
+        out.stderr
+    );
+    // The snippet is the line of lib's manifest, which the root's manifest does not have.
+    assert!(out.stderr.contains("native = { path"), "{}", out.stderr);
+}
+
+#[test]
+fn a_binding_key_is_one_module_in_the_whole_program() {
+    // The root and `lib` both say `native`: the second key is the error.
+    let pkg = with_lib("dep_twice", MANIFEST, LIB_NATIVE);
+    pkg.write("native.cbi", &interface_of("native"));
+    pkg.write("lib/native.cbi", &interface_of("native"));
+    let out = pkg.check();
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr
+            .contains("`native` is already declared by another package"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn one_crate_under_two_keys_in_two_packages_is_refused() {
+    let pkg = with_lib(
+        "dep_same_crate",
+        "\n[rust-dependencies]\nfirst = { path = \"native\" }\n",
+        "\n[rust-dependencies]\nnative = { path = \"../native\" }\n",
+    );
+    pkg.write("first.cbi", &interface_of("first"));
+    pkg.write("lib/native.cbi", &interface_of("native"));
+    let out = pkg.check();
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("is the same crate as `first`"),
         "{}",
         out.stderr
     );

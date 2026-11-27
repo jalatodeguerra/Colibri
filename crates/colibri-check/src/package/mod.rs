@@ -108,6 +108,20 @@ pub struct Loaded {
     /// The problems among `diagnostics` that mean code or a module was left out of the
     /// program (a tool that must know every use of a name cannot trust it then).
     pub dropped: Vec<Dropped>,
+    /// The Rust bindings declared by the packages of the program (the root's and every
+    /// dependency's `[rust-dependencies]`), each with the interface file it needs.
+    pub rust_bindings: Vec<RustBinding>,
+}
+
+/// One key of a `[rust-dependencies]` table of some package of the program.
+#[derive(Clone, Debug)]
+pub struct RustBinding {
+    /// The key: the module name.
+    pub key: String,
+    /// Where the key is written (in the package's `colibri.toml`).
+    pub span: colibri_syntax::Span,
+    /// `<key>.cbi` in the folder of the package that declares the key (it may not exist).
+    pub interface: std::path::PathBuf,
 }
 
 /// Why part of a program is missing from a [`Loaded`].

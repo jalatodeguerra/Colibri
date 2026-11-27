@@ -188,7 +188,7 @@ pub use colibri_check::package::{
 };
 pub use colibri_check::package::{
     BuildCfg, COMPLETE_MARKER, DiskFs, Entry, MemoryFs, Recorded, RecordingFs, SourceFs, WEB_OS,
-    WEB_UNAVAILABLE_STD, cache_root, checkout_dir, feature_name_problem, rust_binding_files,
+    WEB_UNAVAILABLE_STD, cache_root, checkout_dir, feature_name_problem,
 };
 /// Git dependencies and `colibri.lock`: what the command line tool does before it loads a
 /// program (the loader itself never uses the network).
@@ -412,6 +412,27 @@ fn check_entry(
     check_entry_lazy(fs, entry, config, all_modules, &[], &mut |_| None)
 }
 
+/// Reads the interface of the Rust binding `key` from `file` (through `fs`) into `env`.
+fn add_binding(
+    fs: &dyn SourceFs,
+    env: &mut colibri_check::HostEnv,
+    bound: &mut Vec<String>,
+    key: String,
+    file: &Path,
+) -> Result<(), Error> {
+    if bound.contains(&key) || !fs.is_file(file) {
+        return Ok(());
+    }
+    let path = file.display().to_string();
+    let text = fs.read(file).map_err(|message| Error::Io {
+        path: path.clone(),
+        message,
+    })?;
+    env.merge(Interface::from_text(&path, &text)?.env);
+    bound.push(key);
+    Ok(())
+}
+
 /// Asks for the interface of every lazy module that an interface in `env` says it uses and
 /// that is not there yet.
 fn ask_lazy_uses<'a>(
@@ -477,7 +498,6 @@ fn check_entry_lazy(
     env.set_web(config.cfg.os == colibri_check::package::WEB_OS);
     let mut names = env.named_modules();
     names.extend(lazy_names.iter().cloned());
-    let mut sources = SourceMap::new();
     let options = colibri_check::package::LoadOptions {
         all_modules,
         cfg: config.cfg.clone(),
@@ -492,11 +512,42 @@ fn check_entry_lazy(
             })
             .collect(),
     };
-    let loaded = colibri_check::package::load_with(fs, &mut sources, entry, &names, options)
-        .map_err(|e| Error::Io {
-            path: e.path,
-            message: e.message,
-        })?;
+    // The Rust bindings (`[rust-dependencies]`): each key is a host module described by
+    // `<key>.cbi` in the folder of the package that declares it. The root's keys are known
+    // before loading; a dependency's are found by loading, so the program is loaded again once
+    // their interfaces are in. Nothing here calls cargo.
+    let mut bound: Vec<String> = Vec::new();
+    let root_dir = match &entry {
+        Entry::Package(dir) => Some(dir.to_path_buf()),
+        Entry::File(file) => file.parent().map(Path::to_path_buf),
+    };
+    for (key, file) in root_dir
+        .iter()
+        .flat_map(|dir| colibri_check::package::rust_binding_files(fs, dir))
+    {
+        add_binding(fs, &mut env, &mut bound, key, &file)?;
+    }
+    let (loaded, sources) = loop {
+        let mut names = env.named_modules();
+        names.extend(lazy_names.iter().cloned());
+        let mut sources = SourceMap::new();
+        let loaded =
+            colibri_check::package::load_with(fs, &mut sources, entry, &names, options.clone())
+                .map_err(|e| Error::Io {
+                    path: e.path,
+                    message: e.message,
+                })?;
+        let mut added = false;
+        for b in &loaded.rust_bindings {
+            if !bound.contains(&b.key) && fs.is_file(&b.interface) {
+                add_binding(fs, &mut env, &mut bound, b.key.clone(), &b.interface)?;
+                added = true;
+            }
+        }
+        if !added {
+            break (loaded, sources);
+        }
+    };
     for meta in &loaded.metas {
         for target in meta.imports.values() {
             if let colibri_check::package::ImportTarget::Host(name) = target
@@ -514,6 +565,22 @@ fn check_entry_lazy(
     // `json.Value`): that one is asked for too, though the program does not import it.
     ask_lazy_uses(&mut env, lazy_names, &mut asked, interface);
     let mut diagnostics = loaded.diagnostics.clone();
+    // A binding interface whose header names another module is no use under its key.
+    let described = env.module_names();
+    for b in &loaded.rust_bindings {
+        if fs.is_file(&b.interface) && !described.contains(&b.key) {
+            diagnostics.push(
+                colibri_syntax::Diagnostic::error(
+                    format!("`{}.cbi` does not describe the module `{}`", b.key, b.key),
+                    b.span,
+                )
+                .with_hint(format!(
+                    "its `@interface` header must say `module = \"{}\"`",
+                    b.key
+                )),
+            );
+        }
+    }
     // A tree with syntax errors would only produce follow-on errors.
     if !loaded.has_errors() {
         // The loader's own warnings (an unknown `allow-ffi` name) stay.
