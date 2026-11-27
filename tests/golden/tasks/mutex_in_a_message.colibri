@@ -1,0 +1,45 @@
+// workers: 3
+// A `Mutex` handle crosses to another thread as it is, in a capture or in a message, so both sides
+// change the one value: nothing is copied but what `get`, `set` and `with` copy. The channel here
+// carries a struct that holds a mutex, and the order of the output is fixed by what the main
+// thread waits for.
+struct Order {
+    id: int
+    stock: Mutex[int]
+    done: Channel[int]
+}
+
+fn fill(orders: Channel[Order]) {
+    for o in orders {
+        o.stock.with(fn(mut n) { n -= o.id })
+        o.done.send(o.id)
+    }
+}
+
+fn main() {
+    let stock = Mutex(100)
+    let done = Channel[int]()
+    let orders = Channel[Order]()
+    let worker = task.run(fn() { fill(orders) })
+    for id in 1..4 {
+        orders.send(Order { id: id, stock: stock, done: done })
+        print("filled {done.recv().expect("an order")}, stock {stock.get()}")
+    }
+    orders.close()
+    worker.join().expect("worker")
+
+    // A handle in a captured list is the same mutex too.
+    let all = [Mutex(1), Mutex(2)]
+    let t = task.run(fn() {
+        for m in all {
+            m.with(fn(mut v) { v *= 10 })
+        }
+    })
+    t.join().expect("t")
+    print("{all[0].get()} {all[1].get()}")
+}
+
+// expect: filled 1, stock 99
+// expect: filled 2, stock 97
+// expect: filled 3, stock 94
+// expect: 10 20

@@ -1,0 +1,61 @@
+// A lock is never held across a pause, and never while a thread waits for something that may need
+// it. The function of `with` is native code: `wait` in it panics, a `join` or a `recv` that would
+// wait panics, and so does using any `Mutex` (the same one would wait for itself, and two mutexes
+// taken in opposite orders by two threads would wait for each other).
+fn why(r: Result[()]) -> str {
+    match r {
+        ok(_) => return "ok"
+        err(e) => return e.message()
+    }
+}
+
+fn in_a_coroutine(m: Mutex[int]) -> str {
+    let c = go fn() { m.with(fn(v) { wait(0.01) }) }()
+    return why(c.join_result())
+}
+
+fn main() {
+    let m = Mutex(1)
+    let other = Mutex(2)
+
+    let t1 = task.run(fn() { m.with(fn(v) { let _ = m.get() }) })
+    print("get on the same mutex: {why(t1.join())}")
+
+    let t2 = task.run(fn() { m.with(fn(v) { m.set(5) }) })
+    print("set on the same mutex: {why(t2.join())}")
+
+    let t3 = task.run(fn() { m.with(fn(v) { m.with(fn(mut w) { w += 1 }) }) })
+    print("a nested with: {why(t3.join())}")
+
+    let t4 = task.run(fn() { m.with(fn(v) { let _ = other.get() }) })
+    print("another mutex: {why(t4.join())}")
+
+    let gate = Channel[int]()
+    let t5 = task.run(fn() { m.with(fn(v) { let _ = gate.recv() }) })
+    print("recv: {why(t5.join())}")
+
+    // A task that cannot finish until the gate opens: joining it would have to wait.
+    let gate2 = Channel[int]()
+    let t6 = task.run(fn() {
+        m.with(fn(v) {
+            let inner = task.run(fn() { let _ = gate2.recv() })
+            let _ = inner.join()
+        })
+    })
+    print("join: {why(t6.join())}")
+    gate2.close()
+
+    let t7 = task.run(fn() => in_a_coroutine(m))
+    print("wait: {t7.join().expect("t7")}")
+
+    print("still {m.get()}, {other.get()}")
+}
+
+// expect: get on the same mutex: the task `<closure in main>` panicked: this `Mutex` is locked by the `with` that is running: its callback cannot use the same mutex (`get`, `set` and `with` would wait for the lock they hold)
+// expect: set on the same mutex: the task `<closure in main>` panicked: this `Mutex` is locked by the `with` that is running: its callback cannot use the same mutex (`get`, `set` and `with` would wait for the lock they hold)
+// expect: a nested with: the task `<closure in main>` panicked: this `Mutex` is locked by the `with` that is running: its callback cannot use the same mutex (`get`, `set` and `with` would wait for the lock they hold)
+// expect: another mutex: the task `<closure in main>` panicked: a `with` callback cannot use another `Mutex`: threads that took two mutexes in opposite orders would wait for each other for ever (read the other one before the `with`, or keep both values in one `Mutex`)
+// expect: recv: the task `<closure in main>` panicked: `recv` cannot wait inside the callback of `Mutex.with`: the lock would stay held while it waits
+// expect: join: the task `<closure in main>` panicked: `join` cannot wait for a task inside the callback of `Mutex.with`: the lock would stay held while it waits
+// expect: wait: the coroutine `<closure>` panicked: `wait` cannot pause inside the callback of `Mutex.with`: the lock would stay held while the coroutine is suspended
+// expect: still 1, 2

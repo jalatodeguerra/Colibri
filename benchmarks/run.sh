@@ -27,6 +27,8 @@ printf '%-10s %12s %12s %8s\n' benchmark "colibri ms" "cpython ms" ratio
 status=0
 for src in *.colibri; do
     name="${src%.colibri}"
+    # `tasks` has no Python version: `tasks.sh` measures it.
+    [ -f "$name.py" ] || continue
     got=$("$COLIBRI" run "$src")
     want=$("$PYTHON" "$name.py")
     if [ "$got" != "$want" ]; then

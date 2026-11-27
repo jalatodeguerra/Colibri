@@ -1,0 +1,28 @@
+// caps: net
+// allow: unused
+// A `Mutex` copies its value in and out, so the value must be copyable: a part that cannot be
+// copied is a compile error that names the path to it.
+import net
+
+struct Job {
+    id: int
+    conn: net.Conn
+}
+
+fn a_host_handle(conn: net.Conn) {
+    let m = Mutex(conn) // error: the value of a `Mutex` is a `net.Conn`, which cannot be sent to another thread
+}
+
+fn inside_a_struct(job: Job) {
+    let m = Mutex(job) // error: `Job.conn` is a `net.Conn`
+}
+
+fn a_task(t: Task[int]) {
+    let m = Mutex([t]) // error: `[_]` of the value of a `Mutex` is a `Task`
+}
+
+fn a_capture(conn: net.Conn) {
+    let m = Mutex(fn() { conn.close() }) // error: `closure.conn` is a `net.Conn`
+}
+
+fn main() {}

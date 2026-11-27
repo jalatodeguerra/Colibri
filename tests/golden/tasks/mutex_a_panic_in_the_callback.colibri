@@ -1,0 +1,27 @@
+// A panic in the function of `with` leaves the mutex as it was before the call: what the function
+// changed is dropped, nothing is poisoned, and the lock is let go, so the next user is not
+// kept waiting. The panic is the task's, which `join` reports.
+fn main() {
+    let m = Mutex([1, 2, 3])
+    let t = task.run(fn() {
+        m.with(fn(l) -> int {
+            l.push(4)
+            l.clear()
+            panic("halfway")
+        })
+    })
+    print("task: {t.join().is_err()}")
+    print("still {m.get()}")
+    // The lock was let go: more work goes through.
+    m.with(fn(l) { l.push(10) })
+    print("then {m.get()}")
+
+    // The same on the main thread, caught by a task that calls `with` after the panic.
+    let again = task.run(fn() => m.with(fn(l) => l.len())).join().expect("again")
+    print("seen by a task: {again}")
+}
+
+// expect: task: true
+// expect: still [1, 2, 3]
+// expect: then [1, 2, 3, 10]
+// expect: seen by a task: 4

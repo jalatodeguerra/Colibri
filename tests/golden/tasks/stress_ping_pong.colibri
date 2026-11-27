@@ -1,0 +1,25 @@
+// workers: 1
+// A hundred thousand messages go to a task and come back, one at a time, over two channels. Every
+// message is a copy, and every hand-off wakes the other thread. (The mutation test leaves out
+// programs with a `0..100000` loop, and this one has a long loop on purpose.)
+fn echo(from_main: Channel[int], to_main: Channel[int]) {
+    for x in from_main {
+        to_main.send(x + 1)
+    }
+}
+
+fn main() {
+    let from_main = Channel[int]()
+    let to_main = Channel[int]()
+    let t = task.run(fn() { echo(from_main, to_main) })
+    let mut x = 0
+    for _ in 0..100000 {
+        from_main.send(x)
+        x = to_main.recv().expect("an echo")
+    }
+    from_main.close()
+    t.join().expect("the echo task")
+    print("after {x} round trips")
+}
+
+// expect: after 100000 round trips

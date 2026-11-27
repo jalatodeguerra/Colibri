@@ -322,3 +322,97 @@ fn main() {
         ["L at leaks.colibri:8", "L at leaks.colibri:9"]
     );
 }
+
+// ---- thread tasks: the detector runs in every isolate (phase 3 L21, ARCHITECTURE §36.7) ----
+
+const TASK_CYCLE: &str = r#"
+fn cycle() -> int {
+    let a = Node { name: "a" }
+    let b = Node { name: "b" }
+    a.next = some(b)
+    b.next = some(a)
+    return 1
+}
+
+fn main() {
+    let t = task.run(fn() => cycle())
+    print("task {t.join().expect("task")}")
+}
+"#;
+
+fn task_vm(workers: usize, tracking: bool, body: &str) -> colibri::Vm {
+    let mut vm = colibri::Vm::builder()
+        .track_leaks(tracking)
+        .worker_threads(workers)
+        .stdout(Box::new(colibri::SharedBuffer::new()))
+        .build();
+    vm.load_source("leaks.colibri", &format!("{NODE}{body}"))
+        .unwrap();
+    vm
+}
+
+#[test]
+fn a_cycle_a_task_leaks_is_reported_to_the_vm_at_shutdown() {
+    for workers in [1, 3] {
+        let mut vm = task_vm(workers, true, TASK_CYCLE);
+        vm.run_main().unwrap();
+        vm.run_event_loop().unwrap();
+        vm.shutdown();
+        let leaks = vm.find_leaks();
+        assert_eq!(leaks.len(), 1, "{workers} workers: {leaks:?}");
+        assert_eq!(leaks[0].objects, ["Node", "Node"], "{workers} workers");
+        // Where each was made, in the program the task ran.
+        let sites = leaks[0].sites.join(" ");
+        assert!(
+            sites.contains("leaks.colibri:7") && sites.contains("leaks.colibri:8"),
+            "{sites}"
+        );
+    }
+}
+
+#[test]
+fn a_task_that_leaks_nothing_and_a_vm_that_does_not_track_report_nothing() {
+    let clean = r#"
+fn work() -> int {
+    let a = Node { name: "a" }
+    let b = Node { name: "b" }
+    a.next = some(b)
+    return 2
+}
+
+fn main() {
+    print("task {task.run(fn() => work()).join().expect("task")}")
+}
+"#;
+    let mut vm = task_vm(3, true, clean);
+    vm.run_main().unwrap();
+    vm.shutdown();
+    assert!(vm.find_leaks().is_empty());
+    // Without tracking, a leaking task is not found either.
+    let mut vm = task_vm(3, false, TASK_CYCLE);
+    vm.run_main().unwrap();
+    vm.shutdown();
+    assert!(vm.find_leaks().is_empty());
+}
+
+#[test]
+fn the_main_isolates_leaks_and_the_workers_are_reported_together() {
+    let both = r#"
+fn leak(name: str) {
+    let a = Node { name: name }
+    a.next = some(a)
+}
+
+fn main() {
+    leak("main")
+    task.run(fn() { leak("task") }).join().expect("task")
+}
+"#;
+    let mut vm = task_vm(1, true, both);
+    vm.run_main().unwrap();
+    vm.shutdown();
+    let mut paths: Vec<String> = vm.find_leaks().into_iter().map(|l| l.path).collect();
+    paths.sort();
+    assert_eq!(paths.len(), 2, "{paths:?}");
+    assert!(paths[0].contains("main") && paths[1].contains("task"), "{paths:?}");
+}

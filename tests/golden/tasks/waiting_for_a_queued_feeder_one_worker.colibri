@@ -1,0 +1,53 @@
+// workers: 1
+// A task that waits for a channel holds its thread. When the task that would feed it is still
+// queued, the pool lends a temporary thread for it, so these programs end on a pool of one
+// thread as they do on a pool of three (`waiting_for_a_queued_feeder_three_workers`).
+
+// `a` takes the pool's only thread and waits for `b`, which is queued behind it, and the main
+// thread joins `b` first.
+fn joined_before_the_task_that_waits() {
+    let ch = Channel[int]()
+    let a = task.run(fn() => ch.recv().expect("fed"))
+    let b = task.run(fn() {
+        ch.send(5)
+        return 1
+    })
+    print("b {b.join().expect("b")}")
+    print("a {a.join().expect("a")}")
+}
+
+// A task that joins a queued task runs it on its own thread, and that task waits for a channel
+// that a second queued task feeds.
+fn nested_in_a_task() -> int {
+    let ch = Channel[int]()
+    let a = task.run(fn() => ch.recv().expect("fed"))
+    let b = task.run(fn() { ch.send(7) })
+    let got = a.join().expect("a")
+    b.join().expect("b")
+    return got
+}
+
+// The main thread waits for a channel that only a queued task feeds, while the pool's thread is
+// busy waiting for the main thread.
+fn main_waits_while_the_pool_waits_for_main() {
+    let gate = Channel[int]()
+    let ch = Channel[int]()
+    let held = task.run(fn() => gate.recv().expect("opened"))
+    let feeder = task.run(fn() { ch.send(11) })
+    print("fed {ch.recv().expect("a value")}")
+    gate.send(1)
+    print("held {held.join().expect("held")}")
+    feeder.join().expect("feeder")
+}
+
+fn main() {
+    joined_before_the_task_that_waits()
+    print("nested {task.run(nested_in_a_task).join().expect("outer")}")
+    main_waits_while_the_pool_waits_for_main()
+}
+
+// expect: b 1
+// expect: a 5
+// expect: nested 7
+// expect: fed 11
+// expect: held 1

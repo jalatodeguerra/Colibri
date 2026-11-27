@@ -1,0 +1,29 @@
+// workers: 1
+// Tasks that change one `Mutex` lose no update, whichever thread runs them and in whatever order:
+// each `with` sees what the one before it left. The program prints the same on a pool of three
+// (`mutex_counter_three_workers`).
+struct Tally {
+    hits: int
+    sum: int
+}
+
+fn work(t: Mutex[Tally], from: int) {
+    for i in from..from + 50 {
+        t.with(fn(mut v) {
+            v.hits += 1
+            v.sum += i
+        })
+    }
+}
+
+fn main() {
+    let t = Mutex(Tally { hits: 0, sum: 0 })
+    let tasks = [0, 50, 100, 150].map(fn(from) => task.run(fn() { work(t, from) }))
+    for each in tasks {
+        each.join().expect("a task")
+    }
+    let done = t.get()
+    print("hits {done.hits}, sum {done.sum}")
+}
+
+// expect: hits 200, sum 19900

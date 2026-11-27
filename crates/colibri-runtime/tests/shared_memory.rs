@@ -188,7 +188,7 @@ fn drop_both() {{
 }
 
 #[test]
-fn a_worker_charges_its_copy_to_the_vm_and_frees_it_at_its_next_task() {
+fn a_worker_charges_its_copy_to_the_vm_and_frees_it_when_the_last_handle_dies() {
     let z = sizes();
     let source = format!(
         r#"{BIG}
@@ -220,10 +220,21 @@ fn nothing() -> int {{
     // A second task on the same worker finds the copy it made.
     assert_eq!(call_int(&mut vm, "read").unwrap(), 100_000);
     assert!(used(&vm).abs_diff(read) < 16 * 1024, "{} {read}", used(&vm));
-    // Every handle is gone. The graph goes with the last one, and the worker's copy goes when the
-    // worker next looks (it is idle, and cannot be told): at the start of its next task.
+    // Every handle is gone. The graph goes with the last one, and the idle worker is woken to
+    // free its copy, without another task: the memory returns to what it was. (The worker frees it
+    // on its own thread a moment after `clear` returns, so the test waits for it, with no limit on
+    // how long it may take other than the minute that fails the test.)
     call0(&mut vm, "clear").unwrap();
-    assert!(used(&vm) - base >= z.copy * 9 / 10, "{}", used(&vm) - base);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while used(&vm).abs_diff(base) >= 32 * 1024 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the idle worker kept its copy: {} {base}",
+            used(&vm)
+        );
+        std::thread::yield_now();
+    }
+    // The worker is still there and runs the next task as before.
     assert_eq!(call_int(&mut vm, "nothing").unwrap(), 1);
     assert!(used(&vm).abs_diff(base) < 32 * 1024, "{} {base}", used(&vm));
 }

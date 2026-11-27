@@ -1,0 +1,41 @@
+// workers: 3
+// leaks: Node, Node
+// The leak detector runs in every isolate. A cycle that a task makes and nothing frees is found
+// in the task's own isolate, and its report comes to the program when it shuts down. The cycle
+// the main thread frees (a `weak` link) is not reported.
+class Node {
+    name: str
+    next: Node? = none
+}
+
+class Parent {
+    name: str
+    children: List[Child] = []
+}
+
+class Child {
+    name: str
+    parent: weak Parent
+}
+
+fn leak_in_a_task() -> int {
+    let a = Node { name: "a" }
+    let b = Node { name: "b" }
+    a.next = some(b)
+    b.next = some(a)
+    return 1
+}
+
+fn fine() -> int {
+    let p = Parent { name: "p" }
+    p.children.push(Child { name: "c", parent: p })
+    return 2
+}
+
+fn main() {
+    print("fine {fine()}")
+    print("leaking task {task.run(leak_in_a_task).join().expect("task")}")
+}
+
+// expect: fine 2
+// expect: leaking task 1
