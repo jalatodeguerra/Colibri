@@ -155,6 +155,32 @@ fn step_in_over_and_out_across_a_closure_built_in() {
     dap.disconnect();
 }
 
+const CAPTURING: &str = "\
+fn main() {
+    let offset = 10
+    let add = fn(x: int) -> int {
+        return x + offset // @inner
+    }
+    let r = add(1) // @call
+    print(r)
+}
+";
+
+#[test]
+fn stepping_into_a_closure_shows_what_it_captured() {
+    let (call, inner) = (line_of(CAPTURING, "call"), line_of(CAPTURING, "inner"));
+    let (mut dap, _) = stopped_at("step-in-captures", CAPTURING, &[call]);
+    dap.request("stepIn", json!({"threadId": 1}));
+    assert_eq!(dap.stopped()["reason"], "step");
+    assert_eq!(dap.where_(), ("<closure in main>".to_string(), inner));
+    // The capture is in the frame at the first stop inside the closure, not only after the
+    // next instruction.
+    let locals = dap.locals();
+    assert!(locals.contains(&"x = 1".to_string()), "{locals:?}");
+    assert!(locals.contains(&"offset = 10".to_string()), "{locals:?}");
+    dap.disconnect();
+}
+
 const COUNTED: &str = "\
 fn main() {
     for i in 1..6 {
