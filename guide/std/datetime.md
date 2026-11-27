@@ -2,7 +2,7 @@
 
 # `datetime`
 
-Dates, times and their formatting. On Windows, local time is currently UTC.
+Dates, times and their formatting.
 
 ```colibri
 import datetime
