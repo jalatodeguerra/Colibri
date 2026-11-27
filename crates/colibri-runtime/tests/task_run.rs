@@ -687,7 +687,10 @@ fn w(h: Holder) {
     for i in 0..300000 {
         k += 1
     }
-    h.v = h.v + t.join().expect("b")
+    // Join first, then read `h.v`: reading it before the join suspends would lose `z`'s write
+    // whenever `b` is still running, which depends on the machine's speed.
+    let r = t.join().expect("b")
+    h.v = h.v + r
 }
 
 fn z(h: Holder) {
