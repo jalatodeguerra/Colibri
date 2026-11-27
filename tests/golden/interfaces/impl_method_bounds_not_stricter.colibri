@@ -1,0 +1,22 @@
+// An impl's method may not ask more of its own type parameters than the interface's method:
+// a caller that only knows the interface has checked its argument against the interface's
+// bounds, so a stricter bound in the impl would be assumed for a type nothing checked.
+interface Mk {
+    fn conv[U](self, u: U) -> str
+}
+
+struct S {}
+
+impl Mk for S {
+    fn conv[U: Ord](self, u: U) -> str { // error: the method `conv` asks more of `U` than `Mk` does
+        return "ok"
+    }
+}
+
+fn use[M: Mk](m: M) -> str {
+    return m.conv(fn(x: int) => x)
+}
+
+fn main() {
+    print(use(S {}))
+}

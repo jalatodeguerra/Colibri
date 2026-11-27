@@ -16,7 +16,8 @@ use crate::hir::{FnId, IfaceMethod, ImplId, TypeDefKind};
 use crate::prelude;
 use crate::traits::{BoundRef, GenericParamInfo, ImplInfo, key_of};
 use crate::types::{
-    DROP, FIRST_USER_TYPE, INTO_ERROR, IntTy, ParamId, Ty, TypeId, is_binary_operator, is_operator,
+    CLONE, DROP, EQ, FIRST_USER_TYPE, INTO_ERROR, IntTy, ORD, ParamId, SHOW, Ty, TypeId,
+    is_binary_operator, is_operator,
 };
 
 /// An interface as the checker keeps it.
@@ -569,12 +570,24 @@ impl<'a> Checker<'a> {
         let class = matches!(target, Ty::Adt(id, _) if self.types[id.0 as usize].is_class());
         let receiver_ok = wanted.receiver == got_recv
             || (class && wanted.receiver == Some(true) && got_recv == Some(false));
+        // A parameter whose type is already an error was reported where it was written; a second
+        // complaint that the signature differs would only repeat it.
+        if got_tys.iter().any(Ty::is_error) {
+            return;
+        }
         let same = own_wanted.len() == own_got.len()
             && receiver_ok
             && exp_params == got_tys
-            && (exp_ret == got_ret || exp_ret.is_error() || got_ret.is_error())
-            && !got_tys.iter().any(Ty::is_error);
+            && (exp_ret == got_ret || exp_ret.is_error() || got_ret.is_error());
         if same {
+            self.check_method_bounds(
+                own_wanted,
+                &own_got,
+                &map,
+                name_span,
+                iface_name,
+                &wanted.name,
+            );
             return;
         }
         let expected = self.render_signature(
@@ -610,6 +623,54 @@ impl<'a> Checker<'a> {
         )
         .with_label(wanted.name_span, format!("`{iface_name}` declares it here"));
         self.report(diag);
+    }
+
+    /// A method of an impl may ask less of its own type parameters than the interface does, but
+    /// not more: a caller that only knows the interface (`m.conv(x)` with `M: Mk`) has checked
+    /// `x` against the interface's bounds, so a stricter bound in the impl would be assumed to
+    /// hold for a type nothing checked (a closure where the impl wants `Ord`).
+    ///
+    /// Each bound the impl writes on one of the method's own parameters must be one the
+    /// interface writes on the matching parameter (`Ord` also gives `Eq`; `Show` and `Clone` hold
+    /// for every type). `map` takes the interface's parameters to the impl's terms.
+    fn check_method_bounds(
+        &mut self,
+        own_wanted: &[GenericParamInfo],
+        own_got: &[GenericParamInfo],
+        map: &[(ParamId, Ty)],
+        name_span: Span,
+        iface_name: &str,
+        method: &str,
+    ) {
+        for (w, g) in own_wanted.iter().zip(own_got) {
+            for b in &g.bounds {
+                if b.implied || b.iface == SHOW || b.iface == CLONE {
+                    continue;
+                }
+                let granted = w.bounds.iter().any(|wb| {
+                    let args: Vec<Ty> = wb.args.iter().map(|a| a.subst(map)).collect();
+                    (wb.iface == b.iface && args == b.args)
+                        || (b.iface == EQ && wb.iface == ORD && args.is_empty())
+                });
+                if granted {
+                    continue;
+                }
+                let bound = self.render(&Ty::Dyn(b.iface, b.args.clone()));
+                self.report(
+                    Diagnostic::error(
+                        format!(
+                            "the method `{method}` asks more of `{}` than `{iface_name}` does: it needs `{}: {bound}`",
+                            g.name, g.name
+                        ),
+                        b.span,
+                    )
+                    .with_label(name_span, format!("implements `{iface_name}.{method}`"))
+                    .with_hint(format!(
+                        "a caller that only knows `{iface_name}` cannot promise it; add `{bound}` to the bounds in the interface, or remove it here"
+                    )),
+                );
+            }
+        }
     }
 
     /// `fn area[T](self, scale: float) -> float`, for messages.
