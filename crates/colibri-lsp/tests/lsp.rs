@@ -1425,8 +1425,8 @@ fn parse(s: str) -> Result[int] {
 fn main() {
     let s = \"abc\"
     let xs = [1, 2, 3]
-    let mut m = {\"a\": 1}
-    let mut set = Set[int]()
+    let m = {\"a\": 1}
+    let set = Set[int]()
     let o = some(1)
     let r = parse(\"1\")
     let mut_buf = StrBuilder()
