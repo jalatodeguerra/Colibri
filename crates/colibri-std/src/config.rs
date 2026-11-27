@@ -221,7 +221,9 @@ pub enum EnvSource {
     /// The process's own environment.
     #[default]
     Process,
-    /// Exactly these variables, whatever the process has.
+    /// Exactly these variables, whatever the process has. A child process (`process.run`) gets
+    /// them and nothing of the host's, except that on Windows `SystemRoot` and `windir` are
+    /// passed on unless set here: without them Winsock and many programs do not start.
     Fixed(BTreeMap<String, String>),
 }
 

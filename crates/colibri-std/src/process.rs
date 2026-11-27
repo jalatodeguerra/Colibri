@@ -106,7 +106,8 @@ fn text(bytes: Vec<u8>) -> String {
 
 /// The command, with the environment of this program: the process's own (or the fixed one the
 /// `Vm` was built with, and nothing of the host's) plus whatever
-/// `os.set_env` changed, then the options' own variables on top.
+/// `os.set_env` changed, then the options' own variables on top. A fixed environment on Windows
+/// still gets `SystemRoot` and `windir` from the host (see [`system_variables`]).
 ///
 /// `raw` is text appended to the command line exactly as it is, after the arguments, with no
 /// quoting; only `shell` uses it, and only on Windows (elsewhere it is always `None`).
@@ -135,6 +136,8 @@ fn command(
         // environment is hermetic, so its children must not inherit the host's variables.
         if let EnvSource::Fixed(vars) = &state.env {
             cmd.env_clear();
+            #[cfg(windows)]
+            cmd.envs(system_variables(vars, |name| std::env::var_os(name)));
             cmd.envs(vars);
         }
         cmd.envs(&state.env_overrides);
@@ -150,6 +153,22 @@ fn command(
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     }
     cmd
+}
+
+/// The variables Windows programs cannot start without, which a fixed environment gets from the
+/// host anyway: `SystemRoot` (Winsock and many programs fail to initialise without it) and
+/// `windir`. A variable the fixed environment sets itself wins (names compare without regard
+/// to case on Windows). `host` reads the host's environment.
+#[cfg(any(windows, test))]
+fn system_variables(
+    fixed: &BTreeMap<String, String>,
+    host: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<(&'static str, std::ffi::OsString)> {
+    ["SystemRoot", "windir"]
+        .into_iter()
+        .filter(|name| !fixed.keys().any(|k| k.eq_ignore_ascii_case(name)))
+        .filter_map(|name| host(name).map(|value| (name, value)))
+        .collect()
 }
 
 /// Looks at the folder the program is to run in before starting it, so the message is the
@@ -596,6 +615,27 @@ fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fixed_environment_keeps_system_root_unless_it_sets_it() {
+        let host = |name: &str| Some(std::ffi::OsString::from(format!("host-{name}")));
+        let fixed = BTreeMap::from([("K".to_string(), "v".to_string())]);
+        assert_eq!(
+            system_variables(&fixed, host),
+            [
+                ("SystemRoot", "host-SystemRoot".into()),
+                ("windir", "host-windir".into())
+            ]
+        );
+        // Set by the fixed environment (in any case), so the host's is not passed on.
+        let fixed = BTreeMap::from([("SYSTEMROOT".to_string(), "mine".to_string())]);
+        assert_eq!(
+            system_variables(&fixed, host),
+            [("windir", "host-windir".into())]
+        );
+        // Not in the host's environment either: nothing to pass.
+        assert!(system_variables(&BTreeMap::new(), |_| None).is_empty());
+    }
 
     #[test]
     fn the_shell_line_is_unchanged_on_unix_and_one_raw_argument_on_windows() {
