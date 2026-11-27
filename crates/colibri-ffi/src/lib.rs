@@ -256,9 +256,9 @@ fn decode(ty: &CType, bytes: &[u8]) -> Result<Val, String> {
         CType::U64 => Val::UInt(read_word(&bytes[..8])),
         CType::F32 => Val::F32(f32::from_bits(read_word(&bytes[..4]) as u32)),
         CType::F64 => Val::F64(f64::from_bits(read_word(&bytes[..8]))),
-        CType::Ptr => Val::Ptr(read_word(&bytes[..8]) as usize),
+        CType::Ptr => Val::Ptr(read_word(&bytes[..size_of::<usize>()]) as usize),
         CType::CStr => {
-            let addr = read_word(&bytes[..8]) as usize;
+            let addr = read_word(&bytes[..size_of::<usize>()]) as usize;
             if addr == 0 {
                 Val::Str(None)
             } else {
@@ -345,7 +345,15 @@ impl Function {
 
     /// Calls the function. Strings in `args` are copied into temporary C strings for the
     /// duration of the call.
-    pub fn call(&self, args: &[Val]) -> Result<Val, String> {
+    ///
+    /// # Safety
+    /// The signature this `Function` was made with must be the real one of the C function: the
+    /// number and types of its parameters and its return type. Nothing can check that, and a
+    /// wrong declaration is a call through a mismatched type, which is undefined behaviour.
+    /// Pointer arguments (`Val::Ptr`) must be valid for whatever the function does with them,
+    /// and the function itself must be safe to call with these arguments (it may run any
+    /// native code).
+    pub unsafe fn call(&self, args: &[Val]) -> Result<Val, String> {
         if args.len() != self.params.len() {
             return Err(format!(
                 "internal error: `{}` takes {} arguments, got {}",

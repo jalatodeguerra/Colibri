@@ -5,9 +5,16 @@ use std::rc::Rc;
 use colibri_ffi::{CStruct, CType, Function, Libraries, Library, Val, read_memory, write_memory};
 
 fn lib() -> Rc<Library> {
-    Libraries::new()
-        .get(Some(colibri_ffi_testlib::PATH))
+    // SAFETY: the test library's initialisers are trivial (it is built from `testlib.c`).
+    unsafe { Libraries::new().get(Some(colibri_ffi_testlib::PATH)) }
         .expect("the test library loads")
+}
+
+/// Calls `f`. Safe here because every function of the test library is declared with the
+/// signature `testlib.c` gives it, and the pointers the tests pass are valid.
+fn invoke(f: &Function, args: &[Val]) -> Result<Val, String> {
+    // SAFETY: see above.
+    unsafe { f.call(args) }
 }
 
 /// A struct type with the offsets the C ABI gives it.
@@ -42,32 +49,32 @@ fn point() -> CType {
 #[test]
 fn scalars_of_every_width() {
     let add = func("ct_add_i32", vec![CType::I32; 2], CType::I32);
-    assert_eq!(add.call(&[Val::Int(40), Val::Int(2)]), Ok(Val::Int(42)));
+    assert_eq!(invoke(&add, &[Val::Int(40), Val::Int(2)]), Ok(Val::Int(42)));
     assert_eq!(
-        add.call(&[Val::Int(i32::MAX.into()), Val::Int(1)]),
+        invoke(&add, &[Val::Int(i32::MAX.into()), Val::Int(1)]),
         Ok(Val::Int(i32::MIN.into()))
     );
     let neg = func("ct_neg_i8", vec![CType::I8], CType::I8);
-    assert_eq!(neg.call(&[Val::Int(5)]), Ok(Val::Int(-5)));
+    assert_eq!(invoke(&neg, &[Val::Int(5)]), Ok(Val::Int(-5)));
     let inc = func("ct_inc_u8", vec![CType::U8], CType::U8);
-    assert_eq!(inc.call(&[Val::Int(255)]), Ok(Val::Int(0)));
+    assert_eq!(invoke(&inc, &[Val::Int(255)]), Ok(Val::Int(0)));
     let not = func("ct_not_u16", vec![CType::U16], CType::U16);
-    assert_eq!(not.call(&[Val::Int(1)]), Ok(Val::Int(0xfffe)));
+    assert_eq!(invoke(&not, &[Val::Int(1)]), Ok(Val::Int(0xfffe)));
     let mul = func("ct_mul_u32", vec![CType::U32; 2], CType::U32);
     assert_eq!(
-        mul.call(&[Val::Int(65536), Val::Int(65537)]),
+        invoke(&mul, &[Val::Int(65536), Val::Int(65537)]),
         Ok(Val::Int(65536))
     );
     let max = func("ct_u64_max", vec![], CType::U64);
-    assert_eq!(max.call(&[]), Ok(Val::UInt(u64::MAX)));
+    assert_eq!(invoke(&max, &[]), Ok(Val::UInt(u64::MAX)));
     let half = func("ct_u64_half", vec![CType::U64], CType::U64);
     assert_eq!(
-        half.call(&[Val::UInt(u64::MAX)]),
+        invoke(&half, &[Val::UInt(u64::MAX)]),
         Ok(Val::UInt(u64::MAX / 2))
     );
     let add64 = func("ct_add_i64", vec![CType::I64; 2], CType::I64);
     assert_eq!(
-        add64.call(&[Val::Int(1 << 40), Val::Int(-1)]),
+        invoke(&add64, &[Val::Int(1 << 40), Val::Int(-1)]),
         Ok(Val::Int((1 << 40) - 1))
     );
 }
@@ -76,24 +83,24 @@ fn scalars_of_every_width() {
 fn floats_bools_and_void() {
     let hyp = func("ct_hyp", vec![CType::F64; 2], CType::F64);
     assert_eq!(
-        hyp.call(&[Val::F64(3.0), Val::F64(4.0)]),
+        invoke(&hyp, &[Val::F64(3.0), Val::F64(4.0)]),
         Ok(Val::F64(25.0))
     );
     let scale = func("ct_scale_f32", vec![CType::F32; 2], CType::F32);
     assert_eq!(
-        scale.call(&[Val::F32(1.5), Val::F32(2.0)]),
+        invoke(&scale, &[Val::F32(1.5), Val::F32(2.0)]),
         Ok(Val::F32(3.0))
     );
     let even = func("ct_is_even", vec![CType::I32], CType::Bool);
-    assert_eq!(even.call(&[Val::Int(4)]), Ok(Val::Bool(true)));
-    assert_eq!(even.call(&[Val::Int(5)]), Ok(Val::Bool(false)));
+    assert_eq!(invoke(&even, &[Val::Int(4)]), Ok(Val::Bool(true)));
+    assert_eq!(invoke(&even, &[Val::Int(5)]), Ok(Val::Bool(false)));
     let and = func("ct_and", vec![CType::Bool; 2], CType::Bool);
     assert_eq!(
-        and.call(&[Val::Bool(true), Val::Bool(false)]),
+        invoke(&and, &[Val::Bool(true), Val::Bool(false)]),
         Ok(Val::Bool(false))
     );
     let nothing = func("ct_nothing", vec![], CType::Void);
-    assert_eq!(nothing.call(&[]), Ok(Val::Void));
+    assert_eq!(invoke(&nothing, &[]), Ok(Val::Void));
 }
 
 #[test]
@@ -112,36 +119,42 @@ fn many_arguments_spill_to_the_stack() {
             }
         })
         .collect();
-    assert_eq!(many.call(&args), Ok(Val::F64(171.0)));
+    assert_eq!(invoke(&many, &args), Ok(Val::F64(171.0)));
 }
 
 #[test]
 fn strings_go_in_and_come_out() {
     let len = func("ct_strlen", vec![CType::CStr], CType::U64);
     assert_eq!(
-        len.call(&[Val::Str(Some("colibri".into()))]),
+        invoke(&len, &[Val::Str(Some("colibri".into()))]),
         Ok(Val::UInt(7))
     );
     assert_eq!(
-        len.call(&[Val::Str(Some("héllo".into()))]),
+        invoke(&len, &[Val::Str(Some("héllo".into()))]),
         Ok(Val::UInt(6))
     );
-    let err = len.call(&[Val::Str(Some("a\0b".into()))]).unwrap_err();
+    let err = invoke(&len, &[Val::Str(Some("a\0b".into()))]).unwrap_err();
     assert!(err.contains("NUL"), "{err}");
     let hello = func("ct_greeting", vec![], CType::CStr);
-    assert_eq!(hello.call(&[]), Ok(Val::Str(Some("hello from C".into()))));
+    assert_eq!(
+        invoke(&hello, &[]),
+        Ok(Val::Str(Some("hello from C".into())))
+    );
     let none = func("ct_null_string", vec![], CType::CStr);
-    assert_eq!(none.call(&[]), Ok(Val::Str(None)));
+    assert_eq!(invoke(&none, &[]), Ok(Val::Str(None)));
     let bad = func("ct_bad_utf8", vec![], CType::CStr);
-    assert!(bad.call(&[]).unwrap_err().contains("UTF-8"));
+    assert!(invoke(&bad, &[]).unwrap_err().contains("UTF-8"));
     let or = func("ct_or_default", vec![CType::CStr], CType::CStr);
     assert_eq!(
-        or.call(&[Val::Str(None)]),
+        invoke(&or, &[Val::Str(None)]),
         Ok(Val::Str(Some("(default)".into())))
     );
     let join = func("ct_join", vec![CType::CStr; 2], CType::CStr);
     assert_eq!(
-        join.call(&[Val::Str(Some("a".into())), Val::Str(Some("b".into()))]),
+        invoke(
+            &join,
+            &[Val::Str(Some("a".into())), Val::Str(Some("b".into()))]
+        ),
         Ok(Val::Str(Some("a-b".into())))
     );
 }
@@ -152,27 +165,30 @@ fn pointers_and_memory() {
     let inc = func("ct_counter_inc", vec![CType::Ptr], CType::Void);
     let get = func("ct_counter_get", vec![CType::Ptr], CType::I32);
     let free = func("ct_counter_free", vec![CType::Ptr], CType::Void);
-    let Ok(Val::Ptr(c)) = counter_new.call(&[Val::Int(10)]) else {
+    let Ok(Val::Ptr(c)) = invoke(&counter_new, &[Val::Int(10)]) else {
         panic!("a pointer");
     };
     assert_ne!(c, 0);
-    inc.call(&[Val::Ptr(c)]).unwrap();
-    inc.call(&[Val::Ptr(c)]).unwrap();
-    assert_eq!(get.call(&[Val::Ptr(c)]), Ok(Val::Int(12)));
+    invoke(&inc, &[Val::Ptr(c)]).unwrap();
+    invoke(&inc, &[Val::Ptr(c)]).unwrap();
+    assert_eq!(invoke(&get, &[Val::Ptr(c)]), Ok(Val::Int(12)));
     // The counter is one `int`: read and write it from outside.
     unsafe {
         assert_eq!(read_memory(&CType::I32, c), Ok(Val::Int(12)));
         write_memory(&CType::I32, &Val::Int(99), c).unwrap();
     }
-    assert_eq!(get.call(&[Val::Ptr(c)]), Ok(Val::Int(99)));
-    free.call(&[Val::Ptr(c)]).unwrap();
+    assert_eq!(invoke(&get, &[Val::Ptr(c)]), Ok(Val::Int(99)));
+    invoke(&free, &[Val::Ptr(c)]).unwrap();
 
     let null = func("ct_null_ptr", vec![], CType::Ptr);
-    assert_eq!(null.call(&[]), Ok(Val::Ptr(0)));
+    assert_eq!(invoke(&null, &[]), Ok(Val::Ptr(0)));
     let set = func("ct_set_i32", vec![CType::Ptr, CType::I32], CType::Void);
     let mut slot = 0i32;
-    set.call(&[Val::Ptr(&mut slot as *mut i32 as usize), Val::Int(-7)])
-        .unwrap();
+    invoke(
+        &set,
+        &[Val::Ptr(&mut slot as *mut i32 as usize), Val::Int(-7)],
+    )
+    .unwrap();
     assert_eq!(slot, -7);
     let divmod = func(
         "ct_divmod",
@@ -180,14 +196,16 @@ fn pointers_and_memory() {
         CType::Void,
     );
     let (mut q, mut r) = (0i32, 0i32);
-    divmod
-        .call(&[
+    invoke(
+        &divmod,
+        &[
             Val::Int(17),
             Val::Int(5),
             Val::Ptr(&mut q as *mut i32 as usize),
             Val::Ptr(&mut r as *mut i32 as usize),
-        ])
-        .unwrap();
+        ],
+    )
+    .unwrap();
     assert_eq!((q, r), (3, 2));
 }
 
@@ -198,9 +216,9 @@ fn pt(x: i64, y: i64) -> Val {
 #[test]
 fn struct_of_two_ints_in_and_out() {
     let add = func("ct_point_add", vec![point(), point()], point());
-    assert_eq!(add.call(&[pt(1, 2), pt(10, 20)]), Ok(pt(11, 22)));
+    assert_eq!(invoke(&add, &[pt(1, 2), pt(10, 20)]), Ok(pt(11, 22)));
     let dot = func("ct_point_dot", vec![point(), point()], CType::I32);
-    assert_eq!(dot.call(&[pt(1, 2), pt(3, 4)]), Ok(Val::Int(11)));
+    assert_eq!(invoke(&dot, &[pt(1, 2), pt(3, 4)]), Ok(Val::Int(11)));
 }
 
 #[test]
@@ -208,21 +226,27 @@ fn structs_of_floats() {
     let v2d = cstruct("Vec2d", vec![CType::F64, CType::F64]);
     let scale = func("ct_vec2d_scale", vec![v2d.clone(), CType::F64], v2d.clone());
     assert_eq!(
-        scale.call(&[
-            Val::Struct(vec![Val::F64(1.0), Val::F64(2.0)]),
-            Val::F64(3.0)
-        ]),
+        invoke(
+            &scale,
+            &[
+                Val::Struct(vec![Val::F64(1.0), Val::F64(2.0)]),
+                Val::F64(3.0)
+            ]
+        ),
         Ok(Val::Struct(vec![Val::F64(3.0), Val::F64(6.0)]))
     );
     let v2f = cstruct("Vec2f", vec![CType::F32, CType::F32]);
     let add = func("ct_vec2f_add", vec![v2f.clone(), v2f.clone()], v2f);
     let f2 = |a: f32, b: f32| Val::Struct(vec![Val::F32(a), Val::F32(b)]);
-    assert_eq!(add.call(&[f2(1.0, 2.0), f2(0.5, 0.25)]), Ok(f2(1.5, 2.25)));
+    assert_eq!(
+        invoke(&add, &[f2(1.0, 2.0), f2(0.5, 0.25)]),
+        Ok(f2(1.5, 2.25))
+    );
     let v3f = cstruct("Vec3f", vec![CType::F32; 3]);
     let cross = func("ct_vec3f_cross", vec![v3f.clone(), v3f.clone()], v3f);
     let f3 = |a: f32, b: f32, c: f32| Val::Struct(vec![Val::F32(a), Val::F32(b), Val::F32(c)]);
     assert_eq!(
-        cross.call(&[f3(1.0, 0.0, 0.0), f3(0.0, 1.0, 0.0)]),
+        invoke(&cross, &[f3(1.0, 0.0, 0.0), f3(0.0, 1.0, 0.0)]),
         Ok(f3(0.0, 0.0, 1.0))
     );
 }
@@ -231,10 +255,10 @@ fn structs_of_floats() {
 fn structs_that_mix_integer_and_float_fields() {
     let mixed = cstruct("Mixed", vec![CType::I32, CType::F64]);
     let make = func("ct_mixed_make", vec![CType::I32, CType::F64], mixed.clone());
-    let m = make.call(&[Val::Int(7), Val::F64(0.5)]).unwrap();
+    let m = invoke(&make, &[Val::Int(7), Val::F64(0.5)]).unwrap();
     assert_eq!(m, Val::Struct(vec![Val::Int(7), Val::F64(0.5)]));
     let sum = func("ct_mixed_sum", vec![mixed], CType::F64);
-    assert_eq!(sum.call(&[m]), Ok(Val::F64(7.5)));
+    assert_eq!(invoke(&sum, &[m]), Ok(Val::F64(7.5)));
 
     let mixed2 = cstruct(
         "Mixed2",
@@ -245,11 +269,13 @@ fn structs_that_mix_integer_and_float_fields() {
         vec![CType::F64, CType::I32, CType::F32, CType::U8],
         mixed2.clone(),
     );
-    let m2 = make2
-        .call(&[Val::F64(1.5), Val::Int(2), Val::F32(0.25), Val::Int(200)])
-        .unwrap();
+    let m2 = invoke(
+        &make2,
+        &[Val::F64(1.5), Val::Int(2), Val::F32(0.25), Val::Int(200)],
+    )
+    .unwrap();
     let sum2 = func("ct_mixed2_sum", vec![mixed2], CType::F64);
-    assert_eq!(sum2.call(&[m2]), Ok(Val::F64(203.75)));
+    assert_eq!(invoke(&sum2, &[m2]), Ok(Val::F64(203.75)));
 }
 
 #[test]
@@ -257,9 +283,9 @@ fn small_byte_structs_padding_and_ladders() {
     let color = cstruct("Color", vec![CType::U8; 4]);
     let invert = func("ct_color_invert", vec![color.clone()], color.clone());
     let c = |r, g, b, a| Val::Struct([r, g, b, a].map(Val::Int).to_vec());
-    assert_eq!(invert.call(&[c(0, 100, 255, 7)]), Ok(c(255, 155, 0, 7)));
+    assert_eq!(invoke(&invert, &[c(0, 100, 255, 7)]), Ok(c(255, 155, 0, 7)));
     let pack = func("ct_color_pack", vec![color], CType::U32);
-    assert_eq!(pack.call(&[c(1, 2, 3, 4)]), Ok(Val::Int(0x0102_0304)));
+    assert_eq!(invoke(&pack, &[c(1, 2, 3, 4)]), Ok(Val::Int(0x0102_0304)));
 
     let padded = cstruct(
         "Padded",
@@ -270,9 +296,11 @@ fn small_byte_structs_padding_and_ladders() {
         vec![CType::U8, CType::I64, CType::Bool, CType::U16],
         padded.clone(),
     );
-    let p = make
-        .call(&[Val::Int(3), Val::Int(-5), Val::Bool(true), Val::Int(40000)])
-        .unwrap();
+    let p = invoke(
+        &make,
+        &[Val::Int(3), Val::Int(-5), Val::Bool(true), Val::Int(40000)],
+    )
+    .unwrap();
     assert_eq!(
         p,
         Val::Struct(vec![
@@ -283,14 +311,14 @@ fn small_byte_structs_padding_and_ladders() {
         ])
     );
     let sum = func("ct_padded_sum", vec![padded], CType::I64);
-    assert_eq!(sum.call(&[p]), Ok(Val::Int(3 - 5 + 1000 + 40000)));
+    assert_eq!(invoke(&sum, &[p]), Ok(Val::Int(3 - 5 + 1000 + 40000)));
 
     let ladder = cstruct(
         "Ladder",
         vec![CType::I8, CType::I16, CType::I32, CType::I64, CType::U8],
     );
     let make = func("ct_ladder_make", vec![], ladder.clone());
-    let l = make.call(&[]).unwrap();
+    let l = invoke(&make, &[]).unwrap();
     assert_eq!(
         l,
         Val::Struct(vec![
@@ -302,22 +330,22 @@ fn small_byte_structs_padding_and_ladders() {
         ])
     );
     let sum = func("ct_ladder_sum", vec![ladder], CType::I64);
-    assert_eq!(sum.call(&[l]), Ok(Val::Int(-5)));
+    assert_eq!(invoke(&sum, &[l]), Ok(Val::Int(-5)));
 }
 
 #[test]
 fn large_and_nested_structs_go_through_memory() {
     let big = cstruct("Big", vec![CType::I64; 4]);
     let make = func("ct_big_make", vec![CType::I64], big.clone());
-    let b = make.call(&[Val::Int(10)]).unwrap();
+    let b = invoke(&make, &[Val::Int(10)]).unwrap();
     assert_eq!(
         b,
         Val::Struct(vec![Val::Int(10), Val::Int(20), Val::Int(30), Val::Int(40)])
     );
     let add = func("ct_big_add", vec![big.clone(), big.clone()], big.clone());
     let sum = func("ct_big_sum", vec![big.clone()], CType::I64);
-    let twice = add.call(&[b.clone(), b]).unwrap();
-    assert_eq!(sum.call(&[twice]), Ok(Val::Int(200)));
+    let twice = invoke(&add, &[b.clone(), b]).unwrap();
+    assert_eq!(invoke(&sum, &[twice]), Ok(Val::Int(200)));
 
     let rect = cstruct("Rect", vec![point(), point()]);
     let union = func(
@@ -327,11 +355,11 @@ fn large_and_nested_structs_go_through_memory() {
     );
     let r = |a, b, c, d| Val::Struct(vec![pt(a, b), pt(c, d)]);
     assert_eq!(
-        union.call(&[r(0, 0, 2, 2), r(1, -1, 5, 1)]),
+        invoke(&union, &[r(0, 0, 2, 2), r(1, -1, 5, 1)]),
         Ok(r(0, -1, 5, 2))
     );
     let area = func("ct_rect_area", vec![rect], CType::I32);
-    assert_eq!(area.call(&[r(1, 1, 4, 3)]), Ok(Val::Int(6)));
+    assert_eq!(invoke(&area, &[r(1, 1, 4, 3)]), Ok(Val::Int(6)));
 }
 
 #[test]
@@ -339,13 +367,13 @@ fn a_struct_with_a_pointer_field_carries_the_address() {
     let named = cstruct("Named", vec![CType::Ptr, CType::I32]);
     let make = func("ct_named_make", vec![CType::Ptr], named.clone());
     let text = b"colibri\0";
-    let n = make.call(&[Val::Ptr(text.as_ptr() as usize)]).unwrap();
+    let n = invoke(&make, &[Val::Ptr(text.as_ptr() as usize)]).unwrap();
     assert_eq!(
         n,
         Val::Struct(vec![Val::Ptr(text.as_ptr() as usize), Val::Int(7)])
     );
     let len = func("ct_named_len", vec![named], CType::I32);
-    assert_eq!(len.call(&[n]), Ok(Val::Int(7)));
+    assert_eq!(invoke(&len, &[n]), Ok(Val::Int(7)));
 }
 
 #[test]
@@ -363,9 +391,9 @@ fn struct_through_a_pointer() {
     let from = func("ct_point_from_ptr", vec![CType::Ptr], point());
     let mut p = [3i32, 4];
     let addr = p.as_mut_ptr() as usize;
-    scale.call(&[Val::Ptr(addr), Val::Int(5)]).unwrap();
+    invoke(&scale, &[Val::Ptr(addr), Val::Int(5)]).unwrap();
     assert_eq!(p, [15, 20]);
-    assert_eq!(from.call(&[Val::Ptr(addr)]), Ok(pt(15, 20)));
+    assert_eq!(invoke(&from, &[Val::Ptr(addr)]), Ok(pt(15, 20)));
     unsafe {
         assert_eq!(read_memory(&point(), addr), Ok(pt(15, 20)));
         write_memory(&point(), &pt(1, 2), addr).unwrap();
@@ -409,16 +437,16 @@ fn an_unknown_symbol_and_an_empty_struct_are_errors() {
 #[test]
 fn the_c_library_is_found_by_name() {
     let mut libs = Libraries::new();
-    let libc = libs.get(Some("c")).expect("libc");
+    let libc = unsafe { libs.get(Some("c")) }.expect("libc");
     let strlen = Function::new(&libc, "strlen", vec![CType::CStr], CType::U64).unwrap();
     assert_eq!(
-        strlen.call(&[Val::Str(Some("abcd".into()))]),
+        invoke(&strlen, &[Val::Str(Some("abcd".into()))]),
         Ok(Val::UInt(4))
     );
-    let libm = libs.get(Some("m")).expect("libm");
+    let libm = unsafe { libs.get(Some("m")) }.expect("libm");
     let cos = Function::new(&libm, "cos", vec![CType::F64], CType::F64).unwrap();
-    assert_eq!(cos.call(&[Val::F64(0.0)]), Ok(Val::F64(1.0)));
-    let process = libs.get(None).expect("the process");
+    assert_eq!(invoke(&cos, &[Val::F64(0.0)]), Ok(Val::F64(1.0)));
+    let process = unsafe { libs.get(None) }.expect("the process");
     assert!(Function::new(&process, "strlen", vec![CType::CStr], CType::U64).is_ok());
-    assert!(libs.get(Some("definitely_not_a_library_xyz")).is_err());
+    assert!(unsafe { libs.get(Some("definitely_not_a_library_xyz")) }.is_err());
 }
