@@ -1223,7 +1223,8 @@ dropping a handle closes nothing, so call `close()` when the senders are done. A
 is **copied**, as the closure of a task is (the same rules say what can be copied and what is
 refused), and the receiver gets the copy; a send of something that is more than plain data has to
 be written as a visible copy, `ch.send(x.clone())`, and that clone is the copy (the value is not
-copied a second time unless the program has an `impl Clone` of its own, which then runs). A
+copied a second time unless the program has an `impl Clone` or an `impl Drop` of its own, which then
+run as for any `.clone()`). A
 `Channel` can be a value of a channel: `Channel[Channel[str]]` is how a request carries the
 channel that its answer comes back on.
 
@@ -1233,14 +1234,17 @@ served in the order they began to wait, and a value goes straight to a receiver 
 coroutine that is cancelled while it waits does not take a value with it. Things to know:
 
 - A task that waits on a channel keeps its worker thread, so give the pool enough threads for the
-  tasks that wait on each other. A `recv` that nothing will ever satisfy is not detected: a
+  tasks that wait on each other. (A task that joins a task while it has coroutines of its own waits
+  for it and goes on running them; if every thread of the pool is busy, the pool lends a temporary
+  thread for the task you join, which ends when it has nothing to run.) A `recv` that nothing will ever satisfy is not detected: a
   coroutine that waits on a channel nobody closes keeps the event loop running.
 - The order of values from several senders is not fixed, but the values of one sender arrive in the
   order it sent them.
 - A `send` on a closed channel panics with `cannot send on a closed channel`, also for a sender
   that was waiting when the channel was closed.
 - A value that does not fit in the memory limit when it is copied into the channel, or rebuilt out
-  of it, is that limit failing, as for a task.
+  of it, is that limit failing, as for a task. The receive that fails has taken the value out of
+  the channel, so the value is lost with the receiver that could not hold it.
 
 ## Bytes and JSON
 
