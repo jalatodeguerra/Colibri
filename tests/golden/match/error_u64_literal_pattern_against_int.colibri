@@ -1,0 +1,7 @@
+fn main() {
+    let a = 5
+    match a {
+        18446744073709551615 => print("max") // error: literal 18446744073709551615 does not fit in `int`
+        _ => print("other")
+    }
+}

@@ -924,7 +924,17 @@ impl<'a> Checker<'a> {
             | ItemKind::Interface(_) => {}
             ItemKind::Impl(decl) => self.collect_impl(decl, item),
             // Bound after every declaration is known (`bind_imports_types` / `_values`).
-            ItemKind::Import(_) => {}
+            ItemKind::Import(_) => {
+                // An import is private to its file: `a.math` is not a name of module `a`, so a
+                // `pub` on it would promise a re-export that does not happen.
+                if item.public {
+                    self.report(
+                        Diagnostic::error("re-exports are not supported", item.span).with_hint(
+                            "remove `pub`: an import is private to its file; other files import the module themselves",
+                        ),
+                    );
+                }
+            }
             ItemKind::Extern(block) => self.collect_extern(item, block),
             ItemKind::Test(decl) => self.collect_test(item, decl),
             ItemKind::Error => {}
@@ -1799,6 +1809,13 @@ impl<'a> Checker<'a> {
             &info.ret,
             Ty::Adt(RESULT_TYPE, args) if args.first() == Some(&Ty::Unit)
         );
+        // Nothing could pick a type argument for the call that starts the program.
+        if !info.generics.is_empty() {
+            let diag = Diagnostic::error("`main` cannot have type parameters", info.name_span)
+                .with_hint("write `fn main() { ... }`");
+            self.report(diag);
+        }
+        let info = &self.fns[id.0 as usize];
         if !info.params.is_empty() || info.ret != Ty::Unit && !info.ret.is_error() && !unit_result {
             let diag = Diagnostic::error(
                 "`main` must take no arguments and return nothing or `Result[()]`",

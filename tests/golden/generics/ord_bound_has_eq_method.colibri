@@ -1,0 +1,15 @@
+// `T: Ord` gives `a == b`, and so also `a.eq(b)`.
+fn same[T: Ord](a: T, b: T) -> bool {
+    return a.eq(b)
+}
+
+struct P { x: int }
+
+fn main() {
+    print(same(1, 2))
+    print(same("a", "a"))
+    print(same(P { x: 1 }, P { x: 1 }))
+}
+// expect: false
+// expect: true
+// expect: true

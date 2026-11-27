@@ -1,0 +1,8 @@
+// `..=` ends at its upper bound; a bare `..=` or `1..=` is an error, not a pattern that
+// matches everything.
+fn main() {
+    let a = 5
+    match a {
+        ..= => print("any") // error: expected an upper bound after `..=`
+    }
+}

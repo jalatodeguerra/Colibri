@@ -12,6 +12,7 @@ pub fn lit_matches(lit: &Lit, v: &Value) -> bool {
     match (lit, v) {
         (Lit::Int(a), Value::Int(b)) => a == b,
         (Lit::Int(a), Value::U64(b)) => u64::try_from(*a) == Ok(*b),
+        (Lit::U64(a), Value::U64(b)) => a == b,
         (Lit::Char(a), Value::Char(b)) => a == b,
         (Lit::Bool(a), Value::Bool(b)) => a == b,
         (Lit::Str(a), Value::Str(b)) => a == b,
@@ -26,6 +27,9 @@ pub fn lit_cmp(v: &Value, lit: &Lit) -> Option<Ordering> {
     match (v, lit) {
         (Value::Int(a), Lit::Int(b)) => Some(a.cmp(b)),
         (Value::U64(a), Lit::Int(b)) => Some(i128::from(*a).cmp(&i128::from(*b))),
+        (Value::U64(a), Lit::U64(b)) => Some(a.cmp(b)),
+        // A `U64` literal is above every `i64`.
+        (Value::Int(_), Lit::U64(_)) => Some(Ordering::Less),
         (Value::Char(a), Lit::Char(b)) => Some(a.cmp(b)),
         _ => None,
     }
