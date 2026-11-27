@@ -150,6 +150,10 @@ pub struct Scheduler {
     /// How many ticks have run.
     pub(crate) frame: u64,
     pub(crate) in_tick: bool,
+    /// How many ticks are running, counting the ones a joiner's tick has set aside for a task
+    /// that runs inline (`in_tick` is `false` inside its scope; this is not). The entries are
+    /// indexed by every one of those loops, so only the outermost tick compacts them.
+    pub(crate) ticks: u32,
     /// Ticks and the event loop see only the coroutines with an id of `floor` or more: a task
     /// that its joiner runs inline has the scheduler to itself (see [`Scheduler::enter_scope`]).
     pub(crate) floor: u64,
@@ -187,6 +191,7 @@ impl Scheduler {
             time: 0.0,
             frame: 0,
             in_tick: false,
+            ticks: 0,
             floor: 0,
             running: Vec::new(),
             failures: Vec::new(),
@@ -609,7 +614,11 @@ impl Scheduler {
     /// After a start: compacts when many finished entries make up most of the list (and no
     /// tick is running, whose loop indexes the entries).
     pub fn compact_if_crowded(&mut self) {
-        if !self.in_tick && self.finished > 32 && self.finished * 2 > self.entries.len() {
+        if !self.in_tick
+            && self.ticks == 0
+            && self.finished > 32
+            && self.finished * 2 > self.entries.len()
+        {
             self.compact();
         }
     }

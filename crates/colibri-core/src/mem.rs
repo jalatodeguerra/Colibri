@@ -1154,6 +1154,23 @@ mod tests {
     }
 
     #[test]
+    fn the_root_tag_of_a_task_that_a_task_started_is_the_vms_own() {
+        let _g = shared();
+        let vm = MemAccount::open();
+        let task = MemAccount::child_of(vm.tag());
+        // A task submitted from the `Vm` and one submitted from a task name the same root, and
+        // the child of a child is the child of the root.
+        assert_eq!(vm.root_tag(), vm.tag());
+        assert_eq!(task.root_tag(), vm.tag());
+        let nested = MemAccount::child_of(task.root_tag());
+        assert_eq!(nested.root_tag(), vm.tag());
+        let by_a_child = MemAccount::child_of(task.tag());
+        assert_eq!(by_a_child.root_tag(), vm.tag());
+        // An inert account has no root.
+        assert_eq!(MemAccount::share(0).root_tag(), 0);
+    }
+
+    #[test]
     fn the_parents_limit_is_measured_on_what_it_holds_itself() {
         let _g = shared();
         let mut parent = MemAccount::open();

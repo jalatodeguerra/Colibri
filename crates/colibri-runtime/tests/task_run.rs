@@ -655,3 +655,67 @@ fn main() {
         }
     }
 }
+
+#[test]
+fn a_task_run_inline_inside_a_tick_leaves_the_entries_of_that_tick_alone() {
+    // `w` and `z` are resumed by a tick; `w` joins `b`, which runs inline on a pool of one thread
+    // and ticks on its own. The finished `quick` is in the list while that happens: compacting it
+    // away under the outer tick's loop would run it off the end of the list.
+    let source = r#"
+fn work() -> int {
+    wait(0.01)
+    return 5
+}
+
+fn b() -> int {
+    let c = go work()
+    return c.join()
+}
+
+class Holder {
+    v: int
+}
+
+fn quick() -> int {
+    return 1
+}
+
+fn w(h: Holder) {
+    wait(0.0)
+    let t = task.run(b)
+    let mut k = 0
+    for i in 0..300000 {
+        k += 1
+    }
+    h.v = h.v + t.join().expect("b")
+}
+
+fn z(h: Holder) {
+    wait(0.0)
+    h.v = h.v + 100
+}
+
+fn outer() -> int {
+    let h = Holder { v: 0 }
+    let a = go quick()
+    let ww = go w(h)
+    let zz = go z(h)
+    ww.join()
+    zz.join()
+    return h.v + a.join()
+}
+
+fn main() {
+    print("outer {task.run(outer).join()}")
+}
+"#;
+    for workers in [1, 3] {
+        for _ in 0..3 {
+            assert_eq!(
+                run_on(workers, None, source),
+                "outer ok(106)\n",
+                "{workers} workers"
+            );
+        }
+    }
+}

@@ -482,6 +482,7 @@ pub(crate) trait SchedInternal: Engine {
         }
         let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
         s.in_tick = true;
+        s.ticks += 1;
         s.ext.drain();
         s.time += dt;
         s.frame += 1;
@@ -504,6 +505,7 @@ pub(crate) trait SchedInternal: Engine {
         for i in 0..count {
             let s = &mut self.core_mut().sched;
             let e = &s.entries[i];
+            // (`frame` also moves in a nested tick: what it visited lies before this index.)
             if e.state != State::Suspended || e.ticked == s.frame || e.id < s.floor {
                 continue;
             }
@@ -527,7 +529,12 @@ pub(crate) trait SchedInternal: Engine {
         }
         let s = &mut self.core_mut().sched;
         s.in_tick = false;
-        s.compact();
+        s.ticks -= 1;
+        // A tick that a task run inline in a coroutine's join makes, inside the tick that resumed
+        // that coroutine, must leave the entries where they are: the outer loop goes on by index.
+        if s.ticks == 0 {
+            s.compact();
+        }
         Ok(())
     }
 
