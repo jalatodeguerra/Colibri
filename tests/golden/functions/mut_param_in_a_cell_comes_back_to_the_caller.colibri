@@ -1,0 +1,39 @@
+// A parameter that a closure captures and assigns lives in a cell. The caller reads the first
+// parameter back after the call (a `mut self` receiver is written back, `Mutex.with` stores
+// it), so the callee hands the final value over, not the cell.
+struct C { n: int, s: str }
+impl C {
+    fn bump(mut self) {
+        let g = fn() { self.n += 1 }
+        g()
+        print("in bump {self.n}")
+    }
+    fn reset(mut self) {
+        let g = fn() { self = C { n: 100, s: "new" } }
+        g()
+    }
+}
+fn main() {
+    let mut c = C { n: 1, s: "a" }
+    c.bump()
+    print(c)
+    c.reset()
+    print(c)
+    let m = Mutex(10)
+    m.with(fn(mut x) {
+        let g = fn() { x += 5 }
+        g()
+    })
+    print(m.get())
+    let xs = [1, 2, 3].map(fn(mut v) -> int {
+        let g = fn() { v *= 2 }
+        g()
+        return v
+    })
+    print(xs)
+}
+// expect: in bump 2
+// expect: C { n: 2, s: "a" }
+// expect: C { n: 100, s: "new" }
+// expect: 15
+// expect: [2, 4, 6]

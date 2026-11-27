@@ -768,15 +768,34 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// The parameters that live in a cell (captured by a closure and assigned).
+    fn cell_params(&self) -> Vec<Reg> {
+        self.body
+            .locals
+            .iter()
+            .enumerate()
+            .take(self.body.param_count as usize)
+            .filter(|(_, l)| l.storage == Storage::Cell)
+            .map(|(i, _)| i as Reg)
+            .collect()
+    }
+
+    /// Puts the final value of every parameter that lives in a cell back into its register, where
+    /// the caller reads it (see `function`).
+    pub(super) fn unwrap_param_cells(&mut self, span: Span) {
+        for r in self.cell_params() {
+            self.emit(Op::UnwrapCell { r }, span);
+        }
+    }
+
     /// Whether a panic with nothing to clean up still has to run the end of the function: a
-    /// `mut self` parameter in a cell is unwrapped before it goes back to the caller.
+    /// parameter in a cell is unwrapped before it goes back to the caller.
     fn root_is_real(&self) -> bool {
-        self.body.mutates_self
-            && self
-                .body
-                .locals
-                .first()
-                .is_some_and(|l| l.storage == Storage::Cell)
+        self.body
+            .locals
+            .iter()
+            .take(self.body.param_count as usize)
+            .any(|l| l.storage == Storage::Cell)
     }
 
     pub(crate) fn add_const(&mut self, v: Value) -> u32 {
@@ -1413,9 +1432,7 @@ impl<'a> FnCompiler<'a> {
             pads.insert(0, l);
             self.bind(l);
             let span = self.body.span;
-            if self.root_is_real() {
-                self.emit(Op::UnwrapCell { r: 0 }, span);
-            }
+            self.unwrap_param_cells(span);
             self.emit(Op::Resume, span);
         }
         self.pad_labels = pads;
