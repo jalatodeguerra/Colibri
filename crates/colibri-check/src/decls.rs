@@ -962,19 +962,20 @@ impl<'a> Checker<'a> {
             // A class is held by reference, so it never makes a struct infinite.
             Ty::Adt(id, _) if self.types[id.0 as usize].is_class() => false,
             Ty::Adt(id, args) => {
-                // The same instantiation twice is a cycle that does not pass through `target`.
+                // The same instantiation twice is either a cycle that does not pass through
+                // `target` or work already done.
                 if seen.contains(ty) || seen.len() >= DEPTH {
                     return false;
                 }
                 seen.push(ty.clone());
                 let def = &self.types[id.0 as usize];
                 let map = Self::param_map_of(def, args);
-                let found = def
-                    .fields()
+                // Kept in `seen` afterwards: a type that was looked at and did not lead to
+                // `target` will not do so the second time either, and looking again would
+                // make a wide generic declaration cost exponentially.
+                def.fields()
                     .iter()
-                    .any(|f| self.contains_by_value(&f.ty.subst(&map), target, seen));
-                seen.pop();
-                found
+                    .any(|f| self.contains_by_value(&f.ty.subst(&map), target, seen))
             }
             _ => false,
         }
