@@ -733,7 +733,13 @@ impl FnCtx<'_, '_> {
             }
             self.ck
                 .note_deprecated_use(DeprKey::Field(id, i as u32), f.name.span);
-            subs[i] = Some(self.check_pat(&f.pat, &decls[i].ty, cx));
+            // A weak field reads as `T?` (see `class_field_read`), so it matches as `T?`.
+            let want = if decls[i].weak {
+                Ty::Option(Box::new(decls[i].ty.clone()))
+            } else {
+                decls[i].ty.clone()
+            };
+            subs[i] = Some(self.check_pat(&f.pat, &want, cx));
         }
         let missing: Vec<&str> = decls
             .iter()
@@ -759,7 +765,21 @@ impl FnCtx<'_, '_> {
             .zip(&decls)
             .map(|(s, d)| s.unwrap_or_else(|| self.pat(PatKind::Wild, &d.ty, span)))
             .collect();
-        self.pat(PatKind::Struct { ty: id, fields }, expected, span)
+        let weak = decls
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.weak)
+            .map(|(i, _)| i)
+            .collect();
+        self.pat(
+            PatKind::Struct {
+                ty: id,
+                fields,
+                weak,
+            },
+            expected,
+            span,
+        )
     }
 
     // ---- variants ----

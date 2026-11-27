@@ -775,6 +775,7 @@ mod tests {
             PatKind::Struct {
                 ty: TypeId(1),
                 fields: vec![wild(&Ty::INT), boolean(true)],
+                weak: vec![],
             },
             ty.clone(),
         );

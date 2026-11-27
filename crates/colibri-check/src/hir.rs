@@ -778,9 +778,16 @@ pub enum PatKind {
         args: Vec<Pat>,
     },
     /// A struct with one sub-pattern per field in declaration order (`_` for omitted ones).
+    ///
+    /// `weak` lists the indices of the `weak` fields of a class. Such a field holds a weak
+    /// reference, and a pattern sees it the way a read does (`n.parent`): as an `Option` of its
+    /// class, upgraded when the pattern runs. So the sub-pattern at one of these indices has the
+    /// `Option` type, and the VM turns the stored weak value into that `Option` before matching.
+    /// Empty for nearly every pattern.
     Struct {
         ty: TypeId,
         fields: Vec<Pat>,
+        weak: Vec<usize>,
     },
     Tuple(Vec<Pat>),
     /// Alternatives that bind the same locals.

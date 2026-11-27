@@ -1,0 +1,18 @@
+// Destructuring a `weak` field gives `Node?`, not `Node`: using it as a `Node` is an error.
+class Node {
+    name: str
+    parent: weak Node
+}
+
+fn main() {
+    let n = Node { name: "n" }
+    let Node { parent, .. } = n
+    let x: Node = parent // error: expected `Node`, found `Node?`
+    match n {
+        Node { parent: q, .. } => {
+            let y: Node = q // error: expected `Node`, found `Node?`
+            print(y.name)
+        }
+    }
+    print(x.name)
+}
