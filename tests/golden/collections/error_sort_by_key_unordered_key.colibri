@@ -1,6 +1,6 @@
 class Opaque { n: int }
 
 fn main() {
-    let xs = [1, 2]
+    let mut xs = [1, 2]
     xs.sort_by_key(fn(x) => Opaque { n: x }) // error: `sort_by_key` needs values that can be ordered with `<`, but `Opaque` cannot
 }
