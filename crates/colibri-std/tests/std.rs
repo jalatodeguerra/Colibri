@@ -685,7 +685,7 @@ fn a_child_gets_the_variables_the_script_set_and_its_own_folder() {
     );
 }
 
-// Unix only: `printenv` (a fixed environment must not leak the host's variables to a child, and the host surely has a `PATH`).
+// Unix only: `/usr/bin/env` lists the whole environment of the child (a fixed environment must not leak the host's variables, and the host surely has a `PATH`). macOS's `printenv` takes one name only, so the list is compared instead, sorted.
 #[cfg(unix)]
 #[test]
 fn a_child_of_a_fixed_environment_gets_that_environment_and_nothing_of_the_hosts() {
@@ -701,10 +701,13 @@ fn a_child_of_a_fixed_environment_gets_that_environment_and_nothing_of_the_hosts
     );
     run(
         &mut vm,
-        "import process\nimport os\nfn main() {\n    os.set_env(\"L\", \"overridden\")\n    let mut o = process.options()\n    o.env = { \"M\": \"option\" }\n    let r = process.run_with(\"printenv\", [\"PATH\", \"K\", \"L\", \"M\"], o) or |e| { panic(e.message()) }\n    print(r.stdout)\n}\n",
+        "import process\nimport os\nfn main() {\n    os.set_env(\"L\", \"overridden\")\n    let mut o = process.options()\n    o.env = { \"M\": \"option\" }\n    let r = process.run_with(\"/usr/bin/env\", [], o) or |e| { panic(e.message()) }\n    print(r.stdout)\n}\n",
     )
     .unwrap();
-    assert_eq!(out.contents(), "fixed\noverridden\noption\n\n");
+    let contents = out.contents();
+    let mut vars: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+    vars.sort_unstable();
+    assert_eq!(vars, ["K=fixed", "L=overridden", "M=option"]);
 }
 
 // Unix only: a signal that ends a program exists only on Unix (Windows has exit codes only).
