@@ -15,14 +15,14 @@ impl Drop for Res {
 }
 
 fn bump(m: Mutex[Res]) -> int {
-    return m.with(fn(mut r) {
+    return m.with(fn(r) {
         r.n += 1
         return r.n
     })
 }
 
 fn fail(m: Mutex[Res]) -> int {
-    return m.with(fn(mut r) -> int {
+    return m.with(fn(r) -> int {
         r.n = 100
         panic("halfway")
     })

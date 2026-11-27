@@ -11,7 +11,7 @@ fn show(a: (), b: List[int]) {
     print("show {b.len()}")
 }
 fn main() {
-    let mut ys = [Res { name: "r" }]
+    let ys = [Res { name: "r" }]
     let xs = [1, 2, 3]
     show(ys.clear(), xs.map(fn(x) => x * 2))
     print("after")

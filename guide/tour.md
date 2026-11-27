@@ -103,7 +103,11 @@ shadowed
 ```
 
 `let` stops rebinding, not mutation of what a class or a list holds (see
-[classes](#classes-and-weak-references)).
+[classes](#classes-and-weak-references)). So `let mut` is needed only to assign to the variable
+(`x = 1`, `x += 1`) or to change a struct held in it (`p.x = 1`, a `mut self` method). A list, map or
+set is a reference, so `let xs = []` followed by `xs.push(1)` is fine, and a `let mut xs` that is
+never assigned gets an `unused mut` warning: remove the `mut`. The same goes for a `mut` parameter
+that the function never changes.
 
 ## Types and numbers
 
@@ -258,6 +262,47 @@ fn main() {
 [warn] careful
 ```
 
+A parameter cannot be assigned to, like a `let`. Write `mut` before its name (`fn f(mut n: int)`)
+to get a local copy that the body may change. The caller's variable never changes: a number or a
+struct is copied in, so `n = n - 1` and `p.x = 0` stay inside the function. A list, map, set or
+class object is a reference, so `xs.push(1)` still reaches the caller's list, while `xs = []` only
+rebinds the parameter. `mut` is part of the body, not of the signature, so an `impl` may add or
+leave out the `mut` that its interface method has, and it has no effect on the type of the function.
+
+```colibri
+struct Point {
+    x: int
+    y: int
+}
+
+fn countdown(mut n: int) -> int {
+    let mut steps = 0
+    while n > 0 {
+        n -= 1
+        steps += 1
+    }
+    return steps
+}
+
+fn moved(mut p: Point, dx: int) -> Point {
+    p.x += dx
+    return p
+}
+
+fn main() {
+    let start = Point { x: 1, y: 2 }
+    print(countdown(3))
+    print(moved(start, 10))
+    print(start)
+}
+```
+
+```output
+3
+Point { x: 11, y: 2 }
+Point { x: 1, y: 2 }
+```
+
 ## Closures
 
 `fn(x) => x * 2` and `fn(x) { ... }` are values with function types. A closure captures variables
@@ -277,7 +322,7 @@ fn main() {
     let next = make_counter()
     print(next())
     print(next())
-    let mut fs: List[fn() -> int] = []
+    let fs: List[fn() -> int] = []
     for i in 0..3 {
         fs.push(fn() => i * 10)
     }
@@ -313,7 +358,7 @@ fn main() {
             print("{a}{b}")
         }
     }
-    let mut xs = [1, 2, 3]
+    let xs = [1, 2, 3]
     while let some(x) = xs.pop() {
         print(x)
     }
@@ -555,10 +600,10 @@ struct Version {
 }
 
 fn main() {
-    let mut vs = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
+    let vs = [Version { major: 1, minor: 10 }, Version { major: 1, minor: 2 }]
     vs.sort()
     print(vs)
-    let mut seen = Set[Version]()
+    let seen = Set[Version]()
     seen.add(vs[0])
     print(seen.contains(Version { major: 1, minor: 2 }))
     print(compare(vs[0], vs[1]))
@@ -804,14 +849,14 @@ gives an optional.
 
 ```colibri
 fn main() {
-    let mut xs = [3, 1, 2]
+    let xs = [3, 1, 2]
     xs.push(4)
     xs.sort()
     print(xs)
     print(xs.map(fn(x) => x * x).filter(fn(x) => x > 1))
     print(xs.fold(0, fn(a, b) => a + b))
     print(xs[1..3])
-    let mut m = Map[str, int]()
+    let m = Map[str, int]()
     m["a"] = 1
     m["b"] = m.get_or("b", 0) + 5
     print(m)
@@ -822,7 +867,7 @@ fn main() {
     s.add(1)
     s.add(1)
     print(s.len())
-    let mut e = [Version { n: 2 }, Version { n: 1 }]
+    let e = [Version { n: 2 }, Version { n: 1 }]
     e.sort_by_key(fn(v) => v.n)
     print(e)
 }
@@ -1163,10 +1208,11 @@ not stop the program.
 A task is an **isolate**: it has its own objects. Everything the closure captures is copied to the
 task when it starts, and the result is copied back by `join`. So a task cannot change what the
 program holds, and the program cannot change what the task holds, and no locks are needed. The
-price is that **a write to a captured `let mut` inside the closure is lost**, because the closure
-runs on a copy:
+price is that **a write to a captured `let mut` inside the closure would be lost**, because the
+closure runs on a copy, so the checker refuses it. Reading a captured variable is fine: the closure
+sees the value it had when the task started.
 
-```colibri
+```colibri,error
 fn main() -> Result[()] {
     let mut n = 0
     task.run(fn() { n += 1 }).join()?
@@ -1176,10 +1222,17 @@ fn main() -> Result[()] {
 ```
 
 ```output
-0
+`n` is written inside a `task.run` closure, and the write would be lost
 ```
 
-To get a value out of a task, return it. A copy is a structural one: shared parts and cycles inside
+The checker sees a closure written in the call, `task.run(fn() { ... })`, or kept in a `let` that was
+initialised with one. A function value that comes from anywhere else (a parameter, a field, the
+result of a call) is not looked into, and a write it makes to a captured variable is lost without a
+message. A change to a captured list, map or object is not an error either: it is made on the task's
+own copy, and the caller's list or object stays as it was.
+
+To get a value out of a task, return it (`let n = task.run(fn() => 1).join()?`), or send it through a
+[`Channel`](#channels) or a [`Mutex`](#mutex). A copy is a structural one: shared parts and cycles inside
 what is copied stay shared and cyclic in the copy, a `weak` reference to something outside it is
 `none`, and `Drop` runs for the copy as for any other object. What cannot be copied is refused,
 with the way to the part: a host handle such as a `net.Conn`, an iterator, a `Coroutine`,

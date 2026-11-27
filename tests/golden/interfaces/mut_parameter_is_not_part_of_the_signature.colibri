@@ -1,0 +1,33 @@
+// `mut` on a parameter is a detail of the body, not of the signature: an impl may add it or
+// leave it out, and a function value of the method does not show it.
+interface Scale {
+    fn scaled(self, k: int) -> int
+    fn halved(self, mut k: int) -> int
+}
+
+struct Box {
+    w: int
+}
+
+impl Scale for Box {
+    fn scaled(self, mut k: int) -> int {
+        k *= 2
+        return self.w * k
+    }
+
+    fn halved(self, k: int) -> int => self.w * k / 2
+}
+
+fn use_it(s: Scale) -> int => s.scaled(3) + s.halved(4)
+
+fn main() {
+    let b = Box { w: 5 }
+    print(use_it(b))
+    let f: fn(int) -> int = fn(mut n: int) -> int {
+        n += 1
+        return n
+    }
+    print(f(1))
+}
+// expect: 40
+// expect: 2

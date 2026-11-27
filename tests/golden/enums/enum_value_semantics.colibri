@@ -2,7 +2,7 @@ enum Slot { Empty, Full(int) }
 struct Bag { slot: Slot }
 
 fn main() {
-    let mut a = Bag { slot: .Full(1) }
+    let a = Bag { slot: .Full(1) }
     let mut b = a
     b.slot = .Empty
     print(a)

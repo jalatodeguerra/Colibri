@@ -1,7 +1,7 @@
 class T { name: str }
 
 fn main() {
-    let mut xs = [T { name: "old" }]
+    let xs = [T { name: "old" }]
     xs[0] = T { name: "new" }
     print("replaced")
 }

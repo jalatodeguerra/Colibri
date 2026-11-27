@@ -17,7 +17,7 @@ struct Pt {
 
 fn main() {
     let mut p = Pt { x: 1, tag: "t" }
-    let mut xs = [Bad { name: "a" }, Bad { name: "b" }]
+    let xs = [Bad { name: "a" }, Bad { name: "b" }]
     for mut x in xs {
         p.x = 2
         print("trip {x.name}")

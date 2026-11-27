@@ -1,6 +1,6 @@
 // Maps with integer keys and with string keys: insert and look up.
 fn main() {
-    let mut m: Map[int, int] = {:}
+    let m: Map[int, int] = {:}
     for i in 0..300000 {
         m[i] = i * 2
     }
@@ -8,7 +8,7 @@ fn main() {
     for i in 0..300000 {
         total += m[i]
     }
-    let mut sm: Map[str, int] = {:}
+    let sm: Map[str, int] = {:}
     for i in 0..100000 {
         sm["key{i}"] = i
     }

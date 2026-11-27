@@ -9,7 +9,7 @@ fn main() {
         p.x += 10
         print(p.x)
     }
-    let mut h = Holder { items: [P { x: 5 }, P { x: 6 }] }
+    let h = Holder { items: [P { x: 5 }, P { x: 6 }] }
     for mut p in h.items {
         p.x *= 2
     }

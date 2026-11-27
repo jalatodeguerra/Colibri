@@ -1,17 +1,17 @@
 struct P { x: int, y: int }
 
 fn main() {
-    let mut grid: Map[P, str] = {:}
+    let grid: Map[P, str] = {:}
     grid[P { x: 1, y: 2 }] = "a"
     grid[P { x: 1, y: 2 }] = "b"
     grid[P { x: 2, y: 1 }] = "c"
     print(grid.len())
     print(grid[P { x: 1, y: 2 }])
-    let mut pairs: Map[(int, int), int] = {:}
+    let pairs: Map[(int, int), int] = {:}
     pairs[(1, 2)] = 3
     pairs[(1, 2)] += 1
     print(pairs)
-    let mut opt: Map[int?, str] = {:}
+    let opt: Map[int?, str] = {:}
     opt[none] = "n"
     opt[some(1)] = "s"
     print(opt[none] + opt[some(1)])

@@ -2,7 +2,7 @@ struct Cell2 { v: int }
 struct Row { cells: List[Cell2] }
 
 fn main() {
-    let mut grid = [Row { cells: [Cell2 { v: 1 }, Cell2 { v: 2 }] }, Row { cells: [Cell2 { v: 3 }] }]
+    let grid = [Row { cells: [Cell2 { v: 1 }, Cell2 { v: 2 }] }, Row { cells: [Cell2 { v: 3 }] }]
     // Only the list being iterated is held: another row's list is free.
     for mut c in grid[0].cells {
         grid[1].cells[0].v += c.v

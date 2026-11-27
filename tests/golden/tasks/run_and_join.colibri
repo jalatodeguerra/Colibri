@@ -32,7 +32,7 @@ fn main() -> Result[()] {
 
     let words = ["alpha", "beta"]
     let up = task.run(fn() -> List[str] {
-        let mut out = []
+        let out = []
         for w in words {
             out.push(w.to_upper())
         }

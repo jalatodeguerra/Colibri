@@ -1,7 +1,7 @@
 struct Enemy { hp: int }
 
 fn main() {
-    let mut enemies = [Enemy { hp: 10 }, Enemy { hp: 20 }]
+    let enemies = [Enemy { hp: 10 }, Enemy { hp: 20 }]
     for mut e in enemies {
         e.hp -= 1
     }

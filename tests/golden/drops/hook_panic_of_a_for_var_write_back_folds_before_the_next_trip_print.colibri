@@ -12,7 +12,7 @@ impl Drop for Bad {
 
 fn main() {
 
-    let mut xs = [Bad { name: "a" }, Bad { name: "b" }]
+    let xs = [Bad { name: "a" }, Bad { name: "b" }]
     for mut x in xs {
         print("plain")
         print("trip {x.name}")

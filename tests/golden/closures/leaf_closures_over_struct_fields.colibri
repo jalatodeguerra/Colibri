@@ -20,7 +20,7 @@ fn main() {
     print(ps.find_index(fn(p) => p.x == 4.0))
     print(ps.fold(0, fn(a, p) => a + p.n))
     print(ps.fold(0.0, fn(a, p) => a + p.x))
-    let mut kept = ps.filter(fn(p) => p.n > 0)
+    let kept = ps.filter(fn(p) => p.n > 0)
     kept[0].n = 100
     print("{kept[0].n} {ps[0].n} {kept[1].n} {ps[1].n}")
     print(ps.map(fn(p) => p).len())

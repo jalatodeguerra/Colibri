@@ -21,7 +21,7 @@ fn main() {
     print("{sb}")
     print([sa, none_item, sb])
     print((sa, 1))
-    let mut m: Map[Item?, int] = {:}
+    let m: Map[Item?, int] = {:}
     m[sa] = 1
     m[xs.get(1)] = 2
     m[none_item] = 3
@@ -30,7 +30,7 @@ fn main() {
     print(m[sb])
     print(m[xs.get(9)])
     print(m)
-    let mut s = Set[Item?]()
+    let s = Set[Item?]()
     s.add(sa)
     s.add(xs.get(0))
     s.add(sb)

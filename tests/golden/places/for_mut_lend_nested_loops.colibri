@@ -2,8 +2,8 @@
 struct P { x: int, y: int }
 
 fn main() {
-    let mut ps = [P { x: 1, y: 0 }, P { x: 2, y: 0 }]
-    let mut qs = [P { x: 10, y: 0 }, P { x: 20, y: 0 }, P { x: 30, y: 0 }]
+    let ps = [P { x: 1, y: 0 }, P { x: 2, y: 0 }]
+    let qs = [P { x: 10, y: 0 }, P { x: 20, y: 0 }, P { x: 30, y: 0 }]
     for mut p in ps {
         for mut q in qs {
             q.y += p.x

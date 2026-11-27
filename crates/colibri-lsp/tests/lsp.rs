@@ -646,6 +646,21 @@ fn hover_shows_mutable_bindings_as_let_mut() {
 }
 
 #[test]
+fn hover_shows_a_mut_parameter_as_mut_not_let_mut() {
+    let dir = temp_dir("hover_mut_param");
+    let file = dir.join("a.colibri");
+    let text = "fn bump(mut n: int) -> int {\n    n += 1\n    return n\n}\n\nfn main() {\n    print(bump(1))\n}\n";
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&file, text);
+    assert!(c.diags(&file).is_empty(), "{:?}", c.diags(&file));
+    let (l, col) = pos_of(text, "n\n}\n");
+    assert_eq!(
+        hover_text(&c.hover(&file, l, col)),
+        "```colibri\nmut n: int\n```"
+    );
+}
+
+#[test]
 fn hover_shows_types_signatures_and_fields() {
     let dir = temp_dir("hover");
     let file = dir.join("a.colibri");
@@ -1410,8 +1425,8 @@ fn parse(s: str) -> Result[int] {
 fn main() {
     let s = \"abc\"
     let xs = [1, 2, 3]
-    let mut m = {\"a\": 1}
-    let mut set = Set[int]()
+    let m = {\"a\": 1}
+    let set = Set[int]()
     let o = some(1)
     let r = parse(\"1\")
     let mut_buf = StrBuilder()

@@ -10,7 +10,7 @@ fn main() {
     let r = 1..=4
     print(sum_range(r))
     print(sum_range(0..3))
-    let mut rs: List[Range[int]] = [0..2, 5..7]
+    let rs: List[Range[int]] = [0..2, 5..7]
     for r in rs {
         print(r)
     }

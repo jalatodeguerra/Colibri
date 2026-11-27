@@ -6,7 +6,7 @@ impl C {
 }
 
 fn main() {
-    let mut m = {"a": C { n: 1 }}
+    let m = {"a": C { n: 1 }}
     m["a"].run(m)
 }
 

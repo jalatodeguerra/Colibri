@@ -9,7 +9,7 @@ fn build(n: int) -> Chain {
     return l
 }
 fn main() {
-    let mut m = {build(50000): 1}
+    let m = {build(50000): 1}
     print("before")
     m[build(50000)] = 2
 }

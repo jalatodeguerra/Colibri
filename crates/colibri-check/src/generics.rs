@@ -206,22 +206,14 @@ impl Checker<'_> {
                     Ty::Error
                 }
             };
-            if p.mutable {
-                self.report(
-                    Diagnostic::error("`mut` parameter is not supported yet", p.span).with_hint(
-                        format!(
-                            "copy it in the body instead: `let mut {0}2 = {0}`",
-                            p.name.name
-                        ),
-                    ),
-                );
-            }
             params.push(ParamInfo {
                 name: p.name.name.clone(),
                 ty,
                 span: p.name.span,
                 default: p.default.as_ref(),
-                mutable: false,
+                // `mut x: T` makes the parameter a local copy that the body may change; a
+                // signature never shows it (an impl may differ from its interface in it).
+                mutable: p.mutable,
                 module: self.cur_mod,
             });
         }

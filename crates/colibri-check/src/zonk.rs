@@ -12,6 +12,7 @@ use crate::infer::InferCtx;
 use crate::insight::{RawFact, Target, expr_facts, type_fact};
 use crate::types::{IntTy, Ty};
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn zonk_body(
     infer: &mut InferCtx,
     block: &mut Block,
@@ -20,6 +21,7 @@ pub(crate) fn zonk_body(
     had_errors: bool,
     host_typed: &[bool],
     facts: Option<&mut Vec<RawFact>>,
+    param_count: usize,
 ) {
     let mut z = Zonker {
         infer,
@@ -37,17 +39,25 @@ pub(crate) fn zonk_body(
     if z.facts.is_some() {
         z.locals = locals
             .iter()
-            .map(|l| (l.name.clone(), l.mutable, l.span, l.ty.clone()))
+            .enumerate()
+            .map(|(i, l)| {
+                let binding = match (l.mutable, i < param_count) {
+                    (false, _) => "",
+                    (true, true) => "mut ",
+                    (true, false) => "let mut ",
+                };
+                (l.name.clone(), binding, l.span, l.ty.clone())
+            })
             .collect();
         if let Some(out) = z.facts.as_deref_mut() {
-            for (name, mutable, span, ty) in &z.locals {
+            for (name, binding, span, ty) in &z.locals {
                 if name != "<temp>" && !ty.is_error() {
                     out.push(RawFact {
                         span: *span,
                         ty: ty.clone(),
                         target: Target::Local {
                             name: name.clone(),
-                            mutable: *mutable,
+                            binding,
                             def: *span,
                         },
                     });
@@ -74,7 +84,7 @@ struct Zonker<'a> {
     /// Where to record what each expression is (see [`crate::insight`]), when asked to.
     facts: Option<&'a mut Vec<RawFact>>,
     /// Name, mutability, declaration and type of each local, kept only when recording.
-    locals: Vec<(String, bool, Span, Ty)>,
+    locals: Vec<(String, &'static str, Span, Ty)>,
 }
 
 /// Whether a type mentions a type parameter.

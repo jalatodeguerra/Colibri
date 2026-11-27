@@ -8,10 +8,10 @@ fn idx() -> int {
 struct C { n: int }
 
 fn main() {
-    let mut xs = [C { n: 0 }, C { n: 0 }]
+    let xs = [C { n: 0 }, C { n: 0 }]
     xs[idx()].n += 5
     xs[idx()].n += 5
-    let mut ys = [1, 2, 3]
+    let ys = [1, 2, 3]
     ys[idx()] *= 7
     print(calls)
     print(xs)

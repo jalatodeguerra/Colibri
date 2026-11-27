@@ -1,5 +1,5 @@
 fn main() {
-    let mut xs = [1, 2, 3]
+    let xs = [1, 2, 3]
     xs.reverse()
     print(xs)
     xs.extend([7, 8])

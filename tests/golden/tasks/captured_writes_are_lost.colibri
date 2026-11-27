@@ -1,13 +1,16 @@
-// A task runs on a copy of what its closure captured, so a write to a captured `let mut` inside
-// the closure is lost: the variable of the program that started the task never changes.
+// A task runs on a copy of what its closure captured. A write to a captured `let mut` variable
+// would be lost, so the checker refuses it (see `error_write_to_captured_let_mut`); a read sees
+// the value the variable had when the task started, and a change to a captured list is made on
+// the task's own copy.
 fn main() -> Result[()] {
     let mut n = 0
+    n = 5
     let t = task.run(fn() -> int {
-        n += 1
-        return n
+        return n + 1
     })
+    n = 100
     print("the task saw {t.join()?}")
-    print("n is still {n}")
+    print("n is {n}")
 
     // A list is copied the same way.
     let items = [1, 2, 3]
@@ -19,6 +22,6 @@ fn main() -> Result[()] {
     return ok(())
 }
 
-// expect: the task saw 1
-// expect: n is still 0
+// expect: the task saw 6
+// expect: n is 100
 // expect: the task's list had 4, the program's has 3

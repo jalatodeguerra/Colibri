@@ -31,7 +31,7 @@ impl[T: Ord] Tree[T] {
         match self {
             .Leaf => return []
             .Node(l, v, r) => {
-                let mut out = l.to_list()
+                let out = l.to_list()
                 out.push(v)
                 out.extend(r.to_list())
                 return out

@@ -8,7 +8,7 @@ fn main() {
     f.bits <<= 1
     f.bits ^= 1
     print(f.bits)
-    let mut xs: List[u16] = [0x00FF, 0xF000]
+    let xs: List[u16] = [0x00FF, 0xF000]
     xs[0] ^= 0xFFFF
     xs[1] >>= 12
     xs[1] &= 0b101

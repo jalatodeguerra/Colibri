@@ -1,0 +1,131 @@
+// A `mut` parameter is a local copy the body may change; the caller's variable never sees it.
+struct Point {
+    x: int
+    y: int
+}
+
+class Counter {
+    n: int
+}
+
+fn bump(mut p: Point, mut n: int) -> int {
+    p.x += 10
+    n += 1
+    return p.x + n
+}
+
+fn count_down(mut n: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    n -= 1
+    return 1 + count_down(n)
+}
+
+fn fact(mut n: int, mut acc: int = 1) -> int {
+    while n > 1 {
+        acc *= n
+        n -= 1
+    }
+    return acc
+}
+
+// A struct is copied in: a field write, a whole-value write and a `mut self` call stay local.
+impl Point {
+    fn shifted(self, mut dx: int, mut other: Point) -> Point {
+        other.x += dx
+        dx += 1
+        return Point { x: other.x + dx, y: self.y }
+    }
+
+    fn twice(self, mut by: int) -> int {
+        by *= 2
+        return self.x * by
+    }
+}
+
+// A list or a class object is a reference: `push` and `c.n += 1` reach the caller's object,
+// and only the parameter's own binding is a copy (so rebinding it leaves the caller's alone).
+fn grow(mut xs: List[int]) -> int {
+    xs.push(1)
+    xs = [9, 9]
+    xs.push(2)
+    return xs.len()
+}
+
+fn rebind(mut c: Counter) -> int {
+    c.n += 1
+    c = Counter { n: 100 }
+    c.n += 1
+    return c.n
+}
+
+// A parameter that a closure captures and writes lives in a cell made on entry.
+fn counter(mut n: int) -> fn() -> int {
+    return fn() -> int {
+        n += 1
+        return n
+    }
+}
+
+fn pair[T](mut a: T, b: T) -> T {
+    a = b
+    return a
+}
+
+fn main() {
+    let p = Point { x: 1, y: 2 }
+    print(bump(p, 5))
+    print(p.x)
+    let mut q = Point { x: 3, y: 4 }
+    print(bump(q, 1))
+    print(q.x)
+    q.x = 7
+    print(count_down(5))
+    print(fact(5))
+    print(fact(4, acc: 10))
+    print(p.shifted(1, p).x)
+    print(p.x)
+    print(p.twice(5))
+    let xs = [1, 2, 3]
+    print(grow(xs))
+    print(xs)
+    let c = Counter { n: 1 }
+    print(rebind(c))
+    print(c.n)
+    let next = counter(10)
+    print(next())
+    print(next())
+    print(pair("a", "b"))
+    for i in 0..3 {
+        print(bump(q, i))
+    }
+    let f = fn(mut r: Point) -> int {
+        r.y = 99
+        return r.y
+    }
+    print(f(q))
+    print(q.y)
+}
+// expect: 17
+// expect: 1
+// expect: 15
+// expect: 3
+// expect: 5
+// expect: 120
+// expect: 240
+// expect: 4
+// expect: 1
+// expect: 10
+// expect: 3
+// expect: [1, 2, 3, 1]
+// expect: 101
+// expect: 2
+// expect: 11
+// expect: 12
+// expect: b
+// expect: 18
+// expect: 19
+// expect: 20
+// expect: 99
+// expect: 4

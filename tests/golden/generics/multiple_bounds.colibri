@@ -4,8 +4,8 @@ fn show_max[T: Ord + Show](a: T, b: T) -> str {
 }
 
 fn dedupe[T: Hash + Eq](xs: List[T]) -> List[T] {
-    let mut seen: Set[T] = Set[T]()
-    let mut out: List[T] = []
+    let seen: Set[T] = Set[T]()
+    let out: List[T] = []
     for x in xs {
         if !seen.contains(x) {
             seen.add(x)

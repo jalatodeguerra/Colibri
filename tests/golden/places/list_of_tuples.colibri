@@ -1,5 +1,5 @@
 fn main() {
-    let mut ps = [(1, 2), (3, 4)]
+    let ps = [(1, 2), (3, 4)]
     ps[0].0 += 10
     ps[1].1 = 0
     print(ps)

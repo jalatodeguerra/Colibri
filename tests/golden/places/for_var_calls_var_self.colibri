@@ -6,7 +6,7 @@ impl E {
 }
 
 fn main() {
-    let mut es = [E { hp: 10 }, E { hp: 20 }]
+    let es = [E { hp: 10 }, E { hp: 20 }]
     for mut e in es {
         e.hurt(3)
     }

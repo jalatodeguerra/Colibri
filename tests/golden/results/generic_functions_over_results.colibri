@@ -7,7 +7,7 @@ fn first_ok[T, E](items: List[Result[T, E]]) -> T? {
     return none
 }
 fn errors[T, E](items: List[Result[T, E]]) -> List[E] {
-    let mut out: List[E] = []
+    let out: List[E] = []
     for item in items {
         if let err(e) = item {
             out.push(e)

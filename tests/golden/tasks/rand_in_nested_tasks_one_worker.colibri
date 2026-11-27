@@ -4,7 +4,7 @@
 import rand
 
 fn draw(n: int) -> List[int] {
-    let mut out = []
+    let out = []
     for _ in 0..n {
         out.push(rand.int(0, 1000))
     }

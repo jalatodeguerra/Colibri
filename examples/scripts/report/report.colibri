@@ -79,7 +79,7 @@ fn resolve(index: str, item: str) -> str {
     // A file named on the command line is spelled the system's way (`C:\data\index.json` on
     // Windows); a URL already has `/`.
     let location = if is_url(index) { index } else { path.from_native(index) }
-    let mut parts = location.split("/")
+    let parts = location.split("/")
     parts.pop()
     if is_url(index) {
         return parts.join("/") + "/" + item
@@ -130,7 +130,7 @@ fn money(x: float) -> str {
 
 // The `n` keys with the largest sums, biggest first (ties by name).
 fn top(sums: Map[str, float], n: int) -> List[str] {
-    let mut keys = sums.keys()
+    let keys = sums.keys()
     keys.sort_by(fn(a, b) {
         let x = sums[a]
         let y = sums[b]
@@ -139,7 +139,7 @@ fn top(sums: Map[str, float], n: int) -> List[str] {
         if a < b { return -1 }
         return 1
     })
-    let mut out: List[str] = []
+    let out: List[str] = []
     for k in keys {
         if out.len() < n {
             out.push(k)
@@ -149,7 +149,7 @@ fn top(sums: Map[str, float], n: int) -> List[str] {
 }
 
 fn table(headers: List[str], rows: List[List[str]]) -> str {
-    let mut lines = ["| " + headers.join(" | ") + " |"]
+    let lines = ["| " + headers.join(" | ") + " |"]
     lines.push("|" + headers.map(fn(h) => "---").join("|") + "|")
     for row in rows {
         lines.push("| " + row.join(" | ") + " |")
@@ -165,15 +165,15 @@ fn commit() -> Option[str] {
 fn build_report(title: str, stamp: str, jobs: List[Job], top_n: int, git: Option[str]) -> str {
     let mut orders = 0
     let mut revenue = 0.0
-    let mut by_region_n: Map[str, int] = {:}
-    let mut by_region: Map[str, float] = {:}
-    let mut by_category_n: Map[str, int] = {:}
-    let mut by_category: Map[str, float] = {:}
-    let mut by_customer_n: Map[str, int] = {:}
-    let mut by_customer: Map[str, float] = {:}
+    let by_region_n: Map[str, int] = {:}
+    let by_region: Map[str, float] = {:}
+    let by_category_n: Map[str, int] = {:}
+    let by_category: Map[str, float] = {:}
+    let by_customer_n: Map[str, int] = {:}
+    let by_customer: Map[str, float] = {:}
     let mut biggest: Option[Order] = none
     let mut biggest_region = ""
-    let mut failed: List[Job] = []
+    let failed: List[Job] = []
     let mut fetched = 0
 
     for job in jobs {
@@ -202,7 +202,7 @@ fn build_report(title: str, stamp: str, jobs: List[Job], top_n: int, git: Option
         }
     }
 
-    let mut lines = ["# {title}", ""]
+    let lines = ["# {title}", ""]
     let mut meta = "Generated {stamp}"
     if let some(sha) = git {
         meta += ", commit `{sha}`"
@@ -214,7 +214,7 @@ fn build_report(title: str, stamp: str, jobs: List[Job], top_n: int, git: Option
 
     lines.push("## Summary")
     lines.push("")
-    let mut summary = [["Orders", "{orders}"], ["Revenue", money(revenue)]]
+    let summary = [["Orders", "{orders}"], ["Revenue", money(revenue)]]
     if orders > 0 {
         summary.push(["Average order", money(revenue / float(orders))])
     }
@@ -306,7 +306,7 @@ fn main() -> Result[()] {
 
     let index_text = read_location(index_location).context("reading the index")?
     let index = json.decode[Index](index_text).context("decoding the index {index_location}")?
-    let mut jobs: List[Job] = []
+    let jobs: List[Job] = []
     for item in index.items {
         jobs.push(Job { source: resolve(index_location, item), batch: none, error: "" })
     }

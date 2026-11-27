@@ -38,7 +38,7 @@ fn main() -> Result[()] {
     // Small numbers are cheap and large ones dear, so each task takes every `parts`-th block of
     // 2,000 numbers, which spreads the cost evenly.
     let block = 2000
-    let mut tasks: List[Task[int]] = []
+    let tasks: List[Task[int]] = []
     for part in 0..parts {
         tasks.push(task.run(fn() {
             let mut found = 0

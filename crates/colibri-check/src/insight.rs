@@ -171,7 +171,9 @@ pub(crate) enum Target {
     /// A local binding (at its declaration or a read of it).
     Local {
         name: String,
-        mutable: bool,
+        /// How hover writes the binding before its name: `let mut `, `mut ` for a `mut`
+        /// parameter, or nothing for a binding that cannot be reassigned.
+        binding: &'static str,
         def: Span,
     },
     /// A read of a module-level binding; `prefix` records only the name at the start of a
@@ -221,7 +223,7 @@ pub(crate) fn type_fact(e: &Expr, out: &mut Vec<RawFact>) {
 /// The facts of an expression about what it names, once its parts are final.
 pub(crate) fn expr_facts(
     e: &Expr,
-    local: &dyn Fn(crate::hir::LocalId) -> Option<(String, bool, Span, Ty)>,
+    local: &dyn Fn(crate::hir::LocalId) -> Option<(String, &'static str, Span, Ty)>,
     out: &mut Vec<RawFact>,
 ) {
     let push = |out: &mut Vec<RawFact>, span, ty: &Ty, target| {
@@ -262,12 +264,12 @@ pub(crate) fn expr_facts(
 fn place_facts(
     e: &Expr,
     p: &Place,
-    local: &dyn Fn(crate::hir::LocalId) -> Option<(String, bool, Span, Ty)>,
+    local: &dyn Fn(crate::hir::LocalId) -> Option<(String, &'static str, Span, Ty)>,
     out: &mut Vec<RawFact>,
 ) {
     let (base, path): (Option<FieldBase>, Vec<ValueProj>) = match &p.anchor {
         Anchor::Local(id) => {
-            let Some((name, mutable, def, ty)) = local(*id) else {
+            let Some((name, binding, def, ty)) = local(*id) else {
                 return;
             };
             let span = if p.path.is_empty() {
@@ -278,7 +280,7 @@ fn place_facts(
             out.push(RawFact {
                 span,
                 ty: ty.clone(),
-                target: Target::Local { name, mutable, def },
+                target: Target::Local { name, binding, def },
             });
             (Some(FieldBase::Ty(ty)), p.path.clone())
         }
@@ -478,9 +480,9 @@ impl Checker<'_> {
                     text: ty,
                     def: None,
                 }),
-                Target::Local { name, mutable, def } => Some(Fact {
+                Target::Local { name, binding, def } => Some(Fact {
                     span: r.span,
-                    text: format!("{}{name}: {ty}", if mutable { "let mut " } else { "" }),
+                    text: format!("{binding}{name}: {ty}"),
                     name: None,
                     def: Some(def),
                 }),

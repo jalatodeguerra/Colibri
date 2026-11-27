@@ -1,0 +1,39 @@
+// The write would be made on the task's copy and lost, so it is an error, whether the closure
+// assigns, changes a field of a struct, calls a `mut self` method, or a closure inside it does.
+struct P {
+    x: int
+}
+
+impl P {
+    fn bump(mut self) {
+        self.x += 1
+    }
+}
+
+fn main() -> Result[()] {
+    let mut n = 0
+    let mut p = P { x: 1 }
+    let mut q = P { x: 1 }
+    let mut deep = 0
+    let mut fine = 7
+    task.run(fn() { n += 1 }).join()? // error: `n` is written inside a `task.run` closure, and the write would be lost
+    task.run(fn() { p.x = 2 }).join()? // error: `p` is written inside a `task.run` closure
+    task.run(fn() { q.bump() }).join()? // error: `q` is written inside a `task.run` closure
+    task.run(fn() { // error: `deep` is written inside a `task.run` closure
+        let inner = fn() { deep = 1 }
+        inner()
+    }).join()?
+    // A closure kept in a `let` and passed by name is the same closure.
+    let mut held = 0
+    let writer = fn() { held += 1 }
+    task.run(writer).join()? // error: `held` is written inside a `task.run` closure
+    // Reading a captured `let mut` is a copy, and writing the closure's own variable is fine.
+    let r = task.run(fn() -> int {
+        let mut mine = fine
+        mine += 1
+        return mine
+    }).join()?
+    fine = 8
+    print(r + n + p.x + q.x + deep + fine + held)
+    return ok(())
+}

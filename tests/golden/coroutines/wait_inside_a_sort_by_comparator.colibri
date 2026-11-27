@@ -1,7 +1,7 @@
 // A comparator that waits pauses the coroutine that sorts, and the sort goes on where it was:
 // the comparator runs as ordinary code, in the same order on every engine.
 fn sorter() {
-    let mut xs = [3, 1, 2]
+    let xs = [3, 1, 2]
     xs.sort_by(fn(a, b) {
         print("compare {a} {b}")
         wait(1.0)

@@ -1,5 +1,5 @@
 fn main() {
-    let mut ts = [(2, "b"), (1, "z"), (2, "a")]
+    let ts = [(2, "b"), (1, "z"), (2, "a")]
     ts.sort()
     print(ts)
 }

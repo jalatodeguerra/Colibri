@@ -42,7 +42,7 @@ fn pick(flag: bool) -> Shape {
 }
 
 fn main() {
-    let mut scene = Scene { main: Circle { r: 2.0 } }
+    let scene = Scene { main: Circle { r: 2.0 } }
     scene.extras.push(Blob { size: 2.0 })
     print(scene.main.area())
     print(scene.extras[0].name())

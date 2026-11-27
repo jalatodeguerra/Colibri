@@ -1,20 +1,20 @@
 fn main() {
-    let mut seen: Set[u8] = Set([])
+    let seen: Set[u8] = Set([])
     seen.add(200)
     seen.add(7)
     seen.add(200)
     print(seen.len())
-    let mut names: Map[u64, str] = {:}
+    let names: Map[u64, str] = {:}
     names[18446744073709551615] = "max"
     names[0] = "zero"
     print(names[18446744073709551615])
-    let mut xs: List[i32] = [5, -3, 9, 0]
+    let xs: List[i32] = [5, -3, 9, 0]
     xs.sort()
     print(xs)
     let ys: List[u64] = [18446744073709551615, 3, 9223372036854775808]
     print(ys.max())
     print(ys.min())
-    let mut z: List[u64] = ys.clone()
+    let z: List[u64] = ys.clone()
     z.sort()
     print(z)
     print(seen.contains(7))

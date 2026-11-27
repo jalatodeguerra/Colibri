@@ -1,5 +1,5 @@
 fn main() {
-    let mut xs = [2, 1]
+    let xs = [2, 1]
     for x in xs {
         xs.retain(fn(y) => y > 1)
     }

@@ -462,8 +462,22 @@ impl FnCtx<'_, '_> {
         if !self.expect(&arg, &want, reason) {
             return self.error_expr(span);
         }
-        // A function value held in a variable is not seen here; the run time catches it.
+        // A closure written here, or held in a `let` that was initialised with one, is seen:
+        // its captures are known. Any other function value (a parameter, a field, the result
+        // of a call) is not seen, so its captures are copied at run time without the checks
+        // below.
         let closure = self.note_thread_boundary(&arg);
+        let seen = match &arg.kind {
+            hir::ExprKind::Closure(c) => Some(c.f),
+            hir::ExprKind::Read(p) if p.path.is_empty() => match &p.anchor {
+                hir::Anchor::Local(l) => self.closure_lets.get(&(self.frame_id, *l)).copied(),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(f) = seen {
+            self.task_closures.push((f, arg.span));
+        }
         self.note_task_site(closure, mark, ob_mark, span);
         self.require_sendable(&ret, crate::sendable::SendOrigin::Result, arg.span);
         self.mk(

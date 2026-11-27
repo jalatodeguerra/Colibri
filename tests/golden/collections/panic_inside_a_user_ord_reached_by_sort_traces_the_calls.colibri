@@ -12,7 +12,7 @@ impl Ord for V {
 }
 
 fn order(xs: List[V]) {
-    let mut ys = xs
+    let ys = xs
     ys.sort()
     print(ys.len())
 }

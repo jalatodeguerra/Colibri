@@ -43,7 +43,7 @@ fn main() {
     print(flip(vec2(1, -2)))
     print(flip(ivec2(1, -2)))
     print(vec2(5, 5) - Offset { k: 1.5 })
-    let mut seen: Map[ivec2, int] = {:}
+    let seen: Map[ivec2, int] = {:}
     seen[ivec2(1, 1)] = 7
     seen[ivec2(1, 1)] += 1
     print(seen[ivec2(1, 1)])

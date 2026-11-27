@@ -200,7 +200,7 @@ methods need something of `T`: `sort`, `min`, `max` need `Ord`, `contains`, `ind
 
 ```colibri
 fn main() {
-    let mut xs = [3, 1, 2]
+    let xs = [3, 1, 2]
     xs.push(4)
     xs.insert(1, 9)
     print(xs)
@@ -223,7 +223,7 @@ fn main() {
     print(xs.chunks(3))
     print(xs.windows(3))
     print([[1], [2, 3]].flat_map(fn(x) => x))
-    let mut d = [1, 1, 2, 2, 1]
+    let d = [1, 1, 2, 2, 1]
     d.dedup()
     print(d)
     xs.retain(fn(x) => x != 9)
@@ -286,7 +286,7 @@ a map shares it. `m[k]` panics when the key is missing; `m[k] = v` adds or repla
 
 ```colibri
 fn main() {
-    let mut m = {"a": 1}
+    let m = {"a": 1}
     m.insert("b", 2)
     m["c"] = 3
     print(m)
@@ -541,7 +541,8 @@ woken
 
 `task.run(f)` runs the closure `f` on a worker thread and gives a `Task[T]`, where `T` is what `f`
 returns (see [thread tasks](tour.md#thread-tasks)). The closure runs on a copy of what it captures:
-a write to a captured `let mut` inside it is lost.
+a write to a captured `let mut` inside it would be lost, so it is a compile error; return the
+value from the task instead.
 
 | Type | Method | What it does |
 |------|--------|--------------|

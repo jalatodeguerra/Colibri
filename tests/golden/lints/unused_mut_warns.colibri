@@ -1,0 +1,140 @@
+// A `mut` that nothing needs: removing it would still compile. `let` stops rebinding and the
+// change of a struct's fields, but not a change to what a list, map, set or class holds.
+struct P {
+    x: int
+    y: int
+}
+
+struct Bag {
+    items: List[int]
+}
+
+class C {
+    n: int
+}
+
+impl P {
+    fn grow(mut self) {
+        self.x += 1
+    }
+}
+
+fn plain(mut n: int) -> int { // warning: unused `mut`
+    return n + 1
+}
+
+fn changed(mut n: int) -> int {
+    n += 1
+    return n
+}
+
+// A write from a closure, or from a closure inside a closure, is a write to the variable.
+fn counter(mut n: int) -> fn() -> int {
+    return fn() -> int {
+        n += 1
+        return n
+    }
+}
+
+fn nested() -> int {
+    let mut total = 0
+    let outer = fn() {
+        let inner = fn() { total += 1 }
+        inner()
+    }
+    outer()
+    return total
+}
+
+fn main() {
+    let mut never = 1 // warning: unused `mut`: `never`
+    print(never)
+
+    let mut assigned = 1
+    assigned = 2
+    print(assigned)
+
+    let mut added = 0
+    added += 1
+    print(added)
+
+    // The list is a reference: pushing does not write to the variable.
+    let mut xs = [1] // warning: unused `mut`: `xs`
+    xs.push(2)
+    xs[0] = 5
+    print(xs)
+
+    let mut m = {"a": 1} // warning: unused `mut`: `m`
+    m["b"] = 2
+    print(m)
+
+    let mut obj = C { n: 1 } // warning: unused `mut`: `obj`
+    obj.n = 4
+    print(obj.n)
+
+    // A struct is a value: a field write needs `mut`, a write through its list does not.
+    let mut p = P { x: 1, y: 2 }
+    p.x = 3
+    print(p)
+    let mut q = P { x: 1, y: 2 }
+    q.grow()
+    print(q)
+    let mut bag = Bag { items: [1] } // warning: unused `mut`: `bag`
+    bag.items.push(2)
+    print(bag.items)
+    let mut tup = (1, 2)
+    tup.0 = 9
+    print(tup)
+
+    // A closure that assigns the variable is the write that needs `mut`.
+    let mut seen = 0
+    let bump = fn() { seen += 1 }
+    bump()
+    print(seen)
+    let mut only_read = 5 // warning: unused `mut`: `only_read`
+    let peek = fn() => only_read
+    print(peek())
+
+    // A pattern shares one `mut`: it is needed when any of its names is written.
+    let mut (a, b) = (1, 2)
+    b = 3
+    print(a + b)
+    let mut (c, d) = (1, 2) // warning: unused `mut`: none of `c`, `d`
+    print(c + d)
+
+    // Closure parameters, like function parameters.
+    let f = fn(mut k: int, mut j: int) -> int { // warning: unused `mut`: `j`
+        k += 1
+        return k + j
+    }
+    print(f(1, 2))
+    print(plain(1) + changed(1))
+    print(counter(1)() + nested())
+
+    // `for mut` changes how the loop runs (it writes the element back), so it is not judged.
+    let ys = [1, 2]
+    for mut y in ys {
+        print(y)
+    }
+    print(ys)
+}
+// expect: 1
+// expect: 2
+// expect: 1
+// expect: [5, 2]
+// expect: {"a": 1, "b": 2}
+// expect: 4
+// expect: P { x: 3, y: 2 }
+// expect: P { x: 2, y: 2 }
+// expect: [1, 2]
+// expect: (9, 2)
+// expect: 1
+// expect: 5
+// expect: 4
+// expect: 3
+// expect: 4
+// expect: 4
+// expect: 3
+// expect: 1
+// expect: 2
+// expect: [1, 2]

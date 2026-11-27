@@ -62,7 +62,10 @@ impl FnCtx<'_, '_> {
                 self.ck
                     .unsupported("a default value for a closure parameter", p.span);
             }
-            self.declare(&p.name.name, p.name.span, ty.clone(), kind);
+            let local = self.declare(&p.name.name, p.name.span, ty.clone(), kind);
+            if p.mutable {
+                self.note_mut_binding(vec![local], p.name.span);
+            }
         }
         self.declare_explicit_captures(c);
         let outer_unsafe = std::mem::take(&mut self.unsafe_depth);
@@ -427,6 +430,7 @@ impl FnCtx<'_, '_> {
                 had_errors,
                 &self.ck.host_typed,
                 self.ck.facts.as_mut(),
+                d.param_count as usize,
             );
             let ret = self.infer.finalize(&d.ret).0;
             let params: Vec<ParamInfo<'_>> = d
@@ -488,6 +492,8 @@ impl FnCtx<'_, '_> {
                 self.mark_assigned_in(parent, outer);
             }
         }
+        self.refuse_lost_task_writes();
+        self.lint_unused_muts();
         // Storage follows from the flags; closures take it from the variable they capture, so
         // enclosing frames are decided first.
         let decide = |locals: &mut [LocalInfo], flags: &[LocalFlags], skip: &[LocalId]| {
@@ -521,6 +527,47 @@ impl FnCtx<'_, '_> {
                     self.storage_in(parent, r.outer)
                 };
                 self.done[i].frame.locals[r.inner.0 as usize].storage = storage;
+            }
+        }
+    }
+
+    /// A `task.run` closure runs on another thread with a copy of what it captures, so a write
+    /// to a captured variable (`n += 1`, `p.x = 1`, a `mut self` call) would change the copy
+    /// and be lost. That is refused where it is written, once the writes of the closures inside
+    /// it are known (see `settle_storage`). Reading a captured variable stays fine: the closure
+    /// sees its value as it was when the task started.
+    fn refuse_lost_task_writes(&mut self) {
+        for (f, span) in std::mem::take(&mut self.task_closures) {
+            let Some(done) = self.done.iter().find(|d| d.f == f) else {
+                continue;
+            };
+            let written: Vec<(String, Span)> = done
+                .frame
+                .captures
+                .iter()
+                .filter(|r| r.mode != CaptureMode::Weak)
+                .filter(|r| {
+                    done.frame
+                        .flags
+                        .get(r.inner.0 as usize)
+                        .is_some_and(|fl| fl.assigned)
+                })
+                .filter_map(|r| done.frame.locals.get(r.inner.0 as usize))
+                .map(|l| (l.name.clone(), l.span))
+                .collect();
+            for (name, decl) in written {
+                self.ck.report(
+                    Diagnostic::error(
+                        format!(
+                            "`{name}` is written inside a `task.run` closure, and the write would be lost"
+                        ),
+                        span,
+                    )
+                    .with_label(decl, format!("`{name}` is declared here"))
+                    .with_hint(
+                        "the task runs on a copy of what it captures; return the value from the task and read it with `join()`, or share it through a `Channel` or a `Mutex`",
+                    ),
+                );
             }
         }
     }

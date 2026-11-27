@@ -2,7 +2,7 @@
 // first insertion, removal and re-insertion move the key to the end, and equal keys made in
 // different ways are one key.
 fn main() {
-    let mut m: Map[int, int] = {:}
+    let m: Map[int, int] = {:}
     for i in 0..40 {
         m[i * 7 % 40] = i
     }
@@ -24,7 +24,7 @@ fn main() {
     print(last)
     print(m.len())
 
-    let mut s: Map[str, int] = {:}
+    let s: Map[str, int] = {:}
     s[""] = 1
     s["a"] = 2
     s["é"] = 3

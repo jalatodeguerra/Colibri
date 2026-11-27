@@ -4,7 +4,7 @@
 import rand
 
 fn draw(n: int) -> List[int] {
-    let mut out = []
+    let out = []
     for _ in 0..n {
         out.push(rand.int(0, 1000))
     }
@@ -12,11 +12,11 @@ fn draw(n: int) -> List[int] {
 }
 
 fn main() -> Result[()] {
-    let mut tasks = []
+    let tasks = []
     for _ in 0..6 {
         tasks.push(task.run(fn() => draw(3)))
     }
-    let mut seen = []
+    let seen = []
     for t in tasks {
         seen.push(t.join()?)
     }

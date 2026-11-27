@@ -23,7 +23,7 @@ impl Shape for Blob {
 }
 
 fn main() {
-    let mut shapes: List[Shape] = []
+    let shapes: List[Shape] = []
     shapes.push(Circle { r: 2.0 })
     shapes.push(Blob { size: 1.0 })
     shapes.push(Rect { w: 1.0, h: 1.0 })

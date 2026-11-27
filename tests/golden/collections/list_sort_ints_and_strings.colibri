@@ -1,14 +1,14 @@
 fn main() {
-    let mut xs = [3, 1, 2, 5, 4, 1]
+    let xs = [3, 1, 2, 5, 4, 1]
     xs.sort()
     print(xs)
-    let mut ws = ["pear", "apple", "fig"]
+    let ws = ["pear", "apple", "fig"]
     ws.sort()
     print(ws)
-    let mut fs = [2.5, -1.0, 0.0]
+    let fs = [2.5, -1.0, 0.0]
     fs.sort()
     print(fs)
-    let mut empty: List[int] = []
+    let empty: List[int] = []
     empty.sort()
     print(empty)
 }

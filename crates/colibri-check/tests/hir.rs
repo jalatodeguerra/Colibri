@@ -642,10 +642,15 @@ fn assignment_hints_name_the_declaration_that_fixes_it() {
 }
 
 #[test]
-fn a_mut_parameter_of_a_function_says_what_to_write_instead() {
-    let (m, h) = first_diagnostic("fn f(mut q: int) -> int {\n    q += 1\n    return q\n}\n");
-    assert_eq!(m, "`mut` parameter is not supported yet");
-    assert_eq!(h, "copy it in the body instead: `let mut q2 = q`");
+fn a_mut_parameter_of_a_function_is_a_local_the_body_may_assign() {
+    let src = "fn f(mut q: int) -> int {\n    q += 1\n    return q\n}\n";
+    let (ast, parse) = parse_file(FileId(0), src);
+    assert!(parse.is_empty(), "{parse:?}");
+    let checked = colibri_check::check(&ast);
+    assert!(checked.diagnostics.is_empty(), "{:#?}", checked.diagnostics);
+    // Without `mut` the same body is still refused.
+    let (m, _) = first_diagnostic("fn f(q: int) -> int {\n    q += 1\n    return q\n}\n");
+    assert_eq!(m, "cannot assign to the parameter `q`");
 }
 
 #[test]

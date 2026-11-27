@@ -1,6 +1,6 @@
 // Strings: format, join, split, prefix test.
 fn main() {
-    let mut parts: List[str] = []
+    let parts: List[str] = []
     for i in 0..200000 {
         parts.push("item {i}")
     }

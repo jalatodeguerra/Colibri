@@ -108,8 +108,10 @@ colibri> 21 * 2
 
 ## 3. Values, variables and types
 
-`let` makes a binding that cannot be reassigned, and `let mut` one that can. You almost never write
-a type: the compiler infers it from what you assign.
+`let` makes a binding that cannot be reassigned, and `let mut` one that can. A `let mut` that is
+never reassigned gets a warning, so write `mut` only where the variable changes (a list you only
+`push` to does not need it). You almost never write a type: the compiler infers it from what you
+assign.
 
 ```colibri
 fn main() {
@@ -859,7 +861,7 @@ were added. Both are shared, not copied, when you assign them. Literals use `[ ]
 
 ```colibri
 fn main() {
-    let mut xs = [5, 3, 9]
+    let xs = [5, 3, 9]
     xs.push(1)
     xs.sort()
     print(xs)
@@ -894,7 +896,7 @@ An index that is out of range is a panic, and `get` gives an optional when you a
 ```colibri
 fn main() {
     let ages = {"ana": 30, "bo": 25}
-    let mut stock = Map[str, int]()
+    let stock = Map[str, int]()
     stock["pens"] = 12
     stock["ink"] = 3
     stock["pens"] += 1
@@ -936,11 +938,11 @@ struct Entry {
 }
 
 fn main() {
-    let mut counts = Map[str, int]()
+    let counts = Map[str, int]()
     for w in "to be or not to be".split(" ") {
         counts[w] = counts.get_or(w, 0) + 1
     }
-    let mut entries = counts.entries().map(fn(e) => Entry { word: e.0, count: e.1 })
+    let entries = counts.entries().map(fn(e) => Entry { word: e.0, count: e.1 })
     entries.sort_by_key(fn(e) => -e.count)
     for e in entries {
         print("{e.word}: {e.count}")
@@ -980,14 +982,14 @@ pub struct Entry {
 // Splits text into lower-case words and counts them, most frequent first. Ties keep the
 // order of first appearance.
 pub fn count(text: str) -> List[Entry] {
-    let mut counts = Map[str, int]()
+    let counts = Map[str, int]()
     for raw in text.to_lower().split(" ") {
         let word = raw.trim()
         if word != "" {
             counts[word] = counts.get_or(word, 0) + 1
         }
     }
-    let mut entries = counts.entries().map(fn(e) => Entry { word: e.0, count: e.1 })
+    let entries = counts.entries().map(fn(e) => Entry { word: e.0, count: e.1 })
     entries.sort_by_key(fn(e) => -e.count)
     return entries
 }
@@ -1264,10 +1266,10 @@ fn main() -> Result[()] {
 
 A task has objects of its own. What the closure captures is copied to the task when it starts, and
 the result is copied back, so no two threads ever touch the same object and nothing needs a lock.
-The cost is easy to trip on: **a write to a captured `let mut` inside a task closure is lost**,
-because the closure runs on a copy. This program prints 0, not 1:
+The cost is easy to trip on: a write to a captured `let mut` inside a task closure would be lost,
+because the closure runs on a copy, so the checker refuses it:
 
-```colibri
+```colibri,error
 fn main() -> Result[()] {
     let mut n = 0
     task.run(fn() { n += 1 }).join()?
@@ -1277,7 +1279,7 @@ fn main() -> Result[()] {
 ```
 
 ```output
-0
+`n` is written inside a `task.run` closure, and the write would be lost
 ```
 
 Return the value instead. The [language tour](tour.md#thread-tasks) says what can be copied, what a

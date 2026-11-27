@@ -59,6 +59,24 @@ pub(crate) struct LocalFlags {
     pub names: u32,
 }
 
+/// A `mut` whose use is decided when the whole body is known (a closure further down may be the
+/// one that assigns the variable): `FnCtx::lint_unused_muts`.
+///
+/// The test is the one the checker applies when it refuses a write: `mut` is needed exactly when
+/// some assignment, field write or `mut self` call reaches the variable itself
+/// (`FnCtx::require_mutable` sets `LocalFlags::assigned` on that path, and
+/// `FnCtx::settle_storage` adds the writes of closures). A write that goes through a list, a map,
+/// a set or a class object is not a write to the variable, so `let mut xs = []; xs.push(1)` has
+/// an unneeded `mut`, as `let xs = []` accepts the same call.
+pub(crate) struct MutLint {
+    /// The frame whose locals these are (0 for the function body, one per closure).
+    pub frame: usize,
+    /// One variable, or all of those a `let mut (a, b) = ..` pattern binds: they share one `mut`,
+    /// so it is unneeded only when none of them is written.
+    pub locals: Vec<LocalId>,
+    pub span: Span,
+}
+
 /// One variable a closure captures, as recorded while its body is checked.
 #[derive(Clone, Copy)]
 pub(crate) struct CaptureRec {
@@ -189,6 +207,14 @@ pub(crate) struct FnCtx<'c, 'a> {
     pub(crate) unsafe_depth: u32,
     /// The target of a plain `x = value` is being resolved: naming `x` there is not a read.
     pub(crate) whole_assign_target: bool,
+    /// The `mut` bindings of the program's own code, judged once every closure is checked.
+    pub(crate) mut_lints: Vec<MutLint>,
+    /// The closures written directly as the argument of `task.run`, judged once every write
+    /// inside them is known (`FnCtx::refuse_lost_task_writes`).
+    pub(crate) task_closures: Vec<(FnId, Span)>,
+    /// The `let` variables (frame, local) that were initialised with a closure literal, so
+    /// `task.run(f)` can look through them to the closure.
+    pub(crate) closure_lets: HashMap<(usize, LocalId), FnId>,
 }
 
 /// A call with type arguments that are inferred, kept so one that is never fixed is reported.
@@ -265,6 +291,9 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             pending_sites: Vec::new(),
             unsafe_depth: 0,
             whole_assign_target: false,
+            mut_lints: Vec::new(),
+            task_closures: Vec::new(),
+            closure_lets: HashMap::new(),
         }
     }
 
@@ -383,6 +412,85 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             }
         }
         locals
+    }
+
+    /// Whether the unused-`mut` warning applies to code in the module being checked: the
+    /// program's own packages are linted, not a dependency's code.
+    pub(crate) fn lints_own_code(&self) -> bool {
+        self.ck.mods[self.ck.cur_mod.0 as usize].root
+    }
+
+    /// Asks for the unused-`mut` warning on `locals`, declared with one `mut` at `span`.
+    pub(crate) fn note_mut_binding(&mut self, locals: Vec<LocalId>, span: Span) {
+        if locals.is_empty() || !self.lints_own_code() {
+            return;
+        }
+        self.mut_lints.push(MutLint {
+            frame: self.frame_id,
+            locals,
+            span,
+        });
+    }
+
+    /// Warns about every `mut` that nothing needs, once the whole body is known (the writes of
+    /// closures count for the variables they capture, see `settle_storage`).
+    pub(crate) fn lint_unused_muts(&mut self) {
+        // A body with an error may have lost the write that needed the `mut` (a refused
+        // assignment is not recorded), so the warning would be a wrong second complaint.
+        if self.ck.error_count() > self.errors_at_start {
+            self.mut_lints.clear();
+            return;
+        }
+        for lint in std::mem::take(&mut self.mut_lints) {
+            let flags = if lint.frame == self.frame_id {
+                &self.flags
+            } else if let Some(d) = self.done.iter().find(|d| d.frame.id == lint.frame) {
+                &d.frame.flags
+            } else {
+                continue;
+            };
+            let flag = |l: &LocalId| flags.get(l.0 as usize).copied().unwrap_or_default();
+            // A variable that nothing reads already gets the unused-variable warning; a second
+            // one about its `mut` would only repeat it.
+            let written = lint.locals.iter().any(|l| flag(l).assigned);
+            let silent = lint
+                .locals
+                .iter()
+                .all(|l| flag(l).lint_unused && !flag(l).read);
+            if written || silent {
+                continue;
+            }
+            let names: Vec<String> = lint
+                .locals
+                .iter()
+                .map(|l| format!("`{}`", self.name_in(lint.frame, *l)))
+                .collect();
+            let message = match names.as_slice() {
+                [one] => format!("unused `mut`: {one} is never assigned to or changed"),
+                _ => format!(
+                    "unused `mut`: none of {} is ever assigned to or changed",
+                    names.join(", ")
+                ),
+            };
+            let diag = Diagnostic::warning(message, lint.span).with_hint(
+                "remove `mut`; it is needed only to assign to the variable or to change the fields of a struct held in it",
+            );
+            self.ck.report_lint(diag);
+        }
+    }
+
+    fn name_in(&self, frame: usize, local: LocalId) -> String {
+        let locals = if frame == self.frame_id {
+            &self.locals
+        } else if let Some(d) = self.done.iter().find(|d| d.frame.id == frame) {
+            &d.frame.locals
+        } else {
+            return String::new();
+        };
+        locals
+            .get(local.0 as usize)
+            .map(|l| l.name.clone())
+            .unwrap_or_default()
     }
 
     /// Declares a binding in the innermost scope and returns its slot.
@@ -617,6 +725,7 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             had_errors,
             &self.ck.host_typed,
             self.ck.facts.as_mut(),
+            param_count as usize,
         );
         let ret = self.infer.finalize(&ret).0;
         self.finish_closures(&mut diags, had_errors);
@@ -717,7 +826,12 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             } else {
                 LocalKind::Param
             };
-            self.declare(&p.name, p.span, p.ty.clone(), kind);
+            let local = self.declare(&p.name, p.span, p.ty.clone(), kind);
+            // `mut self` is a promise to the caller (the value is written back), not a local
+            // that is merely assigned, and the interface decides it.
+            if p.mutable && p.name != "self" {
+                self.note_mut_binding(vec![local], p.span);
+            }
         }
         let block = match src {
             Some(BodySrc::Block(b)) => {
@@ -1270,6 +1384,14 @@ impl<'c, 'a> FnCtx<'c, 'a> {
                 if kind != LocalKind::Const && !name.name.starts_with('_') {
                     self.flags[local.0 as usize].lint_unused = true;
                 }
+                if kind == LocalKind::Var {
+                    self.note_mut_binding(vec![local], name.span);
+                }
+                if kind == LocalKind::Let
+                    && let hir::ExprKind::Closure(c) = &value.kind
+                {
+                    self.closure_lets.insert((self.frame_id, local), c.f);
+                }
                 out.push(Stmt {
                     span: s.span,
                     kind: hir::StmtKind::Let { local, init: value },
@@ -1281,8 +1403,16 @@ impl<'c, 'a> FnCtx<'c, 'a> {
             }),
             PatKind::Error => {}
             _ => {
+                let first = self.locals.len();
                 let mut cx = PatCx::new(kind);
                 let pat = self.check_pat(&l.pat, &ty, &mut cx);
+                if kind == LocalKind::Var {
+                    let bound = (first..self.locals.len())
+                        .map(|i| LocalId(i as u32))
+                        .filter(|l| self.kinds[l.0 as usize] == LocalKind::Var)
+                        .collect();
+                    self.note_mut_binding(bound, l.pat.span);
+                }
                 self.require_irrefutable(&pat, &ty, l.pat.span);
                 out.push(Stmt {
                     span: s.span,

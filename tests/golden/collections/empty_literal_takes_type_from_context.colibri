@@ -12,7 +12,7 @@ fn main() {
     print(total([]))
     let b = Bag { }
     print(b.items.len())
-    let mut later = []
+    let later = []
     later.push(1)
     print(later)
 }

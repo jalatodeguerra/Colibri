@@ -1,0 +1,41 @@
+// A `mut` parameter that a closure captures and reassigns lives in a cell made on entry. The
+// function hands the final value back in the caller's argument register (never the cell), and
+// the caller drops it with the other arguments of the call, on a panic too.
+class Res { name: str }
+
+impl Drop for Res {
+    fn drop(self) {
+        print("drop {self.name}")
+    }
+}
+
+fn swap_inside(mut r: Res) -> int {
+    let replace = fn() {
+        r = Res { name: "inner" }
+    }
+    replace()
+    print("replaced")
+    return r.name.len()
+}
+
+fn fail(mut r: Res, zero: int) -> int {
+    let replace = fn() {
+        r = Res { name: "inner2" }
+    }
+    replace()
+    return 1 / zero
+}
+
+fn main() {
+    print(swap_inside(Res { name: "outer" }))
+    print("after")
+    print(fail(Res { name: "outer2" }, 0))
+}
+// expect: drop outer
+// expect: replaced
+// expect: 5
+// expect: drop inner
+// expect: after
+// expect: drop outer2
+// expect: drop inner2
+// panic: division by zero

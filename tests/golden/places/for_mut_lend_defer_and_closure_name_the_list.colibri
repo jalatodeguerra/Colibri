@@ -2,7 +2,7 @@
 struct P { x: int }
 
 fn main() {
-    let mut ps = [P { x: 1 }, P { x: 2 }]
+    let ps = [P { x: 1 }, P { x: 2 }]
     for mut p in ps {
         p.x += 10
         defer print("deferred {ps[0].x} {ps[1].x}")

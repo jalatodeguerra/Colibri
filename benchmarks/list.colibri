@@ -1,6 +1,6 @@
 // A list of a million integers: push, index, iterate.
 fn main() {
-    let mut xs: List[int] = []
+    let xs: List[int] = []
     for i in 0..1000000 {
         xs.push(i)
     }

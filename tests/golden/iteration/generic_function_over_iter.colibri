@@ -14,7 +14,7 @@ impl Iter[int] for Evens {
 }
 
 fn collect[I: Iter[int]](it: I) -> List[int] {
-    let mut out: List[int] = []
+    let out: List[int] = []
     for x in it {
         out.push(x)
     }

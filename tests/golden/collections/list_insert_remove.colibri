@@ -1,5 +1,5 @@
 fn main() {
-    let mut xs = [10, 20, 30]
+    let xs = [10, 20, 30]
     xs.insert(0, 5)
     xs.insert(4, 40)
     xs.insert(2, 15)
