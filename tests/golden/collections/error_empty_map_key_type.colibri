@@ -1,0 +1,14 @@
+// `{:}` has no key to check, so its key type is checked once inference has settled it: a
+// float or a closure is no more a key here than in `{1.5: 1}`. The error points at the `{:}`.
+fn main() {
+    let mut a = {:} // error: `float` cannot be used as a `Map` key
+    a[1.5] = 1
+    let mut b = {:} // error: cannot be used as a `Map` key
+    b[fn(x: int) => x] = 1
+    let mut c = {:} // error: `List[float]` cannot be used as a `Map` key
+    c[[1.5]] = 1
+    let mut fine = {:}
+    fine["a"] = 1
+    let typed: Map[str, int] = {:}
+    print(fine.len() + typed.len())
+}

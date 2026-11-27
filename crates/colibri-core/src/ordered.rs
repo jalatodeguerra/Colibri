@@ -236,8 +236,9 @@ fn feed(v: &Value, h: &mut KeyHasher, depth: u32, host: &mut dyn FnMut(&Value) -
         Value::Int(i) => i.hash(h),
         Value::U64(i) => i.hash(h),
         Value::Ptr(p) => p.hash(h),
-        Value::Float(x) => x.to_bits().hash(h),
-        Value::F32(x) => x.to_bits().hash(h),
+        // `-0.0 == 0.0`, so they must hash alike: both go in as the bits of `0.0`.
+        Value::Float(x) => (if *x == 0.0 { 0.0 } else { *x }).to_bits().hash(h),
+        Value::F32(x) => (if *x == 0.0 { 0.0 } else { *x }).to_bits().hash(h),
         Value::Char(c) => c.hash(h),
         Value::Str(s) => s.hash(h),
         Value::Bytes(b) => b.hash(h),
@@ -886,6 +887,25 @@ mod tests {
         .map(hash_value)
         .collect();
         assert_eq!(hashes.len(), 6);
+    }
+
+    #[test]
+    fn negative_zero_hashes_and_finds_like_zero() {
+        // `==` says `-0.0` and `0.0` are equal, so a key may not hash differently.
+        assert_eq!(
+            hash_value(&Value::Float(-0.0)),
+            hash_value(&Value::Float(0.0))
+        );
+        assert_eq!(hash_value(&Value::F32(-0.0)), hash_value(&Value::F32(0.0)));
+        assert_ne!(
+            hash_value(&Value::Float(1.0)),
+            hash_value(&Value::Float(-1.0))
+        );
+        let mut m = OrderedMap::new();
+        m.insert(Value::Float(0.0), int(1));
+        m.insert(Value::Float(-0.0), int(2));
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get(&Value::Float(-0.0)), Some(&int(2)));
     }
 
     #[test]

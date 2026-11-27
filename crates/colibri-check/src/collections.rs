@@ -119,9 +119,15 @@ impl FnCtx<'_, '_> {
             first.get_or_insert((k.span, v.span));
             out.push((kv, vv));
         }
-        if let Some((k, _)) = entries.first()
-            && !self.require_hash(&key, "Map", k.span)
-        {
+        // `{:}` has no key to point at, so the whole literal stands for it. Its key type is
+        // still open here (`m[1.5] = 1` fixes it later), and `require_hash` then defers the
+        // `Hash + Eq` check until it is known, like it does for the first key of `{k: v}`.
+        //
+        // A key type the context already wrote (`let m: Map[float, int] = {:}`) was checked
+        // where it was written, so the literal does not say it a second time.
+        let written = entries.is_empty() && !crate::derive::has_infer(&self.infer.resolve(&key));
+        let key_span = entries.first().map_or(span, |(k, _)| k.span);
+        if !written && !self.require_hash(&key, "Map", key_span) {
             return self.error_expr(span);
         }
         self.mk(
