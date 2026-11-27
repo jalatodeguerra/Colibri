@@ -93,12 +93,7 @@ pub fn halve_typed(n: i64) -> Result<i64, TypedError> {
     if n % 2 == 0 {
         Ok(n / 2)
     } else {
-        Err(TypedError::new(
-            "tools",
-            "Error",
-            "Odd",
-            format!("{n} is odd"),
-        ))
+        Err(TypedError::local("Error", "Odd", format!("{n} is odd")))
     }
 }
 
@@ -255,24 +250,40 @@ fn main() {
 }
 
 #[test]
-fn a_typed_error_keeps_its_variant_through_the_module_enum() {
-    let (mut vm, out) = vm_with(
-        r#"import tools
+fn a_typed_error_keeps_its_variant_under_any_import_name() {
+    for name in ["tools", "native"] {
+        let out = colibri::SharedBuffer::new();
+        let mut vm = colibri::Vm::builder().stdout(Box::new(out.clone())).build();
+        __colibri_binding::register(&mut vm, name).unwrap();
+        vm.load_source(
+            "main.colibri",
+            &r#"import NAME
 
 fn main() {
-    match tools.halve_typed(3) {
+    match NAME.halve_typed(3) {
         ok(v) => print("half {v}")
         err(e) => {
             print("failed {e}")
-            print(e.is[tools.Error]())
-            print(e.as[tools.Error]())
+            print(e.is[NAME.Error]())
+            print(e.as[NAME.Error]())
+            match e.as[NAME.Error]() {
+                some(NAME.Error.Odd) => print("odd")
+                _ => print("other")
+            }
         }
     }
 }
-"#,
-    );
-    vm.run_main().unwrap();
-    assert_eq!(out.contents(), "failed 3 is odd\ntrue\nsome(Odd)\n");
+"#
+            .replace("NAME", name),
+        )
+        .unwrap();
+        vm.run_main().unwrap();
+        assert_eq!(
+            out.contents(),
+            "failed 3 is odd\ntrue\nsome(Odd)\nodd\n",
+            "{name}"
+        );
+    }
 }
 
 #[test]
@@ -365,23 +376,95 @@ fn registering_a_binding_twice_is_an_error() {
         err.to_string().contains("belongs to the module `tools`"),
         "{err}"
     );
-    // The reserved and unusable names are refused too.
-    for bad in ["std", "std.fs", "has space", "host"] {
-        assert!(
-            __colibri_binding::register(&mut vm, bad).is_err(),
-            "`{bad}` was accepted"
-        );
-    }
 }
 
-/// A second binding in a module of its own: the generated `__colibri_binding` sits next to the
-/// function, so a crate's binding goes at its root and this one is reached by path.
 mod classes_only {
     use super::*;
 
-    #[colibri::module]
+    #[colibri::module(nested)]
     pub fn only_classes(m: &mut colibri::Module<'_>) -> Result<(), colibri::Error> {
         m.add_class::<Point>()
+    }
+}
+
+/// Bindings below the crate root (`nested`), one module each: a class-free one, one that
+/// panics after registering a function, and one whose registration fails.
+mod empty {
+    use super::*;
+
+    #[colibri::module(nested)]
+    pub fn nothing(_m: &mut colibri::Module<'_>) -> Result<(), colibri::Error> {
+        Ok(())
+    }
+}
+
+mod crashes {
+    use super::*;
+
+    #[colibri::module(nested)]
+    pub fn crashing(m: &mut colibri::Module<'_>) -> Result<(), colibri::Error> {
+        m.add_fn(double::export)?;
+        panic!("registration went off")
+    }
+}
+
+mod fails {
+    use super::*;
+
+    #[colibri::module(nested)]
+    pub fn failing(m: &mut colibri::Module<'_>) -> Result<(), colibri::Error> {
+        m.register_module_enum("Error", &[])
+    }
+}
+
+#[test]
+fn each_refused_name_is_refused_for_its_own_reason() {
+    for (bad, why) in [
+        ("std", "the module name `std` is reserved"),
+        ("std.fs", "the module name `std` is reserved"),
+        ("has space", "not a usable module name"),
+        ("host", "needs a module name of its own"),
+    ] {
+        let mut vm = colibri::Vm::new();
+        let err = empty::__colibri_binding::register(&mut vm, bad)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(why), "`{bad}`: {err}");
+    }
+    // A good name works on the same binding.
+    let mut vm = colibri::Vm::new();
+    empty::__colibri_binding::register(&mut vm, "fine").unwrap();
+}
+
+#[test]
+fn a_panic_while_registering_is_an_error_that_names_the_binding() {
+    let mut vm = colibri::Vm::new();
+    let err = crashes::__colibri_binding::register(&mut vm, "boom")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("the binding `crashing` panicked while registering: registration went off"),
+        "{err}"
+    );
+    // The Vm is usable: what was registered before the panic works.
+    vm.load_source(
+        "main.colibri",
+        "import boom\nfn f() -> int => boom.double(4)\n",
+    )
+    .unwrap();
+    let f = vm.get_fn::<(), i64>("f").unwrap();
+    assert_eq!(f.call(&mut vm, ()).unwrap(), 8);
+}
+
+#[test]
+fn a_failed_registration_gives_the_name_back_so_a_retry_reports_its_own_error() {
+    let mut vm = colibri::Vm::new();
+    for _ in 0..2 {
+        let err = fails::__colibri_binding::register(&mut vm, "again")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("at least one variant"), "{err}");
+        assert!(!err.contains("already registered"), "{err}");
     }
 }
 

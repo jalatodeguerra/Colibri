@@ -169,6 +169,19 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 ///     y: f32,
 /// }
 /// ```
+/// `#[colibri::module]` goes at the crate root, where a runner finds `__colibri_binding`:
+///
+/// ```compile_fail
+/// use colibri_runtime as colibri;
+///
+/// mod inner {
+///     use super::colibri;
+///     #[colibri::module]
+///     pub fn physics(m: &mut colibri::Module<'_>) -> Result<(), colibri::Error> {
+///         Ok(())
+///     }
+/// }
+/// ```
 pub use colibri_bind::{export, module};
 pub use colibri_check::package::{
     AssetPatterns, Build, Manifest, asset_path_problem, parse_manifest,
@@ -247,11 +260,34 @@ pub mod __private {
 
     use crate::{HostFn, HostModule, Registration, Vm};
 
-    /// Starts the registration of a binding under `name` (the manifest key): the module to
-    /// register into, or an error when a binding already registered under that name.
-    pub fn bind_module<'a>(vm: &'a mut Vm, name: &str) -> Result<HostModule<'a>, Error> {
+    /// Runs the registration function `f` of the binding `rust_name` under the import name
+    /// `name`: claims the name (a second registration is an error), catches a panic of `f`
+    /// as an `Error::Registration` that names the binding, and gives the name back when the
+    /// registration failed, so that a retry reports its own error.
+    pub fn run_binding(
+        vm: &mut Vm,
+        rust_name: &str,
+        name: &str,
+        f: impl FnOnce(&mut HostModule<'_>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         vm.claim_binding(name)?;
-        Ok(vm.module(name))
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut module = vm.module(name);
+            f(&mut module)
+        }));
+        let result = outcome.unwrap_or_else(|payload| {
+            Err(Error::Registration {
+                name: name.to_string(),
+                message: format!(
+                    "the binding `{rust_name}` panicked while registering: {}",
+                    crate::host::payload_message(payload.as_ref())
+                ),
+            })
+        });
+        if result.is_err() {
+            vm.release_binding(name);
+        }
+        result
     }
 
     /// Registers an exported function into a module.

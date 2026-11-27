@@ -651,6 +651,11 @@ impl Vm {
         }
     }
 
+    /// Gives back a name that `claim_binding` took, after a registration that failed.
+    pub(crate) fn release_binding(&mut self, name: &str) {
+        self.bound.retain(|b| b != name);
+    }
+
     /// Claims `name` for one `#[colibri::module]` binding: a second claim of the same name is
     /// an error, even for a binding that registers only classes.
     pub(crate) fn claim_binding(&mut self, name: &str) -> Result<(), Error> {

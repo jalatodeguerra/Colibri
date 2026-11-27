@@ -630,13 +630,38 @@ impl TypedError {
         }
     }
 
+    /// Like [`TypedError::new`] for the enum of the module whose host function is returning
+    /// the error, whatever name that module was registered under. A binding crate uses this
+    /// one, because the import name is chosen by the project's manifest, not by the crate.
+    ///
+    /// Returned from a function of a module without that module enum, it is a bug of the host
+    /// and the function panics with a message that says so.
+    pub fn local(
+        enum_name: impl Into<String>,
+        variant: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        TypedError::new(String::new(), enum_name, variant, message)
+    }
+
     /// The message the error shows as.
     pub fn message(&self) -> &str {
         &self.message
     }
 
     pub(crate) fn into_error_value(self, cx: &mut Cx<'_>) -> Inner {
-        let (ty, index) = cx.module_enum_variant(&self.module, &self.enum_name, &self.variant);
+        let module = if self.module.is_empty() {
+            match cx.module.as_deref() {
+                Some(module) => module.to_string(),
+                None => panic!(
+                    "`TypedError::local` needs a host function of a named module to say which module's `{}` it means: use `TypedError::new` with the module name",
+                    self.enum_name
+                ),
+            }
+        } else {
+            self.module.clone()
+        };
+        let (ty, index) = cx.module_enum_variant(&module, &self.enum_name, &self.variant);
         let kept = Inner::variant(ty, index, Vec::new());
         colibri_core::host::typed_error_value(kept, &self.message)
     }

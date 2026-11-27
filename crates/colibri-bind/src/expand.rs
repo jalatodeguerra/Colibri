@@ -16,6 +16,8 @@ struct Options {
     value: Option<Span>,
     no_methods: Option<Span>,
     runtime: Option<syn::Path>,
+    /// `nested`, for `#[colibri::module]` only: allows a function below the crate root.
+    nested: Option<Span>,
 }
 
 impl Parse for Options {
@@ -31,6 +33,7 @@ impl Parse for Options {
                 match word.to_string().as_str() {
                     "value" => options.value = Some(word.span()),
                     "no_methods" => options.no_methods = Some(word.span()),
+                    "nested" => options.nested = Some(word.span()),
                     other => {
                         return Err(Error::new(
                             word.span(),
@@ -658,6 +661,7 @@ pub fn module(args: TokenStream, item: TokenStream) -> TokenStream {
                 ));
             }
         }
+        let nested = options.nested.is_some();
         let item: ItemFn = syn::parse2(item).map_err(|e| {
             Error::new(
                 e.span(),
@@ -668,7 +672,7 @@ pub fn module(args: TokenStream, item: TokenStream) -> TokenStream {
             Some(path) => quote!(#path),
             None => quote!(::colibri_runtime),
         };
-        module_fn(item, &runtime)
+        module_fn(item, &runtime, nested)
     });
     match result {
         Ok(tokens) => tokens,
@@ -690,7 +694,7 @@ fn last_segment(ty: &Type) -> Option<&syn::PathSegment> {
     }
 }
 
-fn module_fn(item: ItemFn, runtime: &TokenStream) -> Result<TokenStream> {
+fn module_fn(item: ItemFn, runtime: &TokenStream, nested: bool) -> Result<TokenStream> {
     let sig = &item.sig;
     let ident = &sig.ident;
     if let Some(t) = &sig.asyncness {
@@ -762,8 +766,26 @@ fn module_fn(item: ItemFn, runtime: &TokenStream) -> Result<TokenStream> {
         ));
     }
     let name = ident.unraw().to_string();
+    // The module sits next to the function, and a runner reaches it as `krate::__colibri_binding`.
+    let root_check = (!nested).then(|| {
+        quote_spanned! {ident.span()=>
+            const _: () = {
+                let path = ::core::module_path!().as_bytes();
+                let mut i = 0;
+                while i < path.len() {
+                    if path[i] == b':' {
+                        ::core::panic!(
+                            "`#[colibri::module]` goes at the crate root: a runner finds the binding as `krate::__colibri_binding`"
+                        );
+                    }
+                    i += 1;
+                }
+            };
+        }
+    });
     Ok(quote! {
         #item
+        #root_check
         /// What a generated runner calls: `__colibri_binding::register(&mut vm, "native")`
         /// registers the binding under the import name the manifest chose.
         #[doc(hidden)]
@@ -777,8 +799,7 @@ fn module_fn(item: ItemFn, runtime: &TokenStream) -> Result<TokenStream> {
                 vm: &mut #runtime::Vm,
                 name: &str,
             ) -> ::core::result::Result<(), #runtime::Error> {
-                let mut module = #runtime::__private::bind_module(vm, name)?;
-                super::#ident(&mut module)
+                #runtime::__private::run_binding(vm, #name, name, super::#ident)
             }
         }
     })
@@ -909,8 +930,17 @@ mod tests {
             out.contains("fn register (vm : & mut :: colibri_runtime :: Vm , name : & str ,)"),
             "{out}"
         );
-        assert!(out.contains("bind_module (vm , name)"), "{out}");
-        assert!(out.contains("super :: physics (& mut module)"), "{out}");
+        assert!(
+            out.contains("run_binding (vm , \"physics\" , name , super :: physics)"),
+            "{out}"
+        );
+        assert!(out.contains("goes at the crate root"), "{out}");
+        let nested = module_run(
+            "nested",
+            "fn p(m: &mut Module<'_>) -> Result<(), Error> { Ok(()) }",
+        );
+        assert!(!nested.contains("goes at the crate root"), "{nested}");
+        assert!(nested.contains("run_binding"), "{nested}");
         // The spellings a crate may use.
         for sig in [
             "pub fn p(m: &mut Module) -> Result<(), Error> { Ok(()) }",
