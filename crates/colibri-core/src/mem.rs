@@ -405,11 +405,17 @@ fn charge(tag: u64, bytes: usize) {
 #[inline]
 fn credit(tag: u64, bytes: usize) {
     if let Some(slot) = lookup(tag) {
-        slot.used.fetch_sub(bytes as i64, Ordering::Relaxed);
+        // `slot.used` must go down last, with Release. `open_slot` treats a closed slot with
+        // `used == 0` as free (Acquire load) and then rewrites its `own` and `parent`. If `used`
+        // were lowered first, another thread could recycle the slot while this one is still
+        // lowering `own` and reading `parent`, taking bytes off the new owner's account or off
+        // the wrong parent. Lowering it last means that once `open_slot` sees zero, every
+        // other write of this credit is already visible and finished.
         slot.own.fetch_sub(bytes as i64, Ordering::Relaxed);
         if let Some(parent) = slot.parent_slot() {
             parent.used.fetch_sub(bytes as i64, Ordering::Relaxed);
         }
+        slot.used.fetch_sub(bytes as i64, Ordering::Release);
     }
 }
 
@@ -463,8 +469,12 @@ fn open_slot() -> u64 {
                 return 0;
             }
             if offset == 0 {
+                // The table's own memory belongs to nobody: do not charge it to the Vm that
+                // happens to be current (it is never freed, so it would stay on that account).
+                let before = swap_current(0);
                 let slots: Box<[Slot]> = (0..FIRST << chunk).map(|_| Slot::new()).collect();
                 let base = Box::leak(slots).as_mut_ptr();
+                swap_current(before);
                 TABLE[chunk].store(base, Ordering::Release);
             }
             reg.handed_out += 1;
@@ -493,7 +503,10 @@ fn close_slot(tag: u64) {
     }
     let index = tag as u32 as usize - 1;
     let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    // The queue may grow; that allocation is the table's, not the current Vm's.
+    let before = swap_current(0);
     reg.closed.push_back(index);
+    swap_current(before);
 }
 
 // ------------------------------------------------------------------------------------------
