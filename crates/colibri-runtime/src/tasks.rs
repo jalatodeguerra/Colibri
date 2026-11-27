@@ -952,15 +952,18 @@ mod tests {
 
     #[test]
     fn the_tasks_a_task_starts_are_numbered_from_it_and_from_nothing_else() {
-        let shared = Arc::new(Shared {
-            queue: Mutex::new(Queue {
-                jobs: VecDeque::new(),
-                closed: false,
-            }),
-            wake: Condvar::new(),
-            next_key: AtomicU64::new(1),
-            cancel: Arc::new(AtomicBool::new(false)),
-        });
+        let pool = TaskPool::new(
+            WorkerCfg {
+                threads: Some(1),
+                setup: None,
+                out: WorkerOut::Process,
+                caps: CapSet::default(),
+                max_call_depth: 100,
+                threads_supported: false,
+            },
+            Arc::new(PoolStats::default()),
+        );
+        let shared = Arc::clone(&pool.shared);
         let launch = WorkerLaunch::new(shared);
         let image = Arc::new(ProgramImage {
             files: MemoryFs::default(),
