@@ -775,7 +775,16 @@ impl FnCtx<'_, '_> {
         let fields = subs
             .into_iter()
             .zip(&decls)
-            .map(|(s, d)| s.unwrap_or_else(|| self.pat(PatKind::Wild, &d.ty, span)))
+            .map(|(s, d)| {
+                s.unwrap_or_else(|| {
+                    let ty = if d.weak {
+                        Ty::Option(Box::new(d.ty.clone()))
+                    } else {
+                        d.ty.clone()
+                    };
+                    self.pat(PatKind::Wild, &ty, span)
+                })
+            })
             .collect();
         let weak = decls
             .iter()

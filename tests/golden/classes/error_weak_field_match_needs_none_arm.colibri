@@ -1,0 +1,16 @@
+// A weak field matches as `T?`, so `some(q)` alone leaves `none` unhandled.
+class Node {
+    name: str
+    parent: weak Node
+}
+
+fn name_of_parent(n: Node) -> str {
+    match n { // error: non-exhaustive `match`: missing case: Node { parent: none, .. }
+        Node { parent: some(q), .. } => return q.name
+    }
+}
+
+fn main() {
+    let o = Node { name: "o" }
+    print(name_of_parent(o))
+}
