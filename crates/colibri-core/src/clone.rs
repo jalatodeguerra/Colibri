@@ -80,6 +80,11 @@ impl Cloner {
                 if src.ty() == colibri_check::types::TASK_TYPE {
                     return Err(Stop::Task);
                 }
+                // A channel handle is one object however many names it has: a clone is the same
+                // handle (the channel is shared by every thread that holds it anyway).
+                if src.ty() == colibri_check::types::CHANNEL_TYPE {
+                    return Ok(v.clone());
+                }
                 let key = Rc::as_ptr(src) as usize;
                 if let Some(done) = self.memo.get(&key) {
                     return Ok(done.clone());

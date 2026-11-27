@@ -8,6 +8,7 @@ pub mod budget;
 pub(crate) mod builders;
 pub(crate) mod builtin;
 pub(crate) mod bytesfn;
+pub mod chan;
 pub mod clock;
 pub(crate) mod clone;
 pub mod closure;

@@ -913,6 +913,14 @@ pub enum Op {
         a: Reg,
         kind: JoinKind,
     },
+    /// `send` or `recv` of a channel: the window at `base` holds the channel (and, for a send,
+    /// the value). A channel that makes it wait pauses the coroutine, and the instruction runs
+    /// again when it is resumed, which takes up its place in the channel once more.
+    Chan {
+        d: Reg,
+        base: Reg,
+        kind: ChanKind,
+    },
 }
 
 /// What an [`Op::Count`] counts.
@@ -936,6 +944,18 @@ pub enum PauseKind {
     WaitReal,
     /// The next `emit` of the `Signal` in the operand.
     WaitFor,
+}
+
+/// What an [`Op::Chan`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChanKind {
+    /// `ch.send(v)`.
+    Send,
+    /// `ch.send(x.clone())`, written as `ch.send(x)` with the clone left out: the copy of the
+    /// send is the copy `clone` would make, unless a user `impl Clone` could be called.
+    SendClone,
+    /// `ch.recv()`.
+    Recv,
 }
 
 /// What a [`Op::Join`] waits for.
@@ -1330,7 +1350,8 @@ impl Op {
             | Op::SuspendReady
             | Op::Go { .. }
             | Op::Pause { .. }
-            | Op::Join { .. } => 0,
+            | Op::Join { .. }
+            | Op::Chan { .. } => 0,
         }
     }
 }
@@ -1580,6 +1601,7 @@ impl Chunk {
             Op::Go { d, base, site } => format!("Go r{d} base=r{base} {}", self.site_text(site)),
             Op::Pause { a, kind } => format!("Pause r{a} {kind:?}"),
             Op::Join { d, a, kind } => format!("Join r{d} r{a} {kind:?}"),
+            Op::Chan { d, base, kind } => format!("Chan r{d} base=r{base} {kind:?}"),
         }
     }
 

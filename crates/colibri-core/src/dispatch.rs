@@ -87,6 +87,16 @@ impl Tables {
         self.operators.get(&(left, iface, right)).copied()
     }
 
+    /// Whether the program has a user-written `impl Clone` of any type.
+    pub fn has_user_clone(&self) -> bool {
+        !self.clone.is_empty()
+    }
+
+    /// Whether the program has a user-written `Drop` hook of any class.
+    pub fn has_user_drop(&self) -> bool {
+        !self.drop.is_empty()
+    }
+
     /// The implementation with index `id`.
     #[inline]
     pub fn impl_def(&self, id: u32) -> Option<&ImplDef> {

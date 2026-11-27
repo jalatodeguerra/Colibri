@@ -131,6 +131,18 @@ impl Hasher for IdHasher {
 /// A table keyed by scheduler ids.
 pub(crate) type IdMap<V> = HashMap<u64, V, BuildHasherDefault<IdHasher>>;
 
+/// What a coroutine that is parked in a channel operation keeps: the waiter, and the way to
+/// give it up (cancelling the token takes it out of the channel). Keyed by the coroutine.
+pub struct ChanWait {
+    pub chan: Arc<crate::chan::ChanInner>,
+    pub waiter: u64,
+    /// The scheduler's operation that wakes the coroutine (`Wake::External`).
+    pub op: u64,
+    pub token: Arc<CancelToken>,
+    /// Whether it waits to send (else to receive).
+    pub sending: bool,
+}
+
 /// What a joiner's scheduler was doing when a task began running inline in its join.
 pub(crate) struct SchedScope {
     floor: u64,
@@ -178,6 +190,8 @@ pub struct Scheduler {
     pub(crate) signaled: Vec<u64>,
     /// The live coroutines of each `CoGroup`, in start order.
     pub(crate) groups: IdMap<Vec<u64>>,
+    /// The channel operations that parked coroutines wait in, by coroutine.
+    pub(crate) chan_waits: IdMap<ChanWait>,
     /// How many times any coroutine was resumed (for tests and tuning).
     pub(crate) resumptions: u64,
     pub(crate) ext: Externals,
@@ -204,6 +218,7 @@ impl Scheduler {
             signals: IdMap::default(),
             joiners: IdMap::default(),
             group_waiters: IdMap::default(),
+            chan_waits: IdMap::default(),
             signaled: Vec::new(),
             groups: IdMap::default(),
             resumptions: 0,
@@ -367,6 +382,17 @@ impl Scheduler {
             self.clock
                 .sleep_interruptible(seconds, &mut |d| ext.wait(d));
         }
+    }
+
+    /// The coroutine `id` waits in a channel operation (it is about to park on the operation).
+    pub fn set_chan_wait(&mut self, id: u64, wait: ChanWait) {
+        self.chan_waits.insert(id, wait);
+    }
+
+    /// The channel operation the coroutine `id` was parked in, which it takes up again when it
+    /// runs.
+    pub fn take_chan_wait(&mut self, id: u64) -> Option<ChanWait> {
+        self.chan_waits.remove(&id)
     }
 
     /// The background operations: the pool, the tokens and the completions.
@@ -699,6 +725,15 @@ impl Scheduler {
     /// A waiter that is cancelled leaves the list of what it waited for: no stale entry
     /// stays behind, and nothing wakes a coroutine that is gone.
     pub(crate) fn forget_waiter(&mut self, id: u64, wake: &Wake) {
+        if let Wake::External(_) = wake {
+            // A coroutine cancelled in a channel operation leaves the channel: no value is handed
+            // to it later, and one that was handed to it already goes to the next receiver.
+            if let Some(w) = self.chan_waits.remove(&id) {
+                w.token.cancel();
+                self.ext.finish(w.op);
+            }
+            return;
+        }
         let (map, key) = match wake {
             Wake::Signal(sig) => (&mut self.signals, *sig),
             Wake::Join(target) | Wake::JoinResult(target) => (&mut self.joiners, *target),

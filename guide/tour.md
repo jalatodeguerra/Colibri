@@ -37,6 +37,7 @@ instead of `async`. It is early and pre-release, and what is planned but not bui
 - [Conditional code and deprecation](#conditional-code-and-deprecation)
 - [Coroutines](#coroutines)
 - [Thread tasks](#thread-tasks)
+- [Channels](#channels)
 - [Bytes and JSON](#bytes-and-json)
 - [Tests](#tests)
 - [Tools](#tools)
@@ -1076,7 +1077,7 @@ when called outside a coroutine started with `go`, `main` included.
 Coroutines never run at the same time, so they share objects without locks, and a coroutine runs
 until it waits. `net`, `http`, `process` and `fs.File` calls pause only the calling coroutine. The
 whole-file functions (`fs.read`, `fs.write`, ...) and `time.sleep` hold the thread until they
-finish. Thread tasks are in the next section; channels, `Shared` and `Mutex` are **planned**.
+finish. Thread tasks and channels are in the next sections; `Shared` and `Mutex` are **planned**.
 
 ## Thread tasks
 
@@ -1176,6 +1177,78 @@ task (`rand`) come from a generator of its own, seeded from the program's seed a
 the task was started (which task started it, and as its how-manyth), so a run repeats whichever
 thread runs the task, nested tasks included. A task also starts with a clock of its own. Thread tasks do not exist in the web build: `task.run`
 is a compile error there.
+
+## Channels
+
+A `Channel[T]` carries values of type `T` from one place to another, and is how tasks and
+coroutines talk to each other. `Channel[T]()` holds any number of values; `Channel[T](capacity: n)`
+holds at most `n` (at least 1), and a `send` that finds it full waits until a `recv` makes room.
+
+| Call | What it does |
+|------|--------------|
+| `ch.send(v)` | copy `v` into the channel; waits while a bounded channel is full; a panic if the channel is closed |
+| `ch.recv() -> T?` | the next value, waiting for one; `none` once the channel is closed and empty |
+| `ch.try_recv() -> T?` | the next value if there is one, `none` otherwise (it never waits) |
+| `ch.close()` | no more values will be sent; what is queued can still be received; closing twice is fine |
+| `for x in ch` | receives until the channel is closed and empty |
+
+```colibri
+fn produce(ch: Channel[int]) {
+    for i in 1..=5 {
+        ch.send(i * i)
+    }
+    ch.close()
+}
+
+fn main() -> Result[()] {
+    let ch = Channel[int](capacity: 2)
+    let t = task.run(fn() => produce(ch))
+    let mut sum = 0
+    for v in ch {
+        sum += v
+    }
+    t.join()?
+    print("sum = {sum}")
+    return ok(())
+}
+```
+
+```output
+sum = 55
+```
+
+The channel itself is not copied when a closure that captures it is sent to a task, or when it is
+sent through another channel: every holder has a handle to the one channel, from any thread, and
+dropping a handle closes nothing, so call `close()` when the senders are done. A value that is sent
+is **copied**, as the closure of a task is (the same rules say what can be copied and what is
+refused), and the receiver gets the copy; a send of something that is more than plain data has to
+be written as a visible copy, `ch.send(x.clone())`, and that clone is the copy (the value is not
+copied a second time unless the program has an `impl Clone` or an `impl Drop` of its own, which then
+run as for any `.clone()`). A `Channel` can be a value of a channel: `Channel[Channel[str]]` is how
+a request carries the channel that its answer comes back on.
+
+Waiting fits where it happens, as `join` does: a coroutine that waits pauses and the others go on,
+the main fiber runs the event loop, and anywhere else the thread blocks. Several receivers are
+served in the order they began to wait, and a value goes straight to a receiver that is waiting. A
+coroutine that is cancelled while it waits does not take a value with it. Things to know:
+
+- A task that waits on a channel (`recv`, or a `send` on a full channel) keeps its worker thread,
+  so give the pool enough threads for the tasks that wait on each other. A `join` is different:
+  the main fiber of a task with no coroutines runs the task it joins itself if nobody has started
+  it, and a coroutine that joins, or a task that has coroutines, waits for it instead and goes on
+  running them, because the task may be waiting for one of them (or for the fiber that is joining).
+  If every thread of the pool is busy then, the pool lends a temporary thread for the task, which
+  ends when it has nothing to run. At most 256 such threads exist at once; a program that nests
+  more joins than that waits for ever.
+- A `recv` that nothing will ever satisfy is not detected: a coroutine that waits on a channel
+  nobody closes keeps the event loop running.
+- The order of values from several senders is not fixed, but the values of one sender arrive in the
+  order it sent them.
+- A `send` on a closed channel panics with `cannot send on a closed channel`, also for a sender
+  that was waiting when the channel was closed.
+- A value that does not fit in the memory limit when it is copied into the channel, or rebuilt out
+  of it, is that limit failing, as for a task. The receive that fails has taken the value out of
+  the channel, so the value is lost with the receiver that could not hold it.
 
 ## Bytes and JSON
 

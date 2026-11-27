@@ -107,10 +107,24 @@ impl Machine {
             if self.core.task_poll(op) == TaskPoll::Finished {
                 return self.task_result(fiber, op, span).map(Some);
             }
-            // Nobody has started it, and a worker is the one waiting: run it here.
-            if let Some(stolen) = self.take_over(op) {
-                self.run_stolen(fiber, stolen, span)?;
-                continue;
+            // The `Vm` was asked to stop (a pool shutting down, a host's watchdog): a join that
+            // waits for a task that cannot end is not left waiting.
+            if self.core.cancelled() {
+                return Err(self.budget_exhausted(fiber, span));
+            }
+            // Nobody has started it, and a worker is the one waiting: run it here. Only the main
+            // fiber of an isolate with no coroutines does: the inline task would set the
+            // coroutines aside until it ends, and so it would the main fiber under a coroutine
+            // that joins, and one of them may be what the task waits for. Any other joiner waits
+            // (parked, or driving its coroutines) and asks the pool for a thread for the task
+            // if every one of the pool's is busy.
+            if fiber.state.coro.is_none() && self.core.sched.coroutine_count() == 0 {
+                if let Some(stolen) = self.take_over(op) {
+                    self.run_stolen(fiber, stolen, span)?;
+                    continue;
+                }
+            } else {
+                self.make_room(op);
             }
             let state = &fiber.state;
             let quiet = state.host_depth == 0
@@ -119,8 +133,13 @@ impl Machine {
                 && !self.core.sched.is_shutting_down();
             if state.coro.is_none() {
                 if quiet && !self.core.sched.is_busy() {
-                    let driven = self.drive_main(fiber, span, "join", None, &mut |it| {
-                        it.core.task_poll(op) == TaskPoll::Finished
+                    // With a flag that can stop it, the loop looks at the flag now and then.
+                    let deadline = self
+                        .core
+                        .has_cancel_flag()
+                        .then(|| self.core.sched.clock_now() + crate::chan::DRIVE_POLL);
+                    let driven = self.drive_main(fiber, span, "join", deadline, &mut |it| {
+                        it.core.task_poll(op) == TaskPoll::Finished || it.core.cancelled()
                     });
                     self.settle_refusal(fiber, span, driven)?;
                 } else {
@@ -140,8 +159,16 @@ impl Machine {
     /// Blocks the thread until the task `op` has finished: the one place a wait cannot let other
     /// code run (a `Drop` hook, a host callback, native code that calls user code).
     fn block_on_task(&mut self, op: u64) {
-        while self.core.task_poll(op) == TaskPoll::Running {
+        while self.core.task_poll(op) == TaskPoll::Running && !self.core.cancelled() {
+            self.make_room(op);
             self.core.sched.ext().wait(Duration::from_millis(50));
+        }
+    }
+
+    /// Asks the pool for a thread for the queued task `op`, if none is free.
+    fn make_room(&mut self, op: u64) {
+        if let (Some(key), Some(spawner)) = (self.core.task_key(op), self.core.task_spawner()) {
+            spawner.make_room(key);
         }
     }
 

@@ -1,0 +1,34 @@
+// workers: 4
+// Several tasks send to one channel; the order between them is not fixed, so the main fiber sorts
+// what it received. Each task's own values keep their order.
+fn produce(ch: Channel[int], who: int) {
+    for i in 0..5 {
+        ch.send(who * 100 + i)
+    }
+}
+
+fn main() -> Result[()] {
+    let ch = Channel[int](capacity: 3)
+    let a = task.run(fn() => produce(ch, 1))
+    let b = task.run(fn() => produce(ch, 2))
+    let c = task.run(fn() => produce(ch, 3))
+    let mut all: List[int] = []
+    for _ in 0..15 {
+        all.push(ch.recv().expect("a value"))
+    }
+    a.join()?
+    b.join()?
+    c.join()?
+    for who in 1..=3 {
+        let mine = all.filter(fn(v) => v / 100 == who)
+        print("from {who}: {mine}")
+    }
+    all.sort()
+    print("{all.len()} values, first {all[0]}, last {all[14]}")
+    return ok(())
+}
+
+// expect: from 1: [100, 101, 102, 103, 104]
+// expect: from 2: [200, 201, 202, 203, 204]
+// expect: from 3: [300, 301, 302, 303, 304]
+// expect: 15 values, first 100, last 304

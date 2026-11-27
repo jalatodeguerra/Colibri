@@ -1,0 +1,18 @@
+// `close` is idempotent. Values sent before it are still received; after them `recv` gives `none`
+// and `try_recv` gives `none` too.
+fn main() {
+    let ch = Channel[str](capacity: 4)
+    ch.send("a")
+    ch.send("b")
+    ch.close()
+    ch.close()
+    print("first {ch.recv()}")
+    print("second {ch.try_recv()}")
+    print("third {ch.recv()}")
+    print("fourth {ch.try_recv()}")
+}
+
+// expect: first some("a")
+// expect: second some("b")
+// expect: third none
+// expect: fourth none

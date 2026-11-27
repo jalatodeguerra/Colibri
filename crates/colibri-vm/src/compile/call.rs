@@ -11,7 +11,7 @@ use colibri_syntax::Span;
 use super::expr::writes_locals;
 use super::{FnCompiler, Item, Kind};
 use crate::bytecode::{
-    AnchorKind, GoSite, IfaceSite, JoinKind, Op, PauseKind, PlaceSite, Reg, Site,
+    AnchorKind, ChanKind, GoSite, IfaceSite, JoinKind, Op, PauseKind, PlaceSite, Reg, Site,
 };
 
 /// Registers `base..` that a call's callee sees as its first locals.
@@ -644,6 +644,41 @@ impl FnCompiler<'_> {
                     self.free(d, span);
                 }
             }
+            // `send` and `recv` of a channel can make the coroutine wait (or, on the main fiber,
+            // run the event loop), so they are an instruction of their own that runs again when
+            // the coroutine is resumed. `ch.send(x.clone())` leaves the clone out: the copy the
+            // channel makes is the same walk (decided at run time, see `chan_send`).
+            Builtin::ChannelSend | Builtin::ChannelRecv
+                if args.len() == if b == Builtin::ChannelSend { 2 } else { 1 } =>
+            {
+                let d = match dst {
+                    Some(d) => d,
+                    None => self.alloc_for(&e.ty),
+                };
+                let (kind, window): (ChanKind, Vec<&Expr>) = match (b, args) {
+                    (Builtin::ChannelSend, [ch, sent]) => match clone_operand(sent) {
+                        Some(inner) => (ChanKind::SendClone, vec![*ch, inner]),
+                        None => (ChanKind::Send, args.to_vec()),
+                    },
+                    _ => (ChanKind::Recv, args.to_vec()),
+                };
+                let w = self.eval_window(0, &window, false);
+                self.emit(
+                    Op::Chan {
+                        d,
+                        base: w.base,
+                        kind,
+                    },
+                    span,
+                );
+                // Other code runs while it waits, and what that drops may run a `Drop` hook.
+                self.releases += 1;
+                self.free_window(w, span);
+                if dst.is_none() {
+                    self.own(d);
+                    self.free(d, span);
+                }
+            }
             _ => {
                 let Ok(argc) = u16::try_from(args.len()) else {
                     return self.fail("a call with too many arguments");
@@ -889,5 +924,23 @@ impl FnCompiler<'_> {
                 self.unsupported(&what, span);
             }
         }
+    }
+}
+
+/// The `x` of a sent `x.clone()` (the built-in deep copy; a user `impl Clone` is a call of its own,
+/// which this is not).
+fn clone_operand(e: &Expr) -> Option<&Expr> {
+    let ExprKind::Call(call) = &e.kind else {
+        return None;
+    };
+    if !matches!(
+        call.callee,
+        Callee::Intrinsic(Intrinsic::Builtin(Builtin::Clone))
+    ) {
+        return None;
+    }
+    match call.args.as_slice() {
+        [Arg::Value(inner)] => Some(inner),
+        _ => None,
     }
 }

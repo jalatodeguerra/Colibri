@@ -208,6 +208,10 @@ pub trait Sched: Engine {
         s.signals.clear();
         s.joiners.clear();
         s.group_waiters.clear();
+        // (Every parked coroutine was cancelled above, which took its wait out already.)
+        for (_, w) in s.chan_waits.drain() {
+            w.token.cancel();
+        }
         s.signaled.clear();
         s.groups.clear();
         s.ext.clear_completed();

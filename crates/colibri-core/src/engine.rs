@@ -189,4 +189,26 @@ pub trait Engine: Sized {
         recv: &Value,
         span: Span,
     ) -> Eval;
+
+    /// `try_recv`, `close` and `iter` of a `Channel` (`args[0]` is the channel). A value is copied
+    /// to and from its portable form on a walk stack, which only an engine can map. `send` and
+    /// `recv` wait, so they are instructions of the engine's own, and reach here only when the
+    /// caller is not one (they block).
+    fn channel_builtin(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        op: colibri_check::hir::Builtin,
+        args: &mut [Value],
+        span: Span,
+    ) -> Eval;
+
+    /// The next value of a channel's iterator (`for x in ch` outside the instruction that waits
+    /// properly, `ch.iter().enumerate()`): `None` when the channel is closed and empty. It waits
+    /// by blocking this thread where it cannot pause.
+    fn channel_next(
+        &mut self,
+        fiber: &mut Self::Fiber,
+        channel: &Value,
+        span: Span,
+    ) -> Eval<Option<Value>>;
 }

@@ -51,6 +51,8 @@ pub struct Core {
     pub host: HostSide,
     /// The thread tasks this engine started that still have a handle, and the pool they run on.
     pub tasks: crate::taskrun::TaskTable,
+    /// The channels this engine holds a handle of (DESIGN §14.1).
+    pub chans: crate::chan::ChanTable,
     /// The registry of the leak detector, when it is on (ARCHITECTURE §18).
     pub leaks: Option<Box<LeakTracker>>,
     /// The coroutine scheduler (ARCHITECTURE §16). Last, so it drops last: dropping it cancels
@@ -100,6 +102,7 @@ impl Core {
             closure_maps: Vec::new(),
             host: HostSide::default(),
             tasks: crate::taskrun::TaskTable::default(),
+            chans: crate::chan::ChanTable::default(),
             leaks: None,
             sched: Scheduler::new(),
             none: Value::option(None),

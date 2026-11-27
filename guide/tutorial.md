@@ -1284,6 +1284,37 @@ Return the value instead. The [language tour](tour.md#thread-tasks) says what ca
 task may read from the rest of the program, and what happens when a task is dropped without being
 joined.
 
+Tasks and coroutines talk through a *channel*. A task sends values into it, and whoever holds the
+channel receives them; `for x in ch` reads until the channel is closed and empty, so the sender
+calls `close()` when it is done:
+
+```colibri
+fn main() -> Result[()] {
+    let ch = Channel[int]()
+    let t = task.run(fn() {
+        for i in 1..=3 {
+            ch.send(i * 10)
+        }
+        ch.close()
+    })
+    for v in ch {
+        print(v)
+    }
+    t.join()?
+    return ok(())
+}
+```
+
+```output
+10
+20
+30
+```
+
+Each value is copied on its way in, like what a task captures. `Channel[int](capacity: 2)` makes the
+sender wait when two values are queued and nobody has received them, which keeps a fast producer from
+running ahead of a slow consumer. The [tour](tour.md#channels) has the rest.
+
 ## 13. A small HTTP service
 
 The standard library has an HTTP server, `httpd`. It is written in Colibri on top of the `net`

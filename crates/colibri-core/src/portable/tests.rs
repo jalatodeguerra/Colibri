@@ -1067,6 +1067,9 @@ fn a_registered_handle_crosses_as_it_is() {
         fn materialise(&self, _core: &mut Core) -> Value {
             Value::Int(self.0)
         }
+        fn address(&self) -> usize {
+            self as *const Pool as usize
+        }
     }
     struct Registry(Arc<Pool>);
     impl SendEnv for Registry {
@@ -1081,9 +1084,15 @@ fn a_registered_handle_crosses_as_it_is() {
     let env = Registry(Arc::clone(&pool));
     let root = Value::tuple(vec![host(CONN), host(CONN), Value::Int(1)]);
     let p = to_portable(&root, &env, stack()).unwrap();
-    assert!(matches!(&p, Portable::Tuple { items, .. } if matches!(items[0], Portable::Handle(_))));
+    // The first visit carries the handle; the second reaches the same thing, so it names the first
+    // (one handle on the receiver, S4).
+    assert!(matches!(
+        &p,
+        Portable::Tuple { items, .. }
+            if matches!(items[0], Portable::Handle { .. }) && matches!(items[1], Portable::Ref(_))
+    ));
     // The handle is the same `Arc`, not a copy of what it names.
-    assert_eq!(Arc::strong_count(&pool), 4);
+    assert_eq!(Arc::strong_count(&pool), 3);
     let mut c = core();
     let Value::Tuple(out) = from_portable(p, &mut c, stack()).unwrap() else {
         panic!()
@@ -1718,4 +1727,86 @@ fn whatever_the_sender_accepts_the_receiver_takes_under_the_same_budget() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn one_channel_reached_twice_in_a_value_is_one_handle_on_the_receiver() {
+    // The sender holds one channel by two handle objects and one of them twice; the receiver
+    // gets one object for the channel (S4), however it was reached.
+    let mut sender = core();
+    let inner = crate::chan::ChanInner::new(None);
+    let a = sender.channel_handle(Arc::clone(&inner));
+    let b = sender.channel_handle(Arc::clone(&inner));
+    let root = Value::tuple(vec![a.clone(), b, a]);
+    let p = to_portable(&root, &sender, stack()).unwrap();
+    let Portable::Tuple { items, .. } = &p else {
+        panic!("{p:?}")
+    };
+    assert!(matches!(items[0], Portable::Handle { .. }));
+    assert!(matches!(items[1], Portable::Ref(_)));
+    assert!(matches!(items[2], Portable::Ref(_)));
+    let mut receiver = core();
+    let Value::Tuple(out) = from_portable(p, &mut receiver, stack()).unwrap() else {
+        panic!()
+    };
+    {
+        let (Value::Obj(x), Value::Obj(y), Value::Obj(z)) = (&out[0], &out[1], &out[2]) else {
+            panic!()
+        };
+        assert!(Rc::ptr_eq(x, y) && Rc::ptr_eq(y, z));
+    }
+    assert_eq!(receiver.chan_count(), 1);
+    dispose(vec![root, Value::Tuple(out)]);
+}
+
+#[test]
+fn two_kinds_of_handle_at_one_address_are_not_one_handle() {
+    #[derive(Debug)]
+    struct A;
+    #[derive(Debug)]
+    struct B;
+    impl CrossesAsIs for A {
+        fn materialise(&self, _core: &mut Core) -> Value {
+            Value::Int(1)
+        }
+        fn address(&self) -> usize {
+            7
+        }
+    }
+    impl CrossesAsIs for B {
+        fn materialise(&self, _core: &mut Core) -> Value {
+            Value::Int(2)
+        }
+        fn address(&self) -> usize {
+            7
+        }
+    }
+    struct Both;
+    impl SendEnv for Both {
+        fn crosses_as_is(&self, v: &Value) -> Option<Arc<dyn CrossesAsIs>> {
+            match v {
+                Value::Host(r) if r.ty == CONN => Some(Arc::new(A)),
+                Value::Host(r) if r.ty == MSG => Some(Arc::new(B)),
+                _ => None,
+            }
+        }
+    }
+    let root = Value::tuple(vec![host(CONN), host(MSG), host(CONN)]);
+    let p = to_portable(&root, &Both, stack()).unwrap();
+    let Portable::Tuple { items, .. } = &p else {
+        panic!("{p:?}")
+    };
+    assert!(matches!(items[0], Portable::Handle { .. }));
+    assert!(matches!(items[1], Portable::Handle { .. }));
+    // The third is a second visit of the first kind at that address: `A` made afresh by the
+    // environment is another `Arc`, but the same kind and address.
+    assert!(matches!(items[2], Portable::Ref(_)));
+    let mut c = core();
+    let Value::Tuple(out) = from_portable(p, &mut c, stack()).unwrap() else {
+        panic!()
+    };
+    assert!(matches!(
+        (&out[0], &out[1], &out[2]),
+        (Value::Int(1), Value::Int(2), Value::Int(1))
+    ));
 }

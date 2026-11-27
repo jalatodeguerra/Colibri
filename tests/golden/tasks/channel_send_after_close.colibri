@@ -1,0 +1,12 @@
+// A `send` on a closed channel is a bug in the program and stops it.
+fn main() {
+    let ch = Channel[int]()
+    ch.send(1)
+    ch.close()
+    print("closed")
+    ch.send(2)
+    print("not reached")
+}
+
+// expect: closed
+// panic: cannot send on a closed channel

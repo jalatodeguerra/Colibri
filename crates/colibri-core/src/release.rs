@@ -104,6 +104,7 @@ impl Core {
             || obj.ty() == colibri_check::types::COGROUP_TYPE
             || obj.ty() == colibri_check::types::SIGNAL_TYPE
             || obj.ty() == colibri_check::types::TASK_TYPE
+            || obj.ty() == colibri_check::types::CHANNEL_TYPE
             || obj.ty() == colibri_check::types::STR_BUILDER_TYPE
         {
             return;
@@ -203,6 +204,10 @@ pub trait Release: Engine {
                 } else if let Some(op) = crate::taskrun::task_op_of(&rc) {
                     // The handle of a thread task dies: the task is detached.
                     self.core_mut().task_died(op);
+                } else if let Some(id) = crate::chan::chan_id_of(&rc) {
+                    // A channel handle dies: the channel lives on while another handle holds it,
+                    // and a channel is closed only by `close()`.
+                    self.core_mut().chan_died(id);
                 }
                 // The `Drop` hook runs first; if it stores the object somewhere, the object
                 // lives on and dies (without a second hook) when that reference does.
@@ -516,6 +521,18 @@ mod tests {
         ) -> Eval {
             unreachable!("no task runs in these tests")
         }
+        fn channel_builtin(
+            &mut self,
+            _: &mut FiberState,
+            _: colibri_check::hir::Builtin,
+            _: &mut [Value],
+            _: Span,
+        ) -> Eval {
+            unreachable!("no channel is used in these tests")
+        }
+        fn channel_next(&mut self, _: &mut FiberState, _: &Value, _: Span) -> Eval<Option<Value>> {
+            unreachable!("no channel is used in these tests")
+        }
     }
 
     use crate::engine::Resumed;
@@ -616,6 +633,25 @@ mod tests {
         assert!(engine.core.take_trace().is_empty());
         engine.release(kept);
         assert_eq!(engine.core.take_trace(), ["A"]);
+    }
+
+    /// The last reference to a channel handle lets go of the channel's entry in the table, and
+    /// not before; the channel itself lives on while another handle holds it.
+    #[test]
+    fn the_last_reference_to_a_channel_handle_lets_go_of_its_table_entry() {
+        let mut engine = Bare::new();
+        let inner = crate::chan::ChanInner::new(None);
+        let first = engine.core.channel_handle(std::sync::Arc::clone(&inner));
+        let second = engine.core.channel_handle(std::sync::Arc::clone(&inner));
+        assert_eq!(engine.core.chan_count(), 2);
+        engine.release(first.clone());
+        assert_eq!(engine.core.chan_count(), 2);
+        engine.release(first);
+        assert_eq!(engine.core.chan_count(), 1);
+        assert_eq!(std::sync::Arc::strong_count(&inner), 2);
+        engine.release(second);
+        assert_eq!(engine.core.chan_count(), 0);
+        assert_eq!(std::sync::Arc::strong_count(&inner), 1);
     }
 
     #[test]

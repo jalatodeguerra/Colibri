@@ -19,6 +19,7 @@ pub mod bytecode;
 mod calls;
 #[allow(unsafe_code)]
 mod cffi;
+mod chan;
 mod compile;
 mod coro;
 #[doc(hidden)]

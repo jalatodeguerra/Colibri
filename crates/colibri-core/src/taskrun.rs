@@ -154,6 +154,11 @@ pub trait TaskSpawner {
     /// deadlock on a task that joins another); the main `Vm` has nothing to take over.
     fn steal(&self, key: u64) -> Option<StolenTask>;
 
+    /// A joiner that waits for the queued task `key` instead of running it (it has coroutines of
+    /// its own to keep running) asks for a thread to take it if none is free. A pool thread that
+    /// does so gets a temporary one.
+    fn make_room(&self, _key: u64) {}
+
     /// The thread begins running the task `serial` (inline in a join, or as a job): what it
     /// starts is numbered from `serial`. The result puts back what was there.
     fn enter_task(&self, _serial: u64) -> Box<dyn FnOnce()> {

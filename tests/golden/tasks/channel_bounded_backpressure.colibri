@@ -1,0 +1,28 @@
+// A channel with a capacity holds that many values; the next `send` waits until a `recv` makes
+// room. The consumer is slow by construction (it receives, then the producer goes on), and the
+// order of values is the order of sends whatever the timing.
+fn produce(ch: Channel[int]) {
+    for i in 0..20 {
+        ch.send(i)
+    }
+    ch.close()
+}
+
+fn main() -> Result[()] {
+    let ch = Channel[int](capacity: 2)
+    let t = task.run(fn() => produce(ch))
+    let mut seen: List[int] = []
+    for v in ch {
+        seen.push(v)
+    }
+    t.join()?
+    print("{seen}")
+    print("in order: {seen == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]}")
+    // Nothing is queued beyond the capacity: try_recv on a drained, closed channel is none.
+    print("empty: {ch.try_recv().is_none()}")
+    return ok(())
+}
+
+// expect: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+// expect: in order: true
+// expect: empty: true
