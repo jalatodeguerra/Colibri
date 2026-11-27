@@ -1,0 +1,47 @@
+// A statement whose operator runs a user's `impl` has an effect, and `/` and `%` can panic, so
+// none of these warn.
+struct P { x: int }
+
+impl Eq for P {
+    fn eq(self, other: P) -> bool {
+        print("eq ran")
+        return self.x == other.x
+    }
+}
+
+struct M { c: int }
+
+impl Add[M, int] for M {
+    fn add(self, other: M) -> int {
+        print("add ran")
+        return 1
+    }
+}
+
+struct N { c: int }
+
+impl Neg for N {
+    fn neg(self) -> N {
+        print("neg ran")
+        return self
+    }
+}
+
+fn main() {
+    let p = P { x: 1 }
+    let q = P { x: 2 }
+    p == q
+    let m = M { c: 1 }
+    m + m
+    let n = N { c: 1 }
+    -n
+    let a = 7
+    let z = 1
+    a / z
+    a % z
+    print("done")
+}
+// expect: eq ran
+// expect: add ran
+// expect: neg ran
+// expect: done
