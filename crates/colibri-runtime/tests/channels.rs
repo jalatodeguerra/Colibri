@@ -411,11 +411,15 @@ fn dropping_the_vm_while_a_worker_waits_on_a_channel_nobody_closes_ends() {
             r#"
 fn main() {
     let ch = Channel[int]()
+    let ready = Channel[int]()
     let t = task.run(fn() {
+        ready.send(1)
         for v in ch {
             print("never {v}")
         }
     })
+    // The task is on its way to wait for a value that never comes.
+    ready.recv()
     print("main done {t.done()}")
 }
 "#,
