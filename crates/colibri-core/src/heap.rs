@@ -937,7 +937,7 @@ mod tests {
         list.freeze();
         assert!(list.guard().is_frozen());
         let items = list.snapshot();
-        let rejected = list.push(Value::Int(9)).err().expect("frozen");
+        let rejected = list.push(Value::Int(9)).expect_err("frozen");
         assert_eq!(
             (rejected.violation.0.as_str(), rejected.args),
             (FROZEN_MESSAGE, Value::Int(9))
@@ -958,7 +958,7 @@ mod tests {
             list.remove(0).unwrap_err(),
             ListError::Guard(Violation(FROZEN_MESSAGE.into()))
         );
-        let rejected = list.extend(ints(&[1])).err().expect("frozen");
+        let rejected = list.extend(ints(&[1])).expect_err("frozen");
         assert_eq!(rejected.violation.0, FROZEN_MESSAGE);
         let (err, _) = list.assign(0, Value::Int(9)).unwrap_err();
         assert_eq!(err, ListError::Guard(Violation(FROZEN_MESSAGE.into())));
@@ -998,7 +998,7 @@ mod tests {
         let set = SetObj::new(OrderedMap::new());
         assert!(set.add(Value::Int(1)).is_ok());
         set.freeze();
-        let rejected = set.add(Value::Int(2)).err().expect("frozen");
+        let rejected = set.add(Value::Int(2)).expect_err("frozen");
         assert_eq!(rejected.violation.0, FROZEN_MESSAGE);
         frozen_error(set.remove(&Value::Int(1)));
         frozen_error(set.clear());

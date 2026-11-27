@@ -679,29 +679,46 @@ mod tests {
     fn the_last_handle_to_a_shared_frees_the_copy_and_not_before() {
         use crate::portable::{StackGuard, Unnamed, from_portable_frozen, to_portable};
         let mut engine = Bare::new();
-        let root = to_portable(&Value::list(vec![Value::Int(1)]), &Unnamed, StackGuard::here(1 << 20))
-            .unwrap();
+        let root = to_portable(
+            &Value::list(vec![Value::Int(1)]),
+            &Unnamed,
+            StackGuard::here(1 << 20),
+        )
+        .unwrap();
         let inner = crate::shared::SharedInner::new(root);
         let first = engine.core.shared_handle(std::sync::Arc::clone(&inner));
         let second = engine.core.shared_handle(std::sync::Arc::clone(&inner));
         let copy = from_portable_frozen(inner.root(), &mut engine.core, StackGuard::here(1 << 20))
             .unwrap();
         engine.core.shared_cache(&inner, copy);
-        assert_eq!((engine.core.shared_count(), engine.core.shared_copies()), (2, 1));
+        assert_eq!(
+            (engine.core.shared_count(), engine.core.shared_copies()),
+            (2, 1)
+        );
         // Another isolate holds the graph too: the copy stays after both of this one's handles.
         let theirs = std::sync::Arc::clone(&inner);
         drop(inner);
         engine.release(first);
-        assert_eq!((engine.core.shared_count(), engine.core.shared_copies()), (1, 1));
+        assert_eq!(
+            (engine.core.shared_count(), engine.core.shared_copies()),
+            (1, 1)
+        );
         engine.release(second);
-        assert_eq!((engine.core.shared_count(), engine.core.shared_copies()), (0, 1));
+        assert_eq!(
+            (engine.core.shared_count(), engine.core.shared_copies()),
+            (0, 1)
+        );
         // The other isolate's handle dies: whoever looks next finds the graph gone.
         drop(theirs);
         engine.free_dead_copies_for_test();
         assert_eq!(engine.core.shared_copies(), 0);
         // With no other holder, the last handle's death frees the copy by itself.
-        let root = to_portable(&Value::list(vec![Value::Int(2)]), &Unnamed, StackGuard::here(1 << 20))
-            .unwrap();
+        let root = to_portable(
+            &Value::list(vec![Value::Int(2)]),
+            &Unnamed,
+            StackGuard::here(1 << 20),
+        )
+        .unwrap();
         let alone = crate::shared::SharedInner::new(root);
         let handle = engine.core.shared_handle(std::sync::Arc::clone(&alone));
         let copy = from_portable_frozen(alone.root(), &mut engine.core, StackGuard::here(1 << 20))
@@ -710,7 +727,10 @@ mod tests {
         drop(alone);
         assert_eq!(engine.core.shared_copies(), 1);
         engine.release(handle);
-        assert_eq!((engine.core.shared_count(), engine.core.shared_copies()), (0, 0));
+        assert_eq!(
+            (engine.core.shared_count(), engine.core.shared_copies()),
+            (0, 0)
+        );
     }
 
     /// A string builder of a frozen copy can be asked for its text any number of times without
@@ -725,26 +745,39 @@ mod tests {
             ObjFields::from(vec![Value::List(Rc::clone(&chunks)), Value::Int(2)]),
         );
         let args = [Value::Obj(Rc::clone(&builder))];
-        let (mut fiber, span) = (FiberState::default(), Span::new(colibri_syntax::FileId(0), 0, 0));
+        let (mut fiber, span) = (
+            FiberState::default(),
+            Span::new(colibri_syntax::FileId(0), 0, 0),
+        );
         let to_str = colibri_check::hir::Builtin::StrBuilderToStr;
         // An ordinary builder joins its pieces into one the first time it is asked.
-        let text = engine.str_builder_op(&mut fiber, to_str, &args, span).unwrap();
+        let text = engine
+            .str_builder_op(&mut fiber, to_str, &args, span)
+            .unwrap();
         assert_eq!(text, Value::str("ab"));
         assert_eq!(chunks.len(), 1);
         // A frozen one does not.
         let chunks = crate::heap::ListObj::new(vec![Value::str("a"), Value::str("b")]);
-        builder.set_field(0, Value::List(Rc::clone(&chunks))).unwrap();
+        builder
+            .set_field(0, Value::List(Rc::clone(&chunks)))
+            .unwrap();
         builder.freeze();
         chunks.freeze();
         for _ in 0..3 {
-            let text = engine.str_builder_op(&mut fiber, to_str, &args, span).unwrap();
+            let text = engine
+                .str_builder_op(&mut fiber, to_str, &args, span)
+                .unwrap();
             assert_eq!(text, Value::str("ab"));
             assert_eq!(chunks.len(), 2);
         }
         // And it cannot be added to.
         let push = colibri_check::hir::Builtin::StrBuilderPush;
         let with = [args[0].clone(), Value::str("c")];
-        assert!(engine.str_builder_op(&mut fiber, push, &with, span).is_err());
+        assert!(
+            engine
+                .str_builder_op(&mut fiber, push, &with, span)
+                .is_err()
+        );
         assert_eq!(chunks.len(), 2);
         drop(builder.take_fields());
         drop(chunks.take_all());
