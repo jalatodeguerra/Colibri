@@ -433,12 +433,10 @@ mod tests {
         };
         let worker = WorkerStd::from_config(&main).with_clock(|| Box::new(ManualClock::new(5.0)));
         let first = worker.config();
-        for config in [&first] {
-            assert_eq!(config.args, ["a"]);
-            assert!(matches!(&config.env, EnvSource::Fixed(m) if m["K"] == "v"));
-            assert_eq!(config.temp_dir, Some(PathBuf::from("/tmp/t")));
-            assert_eq!(config.local_offset, Some(3600));
-        }
+        assert_eq!(first.args, ["a"]);
+        assert!(matches!(&first.env, EnvSource::Fixed(m) if m["K"] == "v"));
+        assert_eq!(first.temp_dir, Some(PathBuf::from("/tmp/t")));
+        assert_eq!(first.local_offset, Some(3600));
         // The worker's clock is the one the host chose.
         let mut clock = first.clock;
         assert_eq!(clock.unix_seconds(), 5.0);
