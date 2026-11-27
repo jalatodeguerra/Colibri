@@ -578,6 +578,24 @@ fn a_missing_file_is_an_err_with_the_path_and_the_reason() {
     );
 }
 
+#[test]
+fn read_line_strips_one_line_ending_and_no_more() {
+    let (mut vm, out) = vm_with(
+        StdConfig {
+            stdin: Some(Box::new(Cursor::new("a\r\r\nb\r\n\n\r\nlast\r"))),
+            ..StdConfig::default()
+        },
+        &[colibri::Cap::Os],
+    );
+    run(
+        &mut vm,
+        "import io\nfn main() {\n    for _ in 0..5 {\n        let line = io.read_line() or |e| { panic(e.message()) }\n        match line {\n            some(l) => print(l.len())\n            none => print(\"none\")\n        }\n    }\n}\n",
+    )
+    .unwrap();
+    // "a\r" (one \r is part of the line), "b", "", "" (a blank "\r\n" line), "last\r" (no \n).
+    assert_eq!(out.contents(), "2\n1\n0\n0\n5\n");
+}
+
 // ---- args, process and datetime under other configurations ----
 
 fn vm_with(config: StdConfig, caps: &[colibri::Cap]) -> (colibri::Vm, colibri::SharedBuffer) {
