@@ -505,8 +505,9 @@ pub(crate) trait SchedInternal: Engine {
         for i in 0..count {
             let s = &mut self.core_mut().sched;
             let e = &s.entries[i];
-            // (`frame` also moves in a nested tick: what it visited lies before this index.)
-            if e.state != State::Suspended || e.ticked == s.frame || e.id < s.floor {
+            // (`frame` also moves in a nested tick, so the guard compares with this tick's own: a
+            // coroutine resumed from the signalled queue may lie after this index.)
+            if e.state != State::Suspended || e.ticked == frame || e.id < s.floor {
                 continue;
             }
             let due = match &e.wake {

@@ -722,3 +722,79 @@ fn main() {
         }
     }
 }
+
+#[test]
+fn a_coroutine_runs_once_in_a_tick_whatever_ticks_a_task_run_inline_makes() {
+    // `sco` is resumed from the signalled queue at the start of a tick and parks with
+    // `wait(0.0)`; `w`, resumed by the same tick before it, joins a task that runs inline and
+    // ticks on its own (the frame moves). `sco` must not run a second time in that tick: the
+    // ticker has gone round twice between its two records.
+    let source = r#"
+fn work() -> int {
+    wait(0.01)
+    return 5
+}
+
+fn b() -> int {
+    let c = go work()
+    return c.join()
+}
+
+class C {
+    seen: int
+    s1: int
+    s2: int
+}
+
+fn ticker(c: C) {
+    for i in 0..6 {
+        c.seen += 1
+        wait(0.0)
+    }
+}
+
+fn w(c: C) {
+    wait(0.0)
+    let t = task.run(b)
+    let mut k = 0
+    for i in 0..300000 {
+        k += 1
+    }
+    let v = t.join().expect("b")
+    print("w {v}")
+}
+
+fn sco(sig: Signal, c: C) {
+    wait_for(sig)
+    c.s1 = c.seen
+    wait(0.0)
+    c.s2 = c.seen
+}
+
+fn outer() -> str {
+    let c = C { seen: 0, s1: 0, s2: 0 }
+    let sig = Signal()
+    let tk = go ticker(c)
+    let ww = go w(c)
+    let ss = go sco(sig, c)
+    sig.emit()
+    ww.join()
+    ss.join()
+    tk.join()
+    return "gap={c.s2 - c.s1}"
+}
+
+fn main() {
+    print("outer {task.run(outer).join()}")
+}
+"#;
+    for workers in [1, 3] {
+        for _ in 0..3 {
+            assert_eq!(
+                run_on(workers, None, source),
+                "w 5\nouter ok(\"gap=2\")\n",
+                "{workers} workers"
+            );
+        }
+    }
+}
