@@ -228,14 +228,20 @@ pub struct EnumVal {
 }
 
 impl Value {
-    /// `clone`, with the scalars copied inline: a register copy of an integer or a float is the
-    /// commonest clone there is, and the derived one is a call that dispatches on the variant.
+    /// `clone`, with every plain scalar (no reference count, nothing to drop) copied inline: a
+    /// register copy of an integer or a float is the commonest clone there is, and the derived
+    /// one is a call that dispatches on the variant.
     #[inline(always)]
     pub fn dup(&self) -> Value {
         match self {
             Value::Int(i) => Value::Int(*i),
             Value::Float(f) => Value::Float(*f),
             Value::Bool(b) => Value::Bool(*b),
+            Value::Unit => Value::Unit,
+            Value::U64(n) => Value::U64(*n),
+            Value::Ptr(p) => Value::Ptr(*p),
+            Value::F32(f) => Value::F32(*f),
+            Value::Char(c) => Value::Char(*c),
             other => other.clone(),
         }
     }
