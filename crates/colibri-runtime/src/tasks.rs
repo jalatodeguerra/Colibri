@@ -596,8 +596,8 @@ impl TaskSpawner for Launch {
         completer: Completer<TaskOutcome>,
     ) -> Result<u64, TaskFailure> {
         let Some((image, hash)) = self.spec() else {
-            return Err(TaskFailure::Internal(
-                "no program is loaded that a thread task could run".to_string(),
+            return Err(TaskFailure::CannotStart(
+                "no program image is loaded that a worker could build its isolate from (a thread task needs a program loaded to run, not a REPL session)".to_string(),
             ));
         };
         let n = self.started.get() + 1;
