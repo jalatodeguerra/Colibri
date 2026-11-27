@@ -369,6 +369,15 @@ impl Shared {
     /// ends). `caller_waits` says that the caller is a pool thread about to sleep, which is not
     /// counted yet. A pool that is merely busy therefore never grows. At the limit of temporary
     /// threads the waiter is told, to panic with it, instead of waiting for ever.
+    /// A `Shared` lost its last handle: idle workers sweep their copies. The queue lock is taken
+    /// between the bump and the notify, so a worker that has read the old count under it is
+    /// already waiting (or has not yet read, and sees the new one): the wakeup is never lost.
+    fn announce_sweep(&self) {
+        self.sweep.fetch_add(1, Ordering::SeqCst);
+        drop(lock(&self.queue));
+        self.wake.notify_all();
+    }
+
     fn make_room(self: &Arc<Self>, caller_waits: bool) -> Result<(), String> {
         {
             let queue = lock(&self.queue);
@@ -733,15 +742,21 @@ impl TaskSpawner for Launch {
         None
     }
 
+    // Main's wait is only a latency gain: every worker that waits asks for room itself on each
+    // of its 50 ms polls (with itself counted), which is the stronger check. Asking here too
+    // saves the main thread up to one poll. `try_borrow`: the call must never panic.
     fn make_room(&self) -> Result<(), String> {
-        let shared = Arc::clone(&self.pool.borrow().shared);
+        let Ok(pool) = self.pool.try_borrow() else {
+            return Ok(());
+        };
+        let shared = Arc::clone(&pool.shared);
+        drop(pool);
         shared.make_room(false)
     }
 
     fn shared_gone(&self) {
         if let Ok(pool) = self.pool.try_borrow() {
-            pool.shared.sweep.fetch_add(1, Ordering::SeqCst);
-            pool.shared.wake.notify_all();
+            pool.shared.announce_sweep();
         }
     }
 }
@@ -815,8 +830,7 @@ impl TaskSpawner for WorkerLaunch {
     }
 
     fn shared_gone(&self) {
-        self.shared.sweep.fetch_add(1, Ordering::SeqCst);
-        self.shared.wake.notify_all();
+        self.shared.announce_sweep();
     }
 
     fn waiting(&self, on: bool) {

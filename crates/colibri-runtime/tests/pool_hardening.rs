@@ -235,6 +235,43 @@ fn main() {
 }
 
 #[test]
+fn a_deep_chain_of_failed_tasks_is_one_headline_with_a_count() {
+    // Each level panics because the task below it did. The wrapper of a task is not written out
+    // at every level: the message says how many there are, once, and keeps the innermost cause.
+    let source = r#"
+fn hold(gate: Channel[int]) {
+    gate.recv()
+}
+
+fn level(n: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    let gate = Channel[int]()
+    let held = go hold(gate)
+    let inner = task.run(fn() => level(n - 1)).join()
+    gate.close()
+    held.join()
+    match inner {
+        ok(r) => return r + 1
+        err(e) => panic("level: {e.message()}")
+    }
+}
+
+fn main() {
+    match task.run(fn() => level(30)).join() {
+        ok(_) => print("no limit was reached")
+        err(e) => print(e.message())
+    }
+}
+"#;
+    let (out, _, _, _) = run_counting(1, Some(12), source);
+    assert!(out.contains("nested levels]"), "{out}");
+    assert!(out.contains("limit of 12 temporary threads"), "{out}");
+    assert!(out.len() < 1500, "{} bytes: {out}", out.len());
+}
+
+#[test]
 fn a_task_that_runs_inline_in_a_join_is_cancelled_when_the_vm_is_dropped() {
     // On a pool of one the joined task is queued, so the joiner runs it on its own thread. The pool
     // stops it at a safepoint, which unwinds as an exhausted budget; the join that ran it reports a

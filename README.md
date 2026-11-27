@@ -863,7 +863,8 @@ warning: 1 leaked reference cycle (reference counting never frees a cycle; make 
 ```
 
 `--leaks=error` also exits with status 1, which is useful in CI, and `colibri test --leaks`
-checks each test.
+checks each test (a cycle leaked inside a thread task is not seen there: `colibri run --leaks`
+reports those, when the program ends).
 
 ### Profiler
 

@@ -654,11 +654,6 @@ impl MemAccount {
         Some(lookup(self.tag)?.measured().max(0) as u64)
     }
 
-    /// Bytes this account holds itself, whatever its workers hold. `None` when inert.
-    pub fn own_used(&self) -> Option<u64> {
-        Some(lookup(self.tag)?.own.load(Ordering::Relaxed).max(0) as u64)
-    }
-
     /// Sets the limit in bytes (`None` for none) and re-evaluates `over` against it. Allocation
     /// is never refused: the flag is for a safepoint to read.
     pub fn set_limit(&self, limit: Option<u64>) {

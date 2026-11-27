@@ -617,4 +617,4 @@ none
 |------|--------|--------------|
 | `Mutex[T]` | `get() -> T` | a copy of the value |
 | `Mutex[T]` | `set(v: T)` | puts a copy of `v` in |
-| `Mutex[T]` | `with(f: fn(mut T) -> R) -> R` | runs `f` on a copy under the lock and stores the copy back when `f` returns; a panic in `f` stores nothing. `f` may not use a mutex or wait |
+| `Mutex[T]` | `with(f: fn(mut T) -> R) -> R` | runs `f` on a copy under the lock and stores the copy back when `f` returns; a panic in `f` stores nothing. `f` may not use a mutex, `wait`, `join`, `recv` or `send` on a channel with a capacity |

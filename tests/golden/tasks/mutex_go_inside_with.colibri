@@ -1,0 +1,20 @@
+// `go` inside the function of `with` is fine: the new coroutine runs to its first pause and
+// suspends there, which holds nothing, and the function goes on and lets the lock go. (Only a
+// pause of the code that holds the lock is refused, see `mutex_no_waiting_under_the_lock`.)
+fn main() {
+    let m = Mutex(1)
+    let c = m.with(fn(mut v) {
+        v += 1
+        return go fn() {
+            print("started")
+            wait(0.001)
+            print("woke")
+        }()
+    })
+    print("with is over: {m.get()}")
+    c.join()
+}
+
+// expect: started
+// expect: with is over: 2
+// expect: woke

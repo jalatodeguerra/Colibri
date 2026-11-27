@@ -1364,9 +1364,12 @@ Things to know:
 - **The callback may not use any `Mutex`.** A `get`, `set` or `with` of the same mutex or another
   one, inside a `with`, panics with a message that says so. A thread that holds one lock and asks for
   another is how locks deadlock, and this rule leaves no way to do it.
-- **The callback may not wait.** `wait` of a coroutine, `join` of a task that has not finished, and a
-  channel `send` or `recv` that would have to wait panic inside a `with`. A lock is never held while
-  a thread waits for something else.
+- **The callback may not wait, and may not call what could.** `wait`, `join` of any task, `recv` of
+  any channel (and `for x in ch`), and `send` on a channel that has a capacity panic inside a
+  `with`. They panic whether or not they would have had to wait at that moment, so a program does
+  not pass on one run and fail on another. `done`, `try_join`, `try_recv` and `send` on a channel
+  without a capacity do not wait, and work. A lock is never held while a thread waits for anything.
+  (`go` is fine: the new coroutine pauses by itself, and the `with` goes on.)
 - **A panic in the callback leaves the value as it was.** The lock is released and nothing is
   poisoned: the copy the callback changed is dropped, and the next `get` sees the value from before
   the call. The panic goes on to the caller of `with`, in a task it is the task's result. The same
@@ -1376,6 +1379,12 @@ Things to know:
 - A struct in a `Mutex` is a value as ever: the `mut x` of the callback is a copy that is stored
   back. A class object is copied too (with what it holds), and identity does not survive the trip.
 - Each operation costs a copy of the whole value. Keep the value small, or keep many small mutexes.
+- A type with an `impl Drop` in a `Mutex` has its hook run once for each copy that is freed: the
+  copy `with` hands to its function, the copy it takes back, and each `get`, not once for the value.
+  The hooks run after the lock is let go, so a hook may use a `Mutex` (to count live objects, say).
+- A `Shared` that is inside a `Mutex`, or inside a message that is never received, may keep its copies
+  in idle worker threads until those workers run another task: they are freed when the last handle
+  that is a variable of a program dies, and at the latest at the end of the program.
 
 ## Bytes and JSON
 

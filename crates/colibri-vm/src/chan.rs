@@ -192,6 +192,14 @@ impl Machine {
         let Some(chan) = self.core.chan_of(channel) else {
             return Err(self.internal(fiber, span, "ill-typed channel method"));
         };
+        // Whether it panics does not depend on whether a value is there.
+        if self.core.mutex_held().is_some() {
+            return Err(self.panic(
+                fiber,
+                span,
+                "`recv` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits (`try_recv` does not wait)",
+            ));
+        }
         // Back from a park: what the waiter was woken for.
         let done = match self.woken(fiber) {
             Some(done) => done,
@@ -237,6 +245,13 @@ impl Machine {
         let Some(chan) = self.core.chan_of(channel) else {
             return Err(self.internal(fiber, span, "ill-typed channel method"));
         };
+        if self.core.mutex_held().is_some() && chan.is_bounded() {
+            return Err(self.panic(
+                fiber,
+                span,
+                "`send` on a channel with a capacity cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits (a channel without a capacity never waits)",
+            ));
+        }
         // Back from a park: the value is in the channel (or the channel was closed).
         match self.woken(fiber) {
             Some(Done::Sent) => return Ok(true),
@@ -356,16 +371,7 @@ impl Machine {
             && self.core.hook_depth == 0
             && !self.core.sched.is_shutting_down();
         let (in_coro, in_main) = (state.coro.is_some(), state.coro.is_none());
-        let result = if self.core.mutex_held().is_some() {
-            // A lock is never held while a thread waits for a channel that may need it.
-            Err(self.panic(
-                fiber,
-                span,
-                format!(
-                    "`{what}` cannot wait inside the callback of `Mutex.with`: the lock would stay held while it waits"
-                ),
-            ))
-        } else if in_coro && quiet && may_park {
+        let result = if in_coro && quiet && may_park {
             self.park_in_channel(fiber, chan, ticket, sending, span)
         } else if in_main && quiet && !self.core.sched.is_busy() {
             self.drive_for_channel(fiber, chan, ticket, what, span)

@@ -28,11 +28,23 @@ impl Machine {
         value: Value,
         span: Span,
     ) -> Result<Portable, Ctl> {
+        let copied = self.mutex_portable_of(fiber, &value, span);
+        self.release(value);
+        copied
+    }
+
+    /// Copies `value` into its portable form and leaves `value` to the caller, who releases it
+    /// when it is safe for its `Drop` hooks to run (not while a lock is held).
+    fn mutex_portable_of(
+        &mut self,
+        fiber: &mut VmFiber,
+        value: &Value,
+        span: Span,
+    ) -> Result<Portable, Ctl> {
         let budget = self.native_stack_budget;
         let copied = on_walk_stack(WalkRole::Sender, budget, |guard| {
-            self.to_portable(&value, guard)
+            self.to_portable(value, guard)
         });
-        self.release(value);
         let root = match copied {
             Ok(root) => root,
             Err(e) if e.refused == Refused::MemoryLimit => {
@@ -166,30 +178,40 @@ impl Machine {
         Self::enter_native(fiber);
         let (outcome, last) = self.call_taking_first(fiber, f, vec![copy], span);
         Self::leave_native(fiber);
+        // The callback's values are released after the lock is let go: a `Drop` hook runs outside
+        // it, and what it does cannot change what was stored.
         let stored = match outcome {
-            Err(ctl) => {
-                if let Some(x) = last {
-                    self.release(x);
-                }
-                Err(ctl)
-            }
+            Err(ctl) => Err((ctl, None, last)),
             Ok(result) => match last {
-                Some(x) => match self.mutex_portable(fiber, x, span) {
-                    Ok(new) => Ok((result, new)),
-                    Err(ctl) => {
-                        self.release(result);
-                        Err(ctl)
-                    }
+                Some(x) => match self.mutex_portable_of(fiber, &x, span) {
+                    Ok(new) => Ok((result, new, x)),
+                    Err(ctl) => Err((ctl, Some(result), Some(x))),
                 },
                 None => {
-                    self.release(result);
-                    Err(self.internal(fiber, span, "the callback of `with` gave no value back"))
+                    let ctl =
+                        self.internal(fiber, span, "the callback of `with` gave no value back");
+                    Err((ctl, Some(result), None))
                 }
             },
         };
         self.core.set_mutex_held(None);
-        let (result, new) = stored?;
-        drop(held.store(new));
-        Ok(result)
+        match stored {
+            Ok((result, new, x)) => {
+                let old = held.store(new);
+                self.release(x);
+                drop(old);
+                Ok(result)
+            }
+            Err((ctl, result, x)) => {
+                drop(held);
+                if let Some(r) = result {
+                    self.release(r);
+                }
+                if let Some(x) = x {
+                    self.release(x);
+                }
+                Err(ctl)
+            }
+        }
     }
 }

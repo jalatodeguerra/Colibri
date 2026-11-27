@@ -112,6 +112,14 @@ impl Machine {
             // A `Task` cannot be made on the web (`task.run` has no pool), so there is nothing to wait for.
             return Err(self.internal(fiber, span, "a task handle on the web"));
         }
+        // Whether it panics does not depend on whether the task has finished.
+        if self.core.mutex_held().is_some() {
+            return Err(self.panic(
+                fiber,
+                span,
+                "`join` cannot be used inside the callback of `Mutex.with`: it can wait, and the lock would stay held while it waits (`done` and `try_join` do not wait)",
+            ));
+        }
         loop {
             if self.core.task_poll(op) == TaskPoll::Finished {
                 return self.task_result(fiber, op, span).map(Some);
@@ -120,14 +128,6 @@ impl Machine {
             // waits for a task that cannot end is not left waiting.
             if self.core.cancelled() {
                 return Err(self.budget_exhausted(fiber, span));
-            }
-            // A lock is never held while a thread waits for a task that may need it.
-            if self.core.mutex_held().is_some() {
-                return Err(self.panic(
-                    fiber,
-                    span,
-                    "`join` cannot wait for a task inside the callback of `Mutex.with`: the lock would stay held while it waits",
-                ));
             }
             // Nobody has started it, and a worker is the one waiting: run it here. Only the main
             // fiber of an isolate with no coroutines does: the inline task would set the
@@ -359,10 +359,39 @@ impl Machine {
 
 /// The error a failed task gives its joiner. A panic is the message with the trace under it
 /// (`e.message()` is the message, `e.cause()` the trace, `{e}` both).
+/// How many nested wrappers of one task name are written out before they are folded into a count.
+const DEEP_WRAPPERS: usize = 8;
+
+/// A chain of tasks of one function that each panicked because the one below did (a deep
+/// recursion through `task.run`) would repeat one wrapper at every level. Past a few levels the
+/// headline says how many there are, once, and gives the innermost message.
+fn folded_headline(name: &str, message: &str) -> Option<String> {
+    let wrapper = format!("the task `{name}` panicked: ");
+    let at = message.find(&wrapper)?;
+    let rest = &message[at + wrapper.len()..];
+    // One level above a headline that is folded already.
+    if let Some(counted) = rest.strip_prefix('[')
+        && let Some((n, tail)) = counted.split_once(" nested levels] ")
+        && let Ok(n) = n.parse::<usize>()
+    {
+        return Some(format!("{wrapper}[{} nested levels] {tail}", n + 1));
+    }
+    let nested = message.matches(&wrapper).count();
+    let last = message.rfind(&wrapper)?;
+    (nested >= DEEP_WRAPPERS).then(|| {
+        format!(
+            "{wrapper}[{} nested levels] {}",
+            nested + 1,
+            &message[last + wrapper.len()..]
+        )
+    })
+}
+
 fn failure_error(name: &str, failure: &TaskFailure) -> Value {
     match failure {
         TaskFailure::Panic { message, trace } => {
-            let headline = format!("the task `{name}` panicked: {message}");
+            let headline = folded_headline(name, message)
+                .unwrap_or_else(|| format!("the task `{name}` panicked: {message}"));
             if trace.is_empty() {
                 error_value(&headline)
             } else {

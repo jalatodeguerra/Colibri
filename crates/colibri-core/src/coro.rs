@@ -57,7 +57,9 @@ pub trait Sched: Engine {
             );
             return Err(self.panic(fiber, span, message));
         };
-        if self.core().mutex_held().is_some() {
+        // The fiber that holds the lock runs under `enter_native`; a coroutine that `go` started
+        // inside the callback holds nothing, and suspending it lets the callback go on.
+        if state.native_depth > 0 && self.core().mutex_held().is_some() {
             let message = format!(
                 "`{what}` cannot pause inside the callback of `Mutex.with`: the lock would stay held while the coroutine is suspended"
             );
