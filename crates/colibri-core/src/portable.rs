@@ -155,7 +155,11 @@ pub enum Portable {
     Ref(u32),
     /// A value that crosses as it is, by reference count (`Shared`, `Channel`, `Mutex`, a host
     /// type registered thread-shareable).
-    Handle(Arc<dyn CrossesAsIs>),
+    Handle {
+        /// What a second visit names (the same `Arc` reached again is one handle on the receiver).
+        id: u32,
+        handle: Arc<dyn CrossesAsIs>,
+    },
 }
 
 /// One captured variable of a closure.
@@ -180,6 +184,10 @@ pub struct WeakRef {
 pub trait CrossesAsIs: Send + Sync + fmt::Debug {
     /// The value this handle stands for on the receiving thread.
     fn materialise(&self, core: &mut Core) -> Value;
+
+    /// What the handle names, as an address: two handles with the same address are the same
+    /// thing, and a graph that reaches it twice crosses it once.
+    fn address(&self) -> usize;
 }
 
 // A `Portable` is `Send`. This is the whole point of the type, so it is a compile-time fact, and no
@@ -352,6 +360,10 @@ impl SendEnv for Core {
         Core::mem_reserve(self, bytes)
     }
 
+    fn crosses_as_is(&self, v: &Value) -> Option<Arc<dyn CrossesAsIs>> {
+        Some(Arc::new(crate::chan::ChanHandle(self.chan_of(v)?)))
+    }
+
     fn type_name(&self, ty: TypeId) -> String {
         match self.types.get(ty.0 as usize) {
             Some(def) => def.display_name().into_owned(),
@@ -394,6 +406,10 @@ pub struct ProgramEnv<'a> {
 impl SendEnv for ProgramEnv<'_> {
     fn reserve(&self, bytes: usize) -> bool {
         SendEnv::reserve(self.core, bytes)
+    }
+
+    fn crosses_as_is(&self, v: &Value) -> Option<Arc<dyn CrossesAsIs>> {
+        SendEnv::crosses_as_is(self.core, v)
     }
 
     fn type_name(&self, ty: TypeId) -> String {
@@ -576,6 +592,7 @@ pub fn to_portable(
         shared: HashMap::new(),
         mutable: HashMap::new(),
         objs: HashMap::new(),
+        handles: HashMap::new(),
         next: 0,
         path: Vec::new(),
         pending: 0,
@@ -610,6 +627,8 @@ struct ToPortable<'e> {
     mutable: HashMap<usize, u32>,
     /// The class objects, by address.
     objs: HashMap<usize, ObjSlot>,
+    /// The handles that cross as they are, by what they name: a handle reached twice is one.
+    handles: HashMap<usize, u32>,
     next: u32,
     path: Vec<Seg>,
     /// Bytes copied since the memory limit was last asked.
@@ -654,6 +673,19 @@ impl ToPortable<'_> {
         }
         self.charge(len)?;
         Ok(make(None))
+    }
+
+    /// A value that crosses as it is: the first visit carries the handle, a second visit of what it
+    /// names is a `Ref` to it, so the receiver ends with one handle (and one object) for it.
+    fn handle(&mut self, v: &Value) -> Option<Portable> {
+        let handle = self.env.crosses_as_is(v)?;
+        let address = handle.address();
+        if let Some(&id) = self.handles.get(&address) {
+            return Some(Portable::Ref(id));
+        }
+        let id = self.fresh_id();
+        self.handles.insert(address, id);
+        Some(Portable::Handle { id, handle })
     }
 
     fn fresh_id(&mut self) -> u32 {
@@ -774,8 +806,8 @@ impl ToPortable<'_> {
             Value::Obj(o) => self.obj(v, o)?,
             Value::Weak(w) => Portable::Weak(self.weak(w)),
             Value::Host(r) => {
-                if let Some(handle) = self.env.crosses_as_is(v) {
-                    return Ok(Portable::Handle(handle));
+                if let Some(handle) = self.handle(v) {
+                    return Ok(handle);
                 }
                 return Err(self.refuse(Refused::Host(self.env.type_name(r.ty))));
             }
@@ -950,8 +982,8 @@ impl ToPortable<'_> {
 
     #[inline(never)]
     fn obj(&mut self, v: &Value, o: &Rc<ClassObj>) -> Result<Portable, NotSendable> {
-        if let Some(handle) = self.env.crosses_as_is(v) {
-            return Ok(Portable::Handle(handle));
+        if let Some(handle) = self.handle(v) {
+            return Ok(handle);
         }
         let ty = o.ty();
         let refused = match ty {
@@ -1167,7 +1199,11 @@ impl Rebuild<'_> {
                 Some(v) => v.clone(),
                 None => return Err(RebuildError::Malformed),
             },
-            Portable::Handle(h) => h.materialise(self.core),
+            Portable::Handle { id, handle } => {
+                let v = handle.materialise(self.core);
+                self.built.insert(*id, v.clone());
+                v
+            }
         };
         // This node is built, and so are its children: give its memory back now.
         *p = Portable::Unit;
@@ -1375,7 +1411,13 @@ impl Rebuild<'_> {
         let mut taken: Vec<Value> = Vec::new();
         for v in self.built.values() {
             match v {
-                Value::Obj(o) => taken.extend(o.take_fields()),
+                Value::Obj(o) => {
+                    // A channel handle made for the copy lets go of its channel.
+                    if let Some(id) = crate::chan::chan_id_of(o) {
+                        self.core.chan_died(id);
+                    }
+                    taken.extend(o.take_fields());
+                }
                 Value::List(l) => taken.extend(l.take_all()),
                 Value::Map(m) => taken.extend(m.take_all().into_iter().flat_map(|(k, v)| [k, v])),
                 Value::Set(s) => taken.extend(s.take_all()),

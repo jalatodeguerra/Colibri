@@ -397,6 +397,8 @@ impl<'t> Writer<'t> {
             self.out.push_str("<Signal>");
         } else if ty == colibri_check::types::TASK_TYPE {
             self.out.push_str("<Task>");
+        } else if ty == colibri_check::types::CHANNEL_TYPE {
+            self.out.push_str("<Channel>");
         } else {
             return false;
         }

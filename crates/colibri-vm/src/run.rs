@@ -919,7 +919,16 @@ impl Machine {
                 Op::ForMapNext { .. } | Op::ForSetNext { .. } | Op::ForIterNext { .. } => {
                     sync!();
                     // An item skips the jump that ends the loop.
-                    if tri!(self.op_for_next(fiber, &chunk, base, pc, op)) {
+                    if let Op::ForIterNext { d, a } = op
+                        && let Some(channel) = Self::channel_of_iter(rd!(a))
+                    {
+                        // A channel's iterator waits for its next value: the instruction can pause.
+                        match tri!(self.op_for_channel(fiber, &chunk, base, pc, [d, a], &channel)) {
+                            Some(true) => pc += 1,
+                            Some(false) => {}
+                            None => return Ok(Exit::Suspend),
+                        }
+                    } else if tri!(self.op_for_next(fiber, &chunk, base, pc, op)) {
                         pc += 1;
                     }
                 }
@@ -1055,6 +1064,12 @@ impl Machine {
                 Op::Join { d, a, kind } => {
                     sync!();
                     if tri!(self.op_join(fiber, &chunk, base, pc, [d, a], kind)) {
+                        return Ok(Exit::Suspend);
+                    }
+                }
+                Op::Chan { d, base: a, kind } => {
+                    sync!();
+                    if tri!(self.op_chan(fiber, &chunk, base, pc, [d, a], kind)) {
                         return Ok(Exit::Suspend);
                     }
                 }
@@ -1761,9 +1776,8 @@ impl Machine {
                 let f = std::mem::replace(&mut fiber.regs[args.start], Value::Unit);
                 self.task_run(fiber, f, span)
             }
-            Intrinsic::NewChannel | Intrinsic::NewShared => {
-                Err(self.panic(fiber, span, colibri_core::THREADS_NOT_BUILT))
-            }
+            Intrinsic::NewChannel => self.new_channel(fiber, args, span),
+            Intrinsic::NewShared => Err(self.panic(fiber, span, colibri_core::THREADS_NOT_BUILT)),
             Intrinsic::HostAlive => Ok(Value::Bool(match &fiber.regs[args.start] {
                 Value::Host(r) => self.core.host_alive(r.index, r.generation),
                 _ => false,

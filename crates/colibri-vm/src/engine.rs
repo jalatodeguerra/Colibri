@@ -349,6 +349,25 @@ impl Engine for Machine {
     ) -> Eval {
         self.task_ops(fiber, op, recv, span)
     }
+
+    fn channel_builtin(
+        &mut self,
+        fiber: &mut VmFiber,
+        op: colibri_check::hir::Builtin,
+        args: &mut [Value],
+        span: Span,
+    ) -> Eval {
+        self.channel_ops(fiber, op, args, span)
+    }
+
+    fn channel_next(
+        &mut self,
+        fiber: &mut VmFiber,
+        channel: &Value,
+        span: Span,
+    ) -> Eval<Option<Value>> {
+        self.channel_next_value(fiber, channel, span)
+    }
 }
 
 /// A panic with no position, for failures before anything runs.

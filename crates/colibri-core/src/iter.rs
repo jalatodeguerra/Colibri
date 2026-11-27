@@ -65,6 +65,11 @@ enum State {
         inner: Value,
         index: i64,
     },
+    /// The values received from a channel (`for x in ch`), until it is closed and empty. Its
+    /// steps may wait, so the engine takes them (`Step::Recv`).
+    Channel {
+        channel: Value,
+    },
     Done,
 }
 
@@ -75,6 +80,9 @@ pub enum Step {
     /// An enumerating iterator needs the next item of its inner iterator, which may be user
     /// code. The inner value is moved out for the call; give it back with [`IterObj::resume`].
     Inner(Value, i64),
+    /// A channel's iterator needs the next value of its channel (the handle), which may have to
+    /// wait.
+    Recv(Value),
 }
 
 /// A built-in iterator.
@@ -127,6 +135,19 @@ impl IterObj {
 
     pub(crate) fn over_bytes(data: Rc<[u8]>) -> Rc<IterObj> {
         Self::new(State::Octets { data, pos: 0 })
+    }
+
+    /// The values received from the channel with this handle.
+    pub fn over_channel(channel: Value) -> Rc<IterObj> {
+        Self::new(State::Channel { channel })
+    }
+
+    /// The handle of the channel this iterator receives from, if it is one that does.
+    pub fn channel(&self) -> Option<Value> {
+        match &*self.state.borrow() {
+            State::Channel { channel } => Some(channel.clone()),
+            _ => None,
+        }
     }
 
     pub fn enumerate(inner: Value) -> Rc<IterObj> {
@@ -194,6 +215,7 @@ impl IterObj {
                 let taken = std::mem::replace(inner, Value::Unit);
                 Step::Inner(taken, *index)
             }
+            State::Channel { channel } => Step::Recv(channel.clone()),
             State::Done => Step::End,
         }
     }
@@ -218,13 +240,14 @@ impl IterObj {
             State::Map { map, .. } => vec![Value::Map(Rc::clone(map))],
             State::Set { set, .. } => vec![Value::Set(Rc::clone(set))],
             State::Enumerate { inner, .. } => vec![inner.clone()],
+            State::Channel { channel } => vec![channel.clone()],
             _ => Vec::new(),
         }
     }
 
     /// Takes the values the iterator keeps alive (its collection, its inner iterator), for
     /// destruction. Only `release` calls this.
-    pub(crate) fn take_inner(&self) -> Vec<Value> {
+    pub fn take_inner(&self) -> Vec<Value> {
         let state = std::mem::replace(&mut *self.state.borrow_mut(), State::Done);
         match state {
             State::List { list, hold, .. } => {
@@ -240,6 +263,7 @@ impl IterObj {
                 vec![Value::Set(set)]
             }
             State::Enumerate { inner, .. } => vec![inner],
+            State::Channel { channel } => vec![channel],
             _ => Vec::new(),
         }
     }
@@ -307,6 +331,21 @@ pub trait IterOps: Engine {
                 // released here, since it may be the last reference to class objects.
                 self.release_all(obj.take_inner());
                 Ok(None)
+            }
+            Step::Recv(channel) => {
+                // Out of values when the channel is closed and empty: the handle is let go of.
+                let mark = Self::temp_mark(fiber);
+                Self::hold_temp(fiber, channel.clone());
+                let next = self.channel_next(fiber, &channel, span);
+                let out = match next {
+                    Ok(None) => {
+                        self.release_all(obj.take_inner());
+                        Ok(None)
+                    }
+                    other => other,
+                };
+                self.release_temps(fiber, mark);
+                out
             }
             Step::Inner(mut inner, index) => {
                 // The inner iterator is out of its object while user code may run: a twin on

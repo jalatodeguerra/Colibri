@@ -18,8 +18,9 @@ use crate::prelude::*;
 use crate::show::show;
 use crate::value::Value;
 
-/// What a call of a channel or a `Shared` panics with until they are built (`task.run` runs).
-pub const THREADS_NOT_BUILT: &str = "channels and `Shared` are not built yet: the program checks, but this build cannot run `Channel` or `Shared`";
+/// What a call of a `Shared` panics with until it is built (tasks and channels run).
+pub const THREADS_NOT_BUILT: &str =
+    "`Shared` is not built yet: the program checks, but this build cannot run `Shared`";
 
 /// The receiver of a list method.
 fn list_of(v: &Value) -> Option<Rc<ListObj>> {
@@ -241,15 +242,17 @@ pub trait Builtins: Engine {
             Builtin::TaskDone | Builtin::TaskTryJoin => {
                 return self.task_builtin(fiber, op, &recv, span);
             }
-            // The checker accepts channels and `Shared` (DESIGN §14.1); they are a later step,
-            // so a call that gets here stops the program with a panic instead of doing
-            // something else.
+            // The methods of a channel are the engine's: a value is copied on a walk stack, and
+            // `send` and `recv` wait. (The VM compiles those two to an instruction that can pause;
+            // here they block.)
             Builtin::ChannelSend
             | Builtin::ChannelRecv
             | Builtin::ChannelTryRecv
             | Builtin::ChannelClose
-            | Builtin::ChannelIter
-            | Builtin::SharedGet => {
+            | Builtin::ChannelIter => return self.channel_builtin(fiber, op, args, span),
+            // The checker accepts `Shared` (DESIGN §14.1); it is a later step, so a call that
+            // gets here stops the program with a panic instead of doing something else.
+            Builtin::SharedGet => {
                 return Err(self.panic(fiber, span, THREADS_NOT_BUILT));
             }
             // These pause the running coroutine: the VM compiles them to `Join`.

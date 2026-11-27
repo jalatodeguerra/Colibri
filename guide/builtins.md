@@ -17,6 +17,7 @@ An optional result, `T?`, is `none` when there is nothing to return.
 - [Optionals, `Result` and `Error`](#optionals-result-and-error)
 - [`Coroutine`, `CoGroup` and `Signal`](#coroutine-cogroup-and-signal)
 - [`Task`](#task)
+- [`Channel`](#channel)
 
 ## Functions you can always call
 
@@ -562,4 +563,38 @@ fn main() -> Result[()] {
 ```output
 42
 true
+```
+
+## `Channel`
+
+`Channel[T]()` and `Channel[T](capacity: n)` (`n` at least 1) give a channel for values of type `T`
+(see [channels](tour.md#channels)). A sent value is copied; the handle is shared by every thread
+that holds it, and dropping a handle closes nothing.
+
+| Type | Method | What it does |
+|------|--------|--------------|
+| `Channel[T]` | `send(v)` | copy `v` into the channel; waits while a bounded channel is full; panics if the channel is closed |
+| `Channel[T]` | `recv() -> T?` | wait for the next value; `none` when the channel is closed and empty |
+| `Channel[T]` | `try_recv() -> T?` | the next value if one is there, `none` if not; it does not wait |
+| `Channel[T]` | `close()` | no more sends; queued values can still be received; calling it again does nothing |
+
+`for x in ch` receives until the channel is closed and empty.
+
+```colibri
+fn main() {
+    let ch = Channel[str](capacity: 2)
+    ch.send("a")
+    ch.send("b")
+    ch.close()
+    for s in ch {
+        print(s)
+    }
+    print(ch.try_recv())
+}
+```
+
+```output
+a
+b
+none
 ```

@@ -107,6 +107,12 @@ impl Core {
         self.cancel = flag;
     }
 
+    /// Whether a flag was given to [`Core::set_cancel_flag`]: this engine is a worker of a pool,
+    /// which stops it when the pool ends.
+    pub fn has_cancel_flag(&self) -> bool {
+        self.cancel.is_some()
+    }
+
     /// Whether the flag given to [`Core::set_cancel_flag`] is set.
     pub fn cancelled(&self) -> bool {
         self.cancel

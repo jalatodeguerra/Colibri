@@ -1,0 +1,28 @@
+// A task produces values and the main fiber consumes them. `send` copies each value, `recv` gives
+// `none` once the channel is closed and empty.
+fn produce(ch: Channel[int], n: int) {
+    for i in 1..=n {
+        ch.send(i * i)
+    }
+    ch.close()
+}
+
+fn main() -> Result[()] {
+    let ch = Channel[int]()
+    let t = task.run(fn() => produce(ch, 5))
+    let mut sum = 0
+    while let some(v) = ch.recv() {
+        print("got {v}")
+        sum += v
+    }
+    t.join()?
+    print("sum = {sum}")
+    return ok(())
+}
+
+// expect: got 1
+// expect: got 4
+// expect: got 9
+// expect: got 16
+// expect: got 25
+// expect: sum = 55
