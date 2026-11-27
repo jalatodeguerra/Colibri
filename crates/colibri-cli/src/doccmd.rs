@@ -41,10 +41,7 @@ const SUMMARIES: &[(&str, &str)] = &[
         "csv",
         "CSV text to records or to rows with a header, and back.",
     ),
-    (
-        "datetime",
-        "Dates, times and their formatting. On Windows, local time is currently UTC.",
-    ),
+    ("datetime", "Dates, times and their formatting."),
     (
         "fs",
         "Files and folders: whole-file reads and writes, listing, metadata, and `File` handles that read or write piece by piece. The whole-file functions hold the thread until they finish and give other coroutines no turn; the methods of `File` wait without blocking.",

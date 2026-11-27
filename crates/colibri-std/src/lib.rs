@@ -71,6 +71,8 @@ pub use assets::{
     AssetError, AssetSource, NOT_A_FOLDER, NOT_AN_ASSET, PackAssets, check_dir, children, for_pack,
     io_reason,
 };
+#[cfg(target_family = "wasm")]
+pub use config::seed_table_hash;
 pub use config::{Clock, EnvSource, Factory, ManualClock, StdConfig, SystemClock, WorkerStd};
 pub use rand::Rng;
 

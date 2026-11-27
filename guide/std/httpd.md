@@ -81,7 +81,8 @@ class Headers {
 ```
 
 The header fields of a request or a response. Names compare without regard to case. A name
-can have several lines (`Set-Cookie`); `get` joins them with `, `, `get_all` keeps them apart.
+can have several lines (`Set-Cookie`); `get` joins them with `, ` (with a newline for
+`Set-Cookie`, whose values hold commas of their own), `get_all` keeps them apart.
 
 #### `Headers.get`
 
@@ -89,7 +90,9 @@ can have several lines (`Set-Cookie`); `get` joins them with `, `, `get_all` kee
 fn get(self, name: str) -> str?
 ```
 
-Every value of the name joined with `, `, or `none` when there is none.
+Every value of the name joined with `, `, or `none` when there is none. The values of
+`Set-Cookie` are joined with a newline instead: a cookie's `Expires` date has a comma, so
+a comma could not be split apart again (`http.Response.headers` does the same).
 
 #### `Headers.get_all`
 
@@ -234,7 +237,7 @@ the server makes them, and `test_request` makes one for a test.
 fn header(self, name: str) -> str?
 ```
 
-A header field: every value of the name joined with `, `.
+A header field: every value of the name joined with `, ` (see `Headers.get` for `Set-Cookie`).
 
 #### `Request.host`
 

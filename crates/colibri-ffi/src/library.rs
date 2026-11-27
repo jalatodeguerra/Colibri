@@ -145,7 +145,11 @@ impl Libraries {
     }
 
     /// The library `name` (see the module comment), or the process itself for `None`.
-    pub fn get(&mut self, name: Option<&str>) -> Result<Rc<Library>, String> {
+    ///
+    /// # Safety
+    /// Opening a library runs its initialisers, which are native code that nothing here can
+    /// check. The caller must trust the library `name` finds, as it trusts any code it links to.
+    pub unsafe fn get(&mut self, name: Option<&str>) -> Result<Rc<Library>, String> {
         let key = name.unwrap_or("").to_string();
         if let Some(lib) = self.open.get(&key) {
             return Ok(Rc::clone(lib));
@@ -183,8 +187,8 @@ fn is_runtime_lib(name: &str) -> bool {
 fn open(name: &str) -> Result<Library, String> {
     let mut tried: Vec<String> = Vec::new();
     for candidate in candidates(name) {
-        // SAFETY: loading a library runs its initialisers. That is what `@link` asks for, and
-        // the package declared the `ffi` capability to be allowed to ask.
+        // SAFETY: loading a library runs its initialisers. The caller of `Libraries::get` took
+        // that on (see its Safety section).
         match unsafe { libloading::Library::new(&candidate) } {
             Ok(inner) => {
                 return Ok(Library {

@@ -72,7 +72,7 @@ enum Command {
         args: Vec<String>,
         /// Run the leak detector when the program ends and report the reference cycles that
         /// were never freed to stderr; `--leaks=error` also exits with 1
-        #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
+        #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn", conflicts_with = "watch")]
         leaks: Option<colibri_lang::leakcmd::LeakMode>,
         /// Sample the running program and write a flame graph (SVG) to FILE (`profile.svg` by
         /// default) and the folded stacks it was drawn from next to it (`profile.folded`; a FILE without an extension gets `.svg`), then

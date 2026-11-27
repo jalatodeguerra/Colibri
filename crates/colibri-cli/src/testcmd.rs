@@ -33,7 +33,9 @@ pub struct Options {
 }
 
 /// The `Vm` of `colibri test`: what the tests print (and what the workers of their thread tasks
-/// print) is collected in `captured`, unless `--nocapture` lets it through to the terminal.
+/// print) is collected in `captured`, unless `--nocapture` lets it through to the terminal. What
+/// they write with `io.eprint` and `io.eprintln` is collected there too, so that a passing test
+/// stays quiet on standard error as well and a failing one shows both.
 #[doc(hidden)]
 pub fn build_test_vm(options: &Options, captured: &colibri::SyncBuffer) -> colibri::Vm {
     let mut builder = crate::vm_builder()
@@ -42,11 +44,21 @@ pub fn build_test_vm(options: &Options, captured: &colibri::SyncBuffer) -> colib
     if !options.nocapture {
         builder = builder.stdout_shared(Box::new(captured.clone()));
     }
-    crate::build_vm_with_assets(
-        builder,
-        Vec::new(),
-        Some(crate::assets::factory_for_entry(&options.path)),
-    )
+    let assets = crate::assets::factory_for_entry(&options.path);
+    let config = colibri_std::StdConfig {
+        assets: Some(assets()),
+        ..colibri_std::StdConfig::default()
+    };
+    let mut worker = colibri_std::WorkerStd::from_config(&config).with_assets(move || assets());
+    if !options.nocapture {
+        let captured = captured.clone();
+        worker = worker.with_stderr(move || Box::new(captured.clone()));
+    }
+    let mut vm = crate::build_vm_with_worker_std(builder, config, worker);
+    if !options.nocapture {
+        colibri_std::set_stderr(&mut vm, Box::new(captured.clone()));
+    }
+    vm
 }
 
 /// Runs the tests and prints the report to stdout; the exit code is 1 if the program does not

@@ -146,10 +146,10 @@ impl Machine {
         let (callee, captures) = match &fiber.regs[at] {
             Value::Fn(id, _) => {
                 let id = *id;
-                (self.callee_chunk(fiber, chunk, pc, id)?, false)
+                (self.callee_chunk(fiber, chunk, pc, id)?, None)
             }
             Value::Closure(c) => match self.closure_chunk(c) {
-                Ok(callee) => (callee, !c.captures.is_empty()),
+                Ok(callee) => (callee, (!c.captures.is_empty()).then(|| Rc::clone(c))),
                 Err(msg) => {
                     let span = chunk.spans[pc - 1];
                     return Err(self.panic(fiber, span, closure_message(&msg)));
@@ -164,16 +164,17 @@ impl Machine {
                 ));
             }
         };
-        self.push_call(fiber, callee, window, base + usize::from(d), chunk, pc)?;
-        if captures {
-            // The call does not touch the caller's registers, so the closure is still there.
-            let Value::Closure(c) = &fiber.regs[at] else {
-                debug_assert!(false, "the closure left its register during the call");
-                return Ok(());
-            };
-            let c = Rc::clone(c);
-            self.install_captures(fiber, window, &c);
-        }
+        // The call does not touch the caller's registers, but the closure is held here anyway: the
+        // captures go in before a debugger can stop in the callee (see `push_call_with`).
+        self.push_call_with(
+            fiber,
+            callee,
+            window,
+            base + usize::from(d),
+            chunk,
+            pc,
+            captures.as_deref(),
+        )?;
         Ok(())
     }
 

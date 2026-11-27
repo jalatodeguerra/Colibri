@@ -54,7 +54,7 @@ impl Dir {
         git_env(&mut cmd, &self.path("gitconfig"))
             .current_dir(&self.0)
             .env("COLIBRI_HOME", self.path("home"));
-        let out = cmd.output().expect("the program runs");
+        let out = common::output_of(&mut cmd).expect("the program runs");
         Out {
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -303,7 +303,7 @@ fn the_output_never_replaces_the_running_tool() {
         .arg(&tool)
         .current_dir(&dir.0)
         .env("COLIBRI_HOME", dir.path("home"));
-    let out = cmd.output().unwrap();
+    let out = common::output_of(&mut cmd).unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("running `colibri`"),
@@ -311,7 +311,7 @@ fn the_output_never_replaces_the_running_tool() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(fs::metadata(&tool).unwrap().len(), before);
-    let version = Command::new(&tool).arg("--version").output().unwrap();
+    let version = common::output_of(Command::new(&tool).arg("--version")).unwrap();
     assert!(String::from_utf8_lossy(&version.stdout).starts_with("colibri "));
 }
 
@@ -537,7 +537,7 @@ fn a_git_dependency_is_inside_the_built_program() {
         .env("XDG_CACHE_HOME", dir.path("nowhere"))
         .env("LOCALAPPDATA", dir.path("nowhere"))
         .current_dir(&dir.0);
-    let out = cmd.output().unwrap();
+    let out = common::output_of(&mut cmd).unwrap();
     let built = Out {
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),

@@ -683,6 +683,55 @@ fn system_offset(unix: i64) -> i64 {
     }
 }
 
+/// Windows converts the instant itself: `SystemTimeToTzSpecificLocalTime` gives the local time of
+/// a UTC time, and the offset is how far the local reading is from the UTC one. The conversion
+/// applies the zone's current daylight saving rules whatever the year of the instant (the `Ex`
+/// functions with dynamic zone information know the rules of other years; a follow-up). Both
+/// times are read as `FILETIME`s (100 ns ticks since 1601) so that no calendar arithmetic is
+/// needed here.
+#[cfg(windows)]
+fn system_offset(unix: i64) -> i64 {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{
+        FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime,
+    };
+
+    const TICKS_PER_SECOND: i64 = 10_000_000;
+    // Seconds from 1601-01-01 to 1970-01-01.
+    const UNIX_EPOCH: i64 = 11_644_473_600;
+    fn seconds_of(ft: &FILETIME) -> i64 {
+        ((i64::from(ft.dwHighDateTime) << 32) | i64::from(ft.dwLowDateTime)) / TICKS_PER_SECOND
+    }
+    let Some(seconds) = unix.checked_add(UNIX_EPOCH).filter(|s| *s >= 0) else {
+        // Before 1601 Windows has no time at all.
+        return 0;
+    };
+    let Some(raw) = seconds.checked_mul(TICKS_PER_SECOND) else {
+        return 0;
+    };
+    let utc = FILETIME {
+        dwLowDateTime: raw as u32,
+        dwHighDateTime: (raw >> 32) as u32,
+    };
+    // SAFETY: all of these read from and write to plain structs that live on this stack; a null
+    // time zone means the one the machine is set to. Each call reports failure with 0.
+    unsafe {
+        let mut utc_time: SYSTEMTIME = std::mem::zeroed();
+        let mut local_time: SYSTEMTIME = std::mem::zeroed();
+        let mut local = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        if FileTimeToSystemTime(&utc, &mut utc_time) == 0
+            || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc_time, &mut local_time) == 0
+            || SystemTimeToFileTime(&local_time, &mut local) == 0
+        {
+            return 0;
+        }
+        seconds_of(&local) - seconds
+    }
+}
+
 /// On the web the page knows the time zone (`host_utc_offset`, from `Date`).
 #[cfg(target_family = "wasm")]
 fn system_offset(unix: i64) -> i64 {
@@ -690,7 +739,7 @@ fn system_offset(unix: i64) -> i64 {
 }
 
 /// Without a way to ask the machine, local time is UTC.
-#[cfg(not(any(unix, target_family = "wasm")))]
+#[cfg(not(any(unix, windows, target_family = "wasm")))]
 fn system_offset(_unix: i64) -> i64 {
     0
 }
@@ -959,5 +1008,100 @@ mod tests {
         assert_eq!(parse_iso("2024-01-01").unwrap(), dt(2024, 1, 1, 0, 0, 0));
         assert!(parse_iso("2024-1-1").is_err());
         assert!(parse_iso("2024-01-01T25:00:00Z").is_err());
+    }
+
+    /// The seconds since the Unix epoch, now.
+    #[cfg(windows)]
+    fn now_unix() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    /// Windows only (it asks the machine's zone, so the answer cannot be fixed): the offset for
+    /// now is the one `GetTimeZoneInformation` reports, `-(Bias + StandardBias or DaylightBias)`
+    /// minutes, whichever applies now. A stub that always said UTC fails this on any machine
+    /// that is not set to UTC. (An instant on the minute a zone changes its clock could read
+    /// either side; the chance of that in a test run is nil for practical purposes.)
+    #[cfg(windows)]
+    #[test]
+    fn windows_local_offset_for_now_is_what_the_zone_information_says() {
+        use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+        const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+        const TIME_ZONE_ID_INVALID: u32 = 0xFFFF_FFFF;
+        // SAFETY: `info` is plain data that the call fills in.
+        let (id, info) = unsafe {
+            let mut info: TIME_ZONE_INFORMATION = std::mem::zeroed();
+            (GetTimeZoneInformation(&mut info), info)
+        };
+        assert_ne!(
+            id, TIME_ZONE_ID_INVALID,
+            "the zone information is not available"
+        );
+        let extra = if id == TIME_ZONE_ID_DAYLIGHT {
+            info.DaylightBias
+        } else {
+            info.StandardBias
+        };
+        let expected = -i64::from(info.Bias + extra) * 60;
+        assert_eq!(system_offset(now_unix()), expected);
+    }
+
+    /// Windows only: the offset for several instants agrees with the one worked out from the
+    /// calendar fields of `SystemTimeToTzSpecificLocalTime`, which does not go through
+    /// `FILETIME` as `system_offset` does. It also lies on a quarter hour and within a day's
+    /// reach of UTC.
+    ///
+    /// Note: `SystemTimeToTzSpecificLocalTime` applies the zone's current daylight saving rules
+    /// to every year. An instant in a year with other rules reads as the current rules say; the
+    /// `...Ex` functions with dynamic zone information would do better and are a follow-up.
+    #[cfg(windows)]
+    #[test]
+    fn windows_local_offset_agrees_with_the_calendar_conversion() {
+        use windows_sys::Win32::Foundation::SYSTEMTIME;
+        use windows_sys::Win32::System::Time::SystemTimeToTzSpecificLocalTime;
+        let now = now_unix();
+        for unix in [
+            1_705_000_000,
+            1_720_000_000,
+            now,
+            now - 180 * 86_400,
+            86_400,
+        ] {
+            let (y, m, d) = civil_from_days(unix.div_euclid(86_400));
+            let secs = unix.rem_euclid(86_400);
+            let utc = SYSTEMTIME {
+                wYear: y as u16,
+                wMonth: m as u16,
+                wDayOfWeek: 0,
+                wDay: d as u16,
+                wHour: (secs / 3600) as u16,
+                wMinute: (secs % 3600 / 60) as u16,
+                wSecond: (secs % 60) as u16,
+                wMilliseconds: 0,
+            };
+            // SAFETY: plain structs on this stack; a null zone is the machine's own.
+            let local = unsafe {
+                let mut local: SYSTEMTIME = std::mem::zeroed();
+                assert_ne!(
+                    SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local),
+                    0
+                );
+                local
+            };
+            let local_secs = days_from_civil(
+                i64::from(local.wYear),
+                i64::from(local.wMonth),
+                i64::from(local.wDay),
+            ) * 86_400
+                + i64::from(local.wHour) * 3600
+                + i64::from(local.wMinute) * 60
+                + i64::from(local.wSecond);
+            let offset = system_offset(unix);
+            assert_eq!(offset, local_secs - unix, "at {unix}");
+            assert!(offset.abs() <= 14 * 3600, "{offset}");
+            assert_eq!(offset % (15 * 60), 0, "{offset}");
+        }
     }
 }

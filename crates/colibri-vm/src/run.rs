@@ -14,7 +14,7 @@ use std::rc::Rc;
 use colibri_core::ctl::{Ctl, Eval};
 use colibri_core::num;
 use colibri_core::prelude::*;
-use colibri_core::value::{CellObj, SmallVec, Value, unwrap_cell};
+use colibri_core::value::{CellObj, ClosureObj, SmallVec, Value, unwrap_cell};
 
 use crate::bytecode::{Chunk, Op, Site};
 use crate::fiber::{Frame, FrameKind, VmFiber, is_scalar_value};
@@ -1560,6 +1560,27 @@ impl Machine {
         caller: &Chunk,
         pc: usize,
     ) -> Result<(), Ctl> {
+        self.push_call_with(fiber, callee, new_base, ret, caller, pc, None)
+    }
+
+    /// [`Vm::push_call`] for the call of a closure that captured variables: `captures` is the
+    /// closure, whose captures are put in the callee's registers as soon as its frame exists,
+    /// and before the safepoint of a call that ends a slice. A debugger that stops at every
+    /// step stops there, and would otherwise show the captures as the unset registers they
+    /// still are. (`None` for every other call; it is a constant at those call sites, so their
+    /// fast path has no extra test.)
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_call_with(
+        &mut self,
+        fiber: &mut VmFiber,
+        callee: Rc<Chunk>,
+        new_base: usize,
+        ret: usize,
+        caller: &Chunk,
+        pc: usize,
+        captures: Option<&ClosureObj>,
+    ) -> Result<(), Ctl> {
         let (mut steps, mut start) = (1, 0);
         if let Op::Step { n } = callee.code[0].get() {
             steps += n;
@@ -1567,9 +1588,12 @@ impl Machine {
         }
         self.core.budget.left -= i64::from(steps);
         if self.core.budget.left < 0 || fiber.visible_depth() >= self.max_depth {
-            return self.push_call_slow(fiber, callee, new_base, ret, start, caller, pc);
+            return self.push_call_slow(fiber, callee, new_base, ret, start, caller, pc, captures);
         }
         Self::push_frame(fiber, callee, new_base, ret, start);
+        if let Some(c) = captures {
+            self.install_captures(fiber, new_base, c);
+        }
         Ok(())
     }
 
@@ -1607,9 +1631,14 @@ impl Machine {
         start: u32,
         caller: &Chunk,
         pc: usize,
+        captures: Option<&ClosureObj>,
     ) -> Result<(), Ctl> {
         let slice_ended = self.call_refused(fiber, caller, pc)?;
         Self::push_frame(fiber, callee, new_base, ret, start);
+        // Before the safepoint: that is where a debugger stops, and it reads the registers.
+        if let Some(c) = captures {
+            self.install_captures(fiber, new_base, c);
+        }
         if slice_ended {
             self.safepoint(fiber)?;
         }

@@ -7,7 +7,9 @@
 //!   An `err` means no response arrived: a bad URL, a refused connection, a TLS failure, a
 //!   timeout, a body over the size limit.
 //! * `Response` is a struct: `status: int`, `headers: Map[str, str]` (names lowercased; a
-//!   header sent several times is joined with `, `) and `body: str`. A body that is not valid
+//!   header sent several times is joined with `, `, except `set-cookie`, whose values are
+//!   joined with `\n`: a cookie's `Expires` date holds a comma, so `, ` cannot be split
+//!   apart again, and a header value never holds a newline) and `body: str`. A body that is not valid
 //!   UTF-8 is decoded lossily (invalid sequences become U+FFFD). Parse JSON with
 //!   `json.decode[T](response.body)`.
 //! * For a body that is not text there is a second set of calls, with the body as `Bytes` in
@@ -237,10 +239,14 @@ fn perform(
     let mut out_headers: BTreeMap<String, String> = BTreeMap::new();
     for (name, value) in response.headers() {
         let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
+        let name = name.as_str().to_ascii_lowercase();
+        // Joining with a comma is how HTTP says "the same header several times", except for
+        // `Set-Cookie`, which is not a list: its values have commas of their own.
+        let separator = if name == "set-cookie" { "\n" } else { ", " };
         out_headers
-            .entry(name.as_str().to_ascii_lowercase())
+            .entry(name)
             .and_modify(|old| {
-                old.push_str(", ");
+                old.push_str(separator);
                 old.push_str(&value);
             })
             .or_insert(value);

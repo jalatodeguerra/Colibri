@@ -117,6 +117,14 @@ fn default_seed(clock: &mut dyn Clock) -> u64 {
     clock.unix_seconds().to_bits() ^ clock.monotonic_nanos()
 }
 
+/// Seeds the hashing of `Map` and `Set` from the host page's random bytes. `std` has no source of
+/// randomness on `wasm32-unknown-unknown`, so without this every page would hash the same way.
+/// Call it before the first program is loaded: once a table has been made the seed cannot change.
+#[cfg(target_family = "wasm")]
+pub fn seed_table_hash() {
+    colibri_runtime::set_table_seed(seed_from(web::fill_random));
+}
+
 /// The offset of the page's time zone at `unix` (whole seconds), in seconds east of UTC, from what
 /// the host said: a number of seconds, or anything else (NaN, infinity, a day or more) for "UTC".
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
@@ -213,7 +221,11 @@ pub enum EnvSource {
     /// The process's own environment.
     #[default]
     Process,
-    /// Exactly these variables, whatever the process has.
+    /// Exactly these variables, whatever the process has. A child process (`process.run`) gets
+    /// them and nothing of the host's, except that on Windows `SystemRoot`, `windir`, `ComSpec`,
+    /// `PATH` and `PATHEXT` are passed on unless set here: without them Winsock and many programs
+    /// do not start, and `cmd` finds no program (on Unix a child without `PATH` still finds
+    /// `sh`, `grep` and the like through the system's default search path).
     Fixed(BTreeMap<String, String>),
 }
 

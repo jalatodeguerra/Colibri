@@ -104,3 +104,26 @@ pub fn sign(path: &std::path::Path) {
         );
     }
 }
+
+/// `cmd.output()`, trying again while the system says the executable is busy.
+///
+/// A test writes an executable (`fs::write`, `fs::copy`) and starts it. Another test thread may
+/// `fork` between the open for writing and its close: the child holds a copy of the write
+/// descriptor until it reaches `exec` (the standard library marks its own descriptors close on
+/// exec, but that only helps once the child gets there), and running the file in that window
+/// fails with `ETXTBSY` ("Text file busy"). The window is a few microseconds, so a short,
+/// bounded wait is enough; anything else, or a window that does not close, is an error.
+pub fn output_of(cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match cmd.output() {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && std::time::Instant::now() < give_up =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            other => return other,
+        }
+    }
+}

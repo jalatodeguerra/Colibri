@@ -54,7 +54,7 @@ impl Dir {
     fn exec(&self, mut cmd: Command) -> Out {
         cmd.current_dir(&self.0)
             .env("COLIBRI_HOME", self.path("home"));
-        let out = cmd.output().expect("the program runs");
+        let out = common::output_of(&mut cmd).expect("the program runs");
         Out {
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),

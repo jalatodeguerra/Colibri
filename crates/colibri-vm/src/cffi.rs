@@ -175,10 +175,10 @@ mod enabled {
             name: &str,
             def: &ExternDef,
         ) -> Result<(), String> {
-            let lib = self
-                .cffi
-                .libs
-                .get(def.lib.as_deref())
+            // SAFETY: opening a library runs its initialisers. A program can only declare an
+            // `@link` library when the `ffi` capability is allowed, which is the embedder's
+            // decision to trust the native code the program names.
+            let lib = unsafe { self.cffi.libs.get(def.lib.as_deref()) }
                 .map_err(|e| format!("`{name}`: {e}"))?;
             let params: Vec<CType> = def.params.iter().map(|p| self.c_type(*p)).collect();
             let ret = self.c_type(def.ret);
@@ -198,7 +198,12 @@ mod enabled {
                     machine.release_all(args);
                     // What the program printed so far comes before anything C writes.
                     machine.core.flush();
-                    let out = func.call(&vals).map_err(fault)?;
+                    // SAFETY: `func` was made from the signature the program declared, and
+                    // `vals` were converted to exactly those types just above. That the
+                    // declaration is the C function's real signature is the program's promise
+                    // (as with any C binding), which the `ffi` capability stands behind; the
+                    // pointers it passes are the program's responsibility in the same way.
+                    let out = unsafe { func.call(&vals) }.map_err(fault)?;
                     machine.value_from_c(rty, out).map_err(fault)
                 },
             );

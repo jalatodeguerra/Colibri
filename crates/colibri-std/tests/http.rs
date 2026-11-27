@@ -65,7 +65,7 @@ fn handle(mut stream: TcpStream) {
     let (status, extra, payload): (&str, &str, Vec<u8>) = match path {
         "/hello" => (
             "200 OK",
-            "X-Thing: a\r\nSet-Cookie: one=1\r\nSet-Cookie: two=2\r\n",
+            "X-Thing: a\r\nSet-Cookie: one=1\r\nSet-Cookie: two=2\r\nSet-Cookie: three=3; Expires=Wed, 21 Oct 2026 07:28:00 GMT\r\nX-Multi: p\r\nX-Multi: q\r\n",
             b"hello".to_vec(),
         ),
         "/echo" => {
@@ -126,10 +126,14 @@ fn get_returns_status_headers_and_body() {
     print(r.headers["x-thing"])
     print(r.headers["content-length"])
     print(r.headers["set-cookie"])
+    print(r.headers["x-multi"])
     print(r.headers.contains_key("X-Thing"))
 "#,
     );
-    assert_eq!(out, "200\nhello\na\n5\none=1, two=2\nfalse\n");
+    assert_eq!(
+        out,
+        "200\nhello\na\n5\none=1\ntwo=2\nthree=3; Expires=Wed, 21 Oct 2026 07:28:00 GMT\np, q\nfalse\n"
+    );
 }
 
 #[test]

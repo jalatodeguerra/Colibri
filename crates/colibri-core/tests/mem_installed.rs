@@ -175,3 +175,15 @@ fn the_flag_is_judged_again_when_an_entry_begins() {
     assert!(!core.memory_over());
     core.end_entry(entry, false);
 }
+
+#[test]
+fn the_slot_tables_own_memory_is_not_charged_to_the_current_vm() {
+    // Opening accounts grows the leaked slot table, and closing them grows the queue of closed
+    // slots. Both are the table's own, and both outlive the Vm that happened to be running.
+    let mut outer = core();
+    let o = outer.begin_entry();
+    let many: Vec<Core> = (0..300).map(|_| core()).collect();
+    drop(many);
+    outer.end_entry(o, false);
+    assert_eq!(outer.memory_used(), Some(0));
+}

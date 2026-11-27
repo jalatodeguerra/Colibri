@@ -38,9 +38,10 @@ memchr = "2.8.3"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# `SO_EXCLUSIVEADDRUSE` (`setsockopt`) for the listeners of `net` on Windows.
+# `SO_EXCLUSIVEADDRUSE` (`setsockopt`) for the listeners of `net` on Windows, and the time zone
+# conversion behind the local time of `datetime` (`SystemTimeToTzSpecificLocalTime`).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", default-features = false, features = ["Win32_Networking_WinSock"] }
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_Time"] }
 
 # `GetProcessTimes`, for the idle-CPU test of `net` (`getrusage` is the call on Unix), and a
 # snapshot of the process's threads, for the idle-threads test (`/proc/self/task` is the way on
