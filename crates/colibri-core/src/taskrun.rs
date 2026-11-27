@@ -206,6 +206,11 @@ impl Core {
 
     /// The pool `task.run` submits to; `None` when the host has not given one.
     pub fn task_spawner(&self) -> Option<Rc<dyn TaskSpawner>> {
+        // The web has no threads: no spawner, so all the code behind it can be left out of the
+        // web runner (it is embedded in `colibri`, whose size is gated).
+        if cfg!(target_family = "wasm") {
+            return None;
+        }
         self.tasks.spawner.clone()
     }
 

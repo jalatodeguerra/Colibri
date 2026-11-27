@@ -99,6 +99,10 @@ impl Machine {
         let Some(op) = task_op(recv) else {
             return Err(self.internal(fiber, span, "ill-typed task method"));
         };
+        if cfg!(target_family = "wasm") {
+            // A `Task` cannot be made on the web (`task.run` has no pool), so there is nothing to wait for.
+            return Err(self.internal(fiber, span, "a task handle on the web"));
+        }
         loop {
             if self.core.task_poll(op) == TaskPoll::Finished {
                 return self.task_result(fiber, op, span).map(Some);
@@ -254,6 +258,9 @@ impl Machine {
         let Some(id) = task_op(recv) else {
             return Err(self.internal(fiber, span, "ill-typed task method"));
         };
+        if cfg!(target_family = "wasm") {
+            return Err(self.internal(fiber, span, "a task handle on the web"));
+        }
         let finished = self.core.task_poll(id) == TaskPoll::Finished;
         match op {
             Builtin::TaskDone => Ok(Value::Bool(finished)),

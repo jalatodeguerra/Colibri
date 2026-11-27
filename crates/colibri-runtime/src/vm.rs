@@ -343,6 +343,9 @@ impl VmBuilder {
             max_call_depth: self.max_call_depth,
         };
         let launch = Rc::new(Launch::new(TaskPool::new(workers, Arc::clone(&stats))));
+        // On the web there is no pool to hand tasks to: without the coercion to the trait object
+        // the pool's code is unreachable, and the linker leaves it out.
+        #[cfg(not(target_family = "wasm"))]
         engine
             .core_mut()
             .set_task_spawner(Some(Rc::clone(&launch) as Rc<dyn TaskSpawner>));
