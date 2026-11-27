@@ -16,8 +16,8 @@ use crate::hir::{FnId, IfaceMethod, ImplId, TypeDefKind};
 use crate::prelude;
 use crate::traits::{BoundRef, GenericParamInfo, ImplInfo, key_of};
 use crate::types::{
-    CLONE, DROP, EQ, FIRST_USER_TYPE, INTO_ERROR, IntTy, ORD, ParamId, SHOW, Ty, TypeId,
-    is_binary_operator, is_operator,
+    DROP, EQ, FIRST_USER_TYPE, INTO_ERROR, IntTy, ORD, ParamId, Ty, TypeId, is_binary_operator,
+    is_operator,
 };
 
 /// An interface as the checker keeps it.
@@ -631,8 +631,9 @@ impl<'a> Checker<'a> {
     /// hold for a type nothing checked (a closure where the impl wants `Ord`).
     ///
     /// Each bound the impl writes on one of the method's own parameters must be one the
-    /// interface writes on the matching parameter (`Ord` also gives `Eq`; `Show` and `Clone` hold
-    /// for every type). `map` takes the interface's parameters to the impl's terms.
+    /// interface writes on the matching parameter (`Ord` also gives `Eq`). `Show` and `Clone` are no
+    /// exception: a host object cannot be cloned, and a user's `impl[T: Ord] Show for W[T]` holds
+    /// only for some `W[T]`. `map` takes the interface's parameters to the impl's terms.
     fn check_method_bounds(
         &mut self,
         own_wanted: &[GenericParamInfo],
@@ -644,7 +645,7 @@ impl<'a> Checker<'a> {
     ) {
         for (w, g) in own_wanted.iter().zip(own_got) {
             for b in &g.bounds {
-                if b.implied || b.iface == SHOW || b.iface == CLONE {
+                if b.implied {
                     continue;
                 }
                 let granted = w.bounds.iter().any(|wb| {

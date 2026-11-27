@@ -1,0 +1,33 @@
+// `Show` and `Clone` are bounds like any other: the interface has to declare them. A
+// conditional `impl[T: Ord] Show for W[T]` does not hold for every `W[T]`, and a host object
+// cannot be cloned.
+struct W[T] {
+    x: T
+}
+
+impl[T: Ord] Show for W[T] {
+    fn show(self) -> str {
+        return "W"
+    }
+}
+
+interface Mk {
+    fn sh[U](self, u: U) -> str
+    fn dup[U](self, u: U) -> U
+}
+
+struct S {}
+
+impl Mk for S {
+    fn sh[U: Show](self, u: U) -> str { // error: the method `sh` asks more of `U` than `Mk` does
+        return u.show()
+    }
+
+    fn dup[U: Clone](self, u: U) -> U { // error: the method `dup` asks more of `U` than `Mk` does
+        return u.clone()
+    }
+}
+
+fn main() {
+    print(1)
+}
