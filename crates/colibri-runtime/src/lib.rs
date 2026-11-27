@@ -169,7 +169,20 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 ///     y: f32,
 /// }
 /// ```
-pub use colibri_bind::export;
+/// `#[colibri::module]` goes at the crate root, where a runner finds `__colibri_binding`:
+///
+/// ```compile_fail
+/// use colibri_runtime as colibri;
+///
+/// mod inner {
+///     use super::colibri;
+///     #[colibri::module]
+///     pub fn physics(m: &mut colibri::Module<'_>) -> Result<(), colibri::Error> {
+///         Ok(())
+///     }
+/// }
+/// ```
+pub use colibri_bind::{export, module};
 pub use colibri_check::package::{
     AssetPatterns, Build, Manifest, asset_path_problem, parse_manifest,
 };
@@ -208,7 +221,7 @@ pub use reload::{ReloadOptions, ReloadOutcome};
 pub use render::{render_diagnostic, render_diagnostics};
 pub use types::{SigDesc, TypeDesc, TypeRegistry};
 pub use vm::{
-    DEFAULT_MAX_CALL_DEPTH, HostModule, SessionCheck, SessionError, TestInfo, Vm, VmBuilder,
+    DEFAULT_MAX_CALL_DEPTH, HostModule, Module, SessionCheck, SessionError, TestInfo, Vm, VmBuilder,
 };
 
 /// The debugger interface (L10), hidden until it has settled: what `colibri debug` builds on,
@@ -245,7 +258,47 @@ pub mod __private {
     pub use crate::handle::{MutParam, RefParam};
     pub use crate::types::{TypeDesc, TypeRegistry};
 
-    use crate::{HostFn, Registration, Vm};
+    use crate::{HostFn, HostModule, Registration, Vm};
+
+    /// Runs the registration function `f` of the binding `rust_name` under the import name
+    /// `name`: claims the name (a second registration is an error), catches a panic of `f`
+    /// as an `Error::Registration` that names the binding, and gives the name back when the
+    /// registration failed, so that a retry reports its own error.
+    pub fn run_binding(
+        vm: &mut Vm,
+        rust_name: &str,
+        name: &str,
+        f: impl FnOnce(&mut HostModule<'_>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        vm.claim_binding(name)?;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut module = vm.module(name);
+            f(&mut module)
+        }));
+        let result = outcome.unwrap_or_else(|payload| {
+            Err(Error::Registration {
+                name: name.to_string(),
+                message: format!(
+                    "the binding `{rust_name}` panicked while registering: {}",
+                    crate::host::payload_message(payload.as_ref())
+                ),
+            })
+        });
+        if result.is_err() {
+            vm.release_binding(name);
+        }
+        result
+    }
+
+    /// Registers an exported function into a module.
+    pub fn register_exported_in<M, F: HostFn<M>, const N: usize>(
+        module: &mut HostModule<'_>,
+        name: &str,
+        params: [&str; N],
+        f: F,
+    ) -> Result<(), Error> {
+        module.register_fn_named(name, params, f).map(|_| ())
+    }
 
     /// The `i`th field of a struct value, or the error that says what was wrong.
     pub fn field(value: &Value, i: usize, type_name: &str) -> Result<Value, Error> {
