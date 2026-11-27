@@ -54,7 +54,7 @@ pub(crate) fn table_hash(v: &Value) -> u64 {
 fn table_seed() -> u64 {
     *TABLE_SEED.get_or_init(|| {
         use std::hash::BuildHasher;
-        std::collections::hash_map::RandomState::new().hash_one(0x436f_6c69_6272_69u64)
+        std::collections::hash_map::RandomState::new().hash_one(0u64)
     })
 }
 
