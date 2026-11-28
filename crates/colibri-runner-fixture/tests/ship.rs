@@ -212,7 +212,10 @@ fn a_package_without_bindings_is_built_as_before() {
         "{}",
         String::from_utf8_lossy(&built.stderr)
     );
-    assert!(!String::from_utf8_lossy(&built.stderr).contains("runner"));
+    // No "  runner PATH (N bytes, with the Rust bindings of ..)" line (a bare "runner" would also
+    // match a temporary folder such as Windows CI's `C:\Users\runneradmin`).
+    let stderr = String::from_utf8_lossy(&built.stderr);
+    assert!(!stderr.contains("with the Rust bindings"), "{stderr}");
     assert!(w.cargo_log().is_empty());
 }
 
