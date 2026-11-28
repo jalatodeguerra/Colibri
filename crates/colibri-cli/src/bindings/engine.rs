@@ -137,6 +137,12 @@ mod tests {
         fn new(name: &str, version: &str) -> Tree {
             let dir =
                 std::env::temp_dir().join(format!("colibri-engine-{}-{name}", std::process::id()));
+            Tree::at(dir, version)
+        }
+
+        /// A tree written straight at `dir` (no rename: the temp folder can be on another
+        /// drive than the current folder on Windows).
+        fn at(dir: PathBuf, version: &str) -> Tree {
             let _ = std::fs::remove_dir_all(&dir);
             for member in ["colibri-cli", "colibri-runtime"] {
                 let crate_dir = dir.join("crates").join(member);
@@ -189,11 +195,8 @@ mod tests {
     fn a_relative_environment_becomes_absolute() {
         // A tree inside the current folder, named relatively.
         let name = format!("colibri-engine-{}-rel", std::process::id());
-        let tree = Tree::new("rel-src", "0.1.0");
         let here = std::env::current_dir().unwrap().join(&name);
-        let _ = std::fs::remove_dir_all(&here);
-        std::fs::rename(&tree.0, &here).unwrap();
-        let moved = Tree(here.clone());
+        let moved = Tree::at(here, "0.1.0");
         let got = resolve(&inputs(Some(Path::new(&name)), None, false)).unwrap();
         let Engine::Path(dir) = got else {
             panic!("a path")
