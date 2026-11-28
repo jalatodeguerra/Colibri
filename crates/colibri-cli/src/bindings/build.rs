@@ -257,6 +257,38 @@ pub fn ensure_runner(
     Ok(runner)
 }
 
+/// The path the runner of the project in its present state has (or would have): no build, no
+/// write. It changes when anything the stamp is made of changes (a binding crate or one it names
+/// by path, the manifest, the lock, the engine), which is how `run --watch` notices a Rust edit.
+pub fn expected_runner(
+    env: &Env,
+    root: &Path,
+    bindings: &[ProjectBinding],
+    options: Options,
+) -> Result<PathBuf, String> {
+    let crates = crates_of(bindings)?;
+    let engine = engine::resolve(&env.engine)?;
+    let generated = r#gen::generate(&engine, &crates)?;
+    let lock = match std::fs::read_to_string(root.join(LOCK_FILE)) {
+        Ok(text) => normalize(&text),
+        Err(_) => normalize(&generated.seed_lock),
+    };
+    let tree = tree_identity(&crates, &engine);
+    let dir = env.runners.join(format!(
+        "{:016x}",
+        fnv(r#gen::display_path(root).as_bytes())
+    ));
+    let exe = if cfg!(windows) { ".exe" } else { "" };
+    let stamp = stamp(
+        &generated.cargo_toml,
+        &generated.main_rs,
+        &lock,
+        &tree,
+        options.profile,
+    );
+    Ok(dir.join(format!("runner-{stamp}{exe}")))
+}
+
 /// A runner that was there already. With `Options::write_interfaces` the project's interfaces are
 /// compared with the runner's (kept next to it, so this reads files and does not start it) and the
 /// ones that differ are named, not written.

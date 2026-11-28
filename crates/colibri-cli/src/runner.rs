@@ -60,6 +60,8 @@ pub fn runner_main(table: &'static [Binding]) -> ExitCode {
     // Keeps the version marker `colibri build --runner` looks for in the binary.
     std::hint::black_box(crate::platform::own_version());
     bindings::install(table);
+    // Under `run --watch` of a supervisor: end with it.
+    crate::supervise::die_with_parent();
     let cli = Cli::parse();
     // A binding that cannot register (a clash, a panic) is said once, here, instead of being
     // found by whichever `Vm` is built first.

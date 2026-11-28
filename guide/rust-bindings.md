@@ -44,6 +44,22 @@ warning that names `colibri bindings`, which brings the files up to date.
 Two builds at once on one machine take turns: the second says "waiting for another Colibri build"
 and goes on when the first is done.
 
+## Watching
+
+`colibri run --watch` works in a package with Rust bindings too. `colibri` stays in front and keeps
+the project runner running; what you edit decides what happens.
+
+- A Colibri edit is reloaded inside the running program exactly as without bindings: a change to
+  function bodies is patched in place and the program's state is kept, other changes restart it
+  (`save_state` and `restore_state` carry state).
+- A Rust edit (a file of a binding crate, or of a crate it names with `path =`, or a change to
+  `[rust-dependencies]`) builds the runner again. When the build works, the program is stopped and
+  started again in the new runner, which prints "Rust code changed: rebuilt the runner and
+  restarted" (state is not carried over a Rust change). When it fails, cargo's errors are printed
+  and the old runner keeps running until the next edit.
+- The command ends with the program's exit code. Ctrl-C ends the program and the command. If
+  `colibri` itself is killed, the runner ends too.
+
 ## Commands that never call cargo
 
 `colibri check`, `fmt`, `doc`, `new`, `update` (git dependencies only) and the language server

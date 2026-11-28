@@ -5,6 +5,8 @@
 //! - `FAKE_CARGO_RUNNER`: the runner to copy to `<target-dir>/<profile>/colibri-project-runner`;
 //! - `FAKE_CARGO_SLEEP_MS`: wait first (to overlap two builds);
 //! - `FAKE_CARGO_FAIL`: `build` (a compile error) or `network` (a download failure);
+//! - `FAKE_CARGO_CONTROL`: a file read at every call, whose lines `runner=PATH` and `fail=build`
+//!   override the two variables above (a test that is watching changes what the next build does);
 //! - `FAKE_CARGO_DUP_RUNTIME`: resolve a lock with two `colibri-runtime` packages.
 //!
 //! It also writes the lock a build would: the one it was given plus a marker line, once.
@@ -35,12 +37,22 @@ fn main() {
             .cloned()
             .unwrap_or_else(|| panic!("fake cargo: no {flag}"))
     };
-    match std::env::var("FAKE_CARGO_FAIL").as_deref() {
-        Ok("build") => {
+    let control = std::env::var_os("FAKE_CARGO_CONTROL")
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .unwrap_or_default();
+    let controlled = |key: &str| {
+        control
+            .lines()
+            .find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix('=')))
+            .map(str::to_string)
+    };
+    let fail = controlled("fail").or_else(|| std::env::var("FAKE_CARGO_FAIL").ok());
+    match fail.as_deref() {
+        Some("build") => {
             eprintln!("error: could not compile `colibri-project-runner` (bin)");
             std::process::exit(101);
         }
-        Ok("network") => {
+        Some("network") => {
             eprintln!("error: failed to download `unicode-width v0.2.0`");
             std::process::exit(101);
         }
@@ -65,7 +77,10 @@ fn main() {
     std::fs::create_dir_all(&out_dir).expect("the target folder");
     let name = format!("{}{}", after("--bin"), std::env::consts::EXE_SUFFIX);
     let tmp = out_dir.join(format!("{name}.fake{}", std::process::id()));
-    let runner = std::env::var_os("FAKE_CARGO_RUNNER").expect("FAKE_CARGO_RUNNER");
+    let runner = controlled("runner")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("FAKE_CARGO_RUNNER"))
+        .expect("FAKE_CARGO_RUNNER");
     std::fs::copy(runner, &tmp).expect("the runner is copied");
     std::fs::rename(&tmp, out_dir.join(name)).expect("the runner is put in place");
 }

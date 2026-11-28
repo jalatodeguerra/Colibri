@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 
 pub const UNDER_TEST: &str = env!("CARGO_BIN_EXE_colibri-under-test");
 pub const RUNNER: &str = env!("CARGO_BIN_EXE_colibri-runner-fixture");
+pub const RUNNER_V3: &str = env!("CARGO_BIN_EXE_colibri-runner-fixture-v3");
 pub const RUNNER_V2: &str = env!("CARGO_BIN_EXE_colibri-runner-fixture-v2");
 pub const FAKE_CARGO: &str = env!("CARGO_BIN_EXE_fake-cargo");
 
