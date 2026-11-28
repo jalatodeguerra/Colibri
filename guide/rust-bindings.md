@@ -14,8 +14,9 @@ built by cargo once and kept in a cache. You do not call the runner yourself.
 ## Commands that build Rust
 
 `colibri bindings` builds the runner and writes the interface files (`native.cbi`, one for each
-key) next to the manifest. Commit them. `colibri bindings --check` fails if one is out of date. It builds the runner to ask it for the
-interfaces, so it needs Rust (a CI job that runs it needs the toolchain, unlike `colibri check`).
+key) next to the manifest. Commit them. `colibri bindings --check` fails if one is out of date. It
+builds the runner to ask it for the interfaces, so it needs Rust (a CI job that runs it needs the
+toolchain, unlike `colibri check`).
 
 `colibri run`, `test` and `repl` (with `--leaks` and `--profile` as well) do the same when the
 package declares bindings: they find the runner of the project, build it if it is missing or out
@@ -52,10 +53,11 @@ job that only runs programs), give it to `run`, `test` or `repl`:
 $ colibri run --runner ./app-runner main.colibri
 ```
 
-`--runner` goes before the script (the folder of the script is the package): what follows the script belongs to the program. `colibri`
-checks the file first. It must be a `colibri` of the same version, and hold exactly the bindings
-the package declares (same keys, crates, versions, features). A plain `colibri`, or a runner of
-other bindings, is refused with a message that names the bindings it lacks.
+`--runner` goes before the script (the folder of the script is the package): what follows the
+script belongs to the program. `colibri` checks the file first. It must be a `colibri` of the same
+version, and hold exactly the bindings the package declares (same keys, crates, versions,
+features). A plain `colibri`, or a runner of other bindings, is refused with a message that names
+the bindings it lacks.
 
 ## When the runner is rebuilt
 

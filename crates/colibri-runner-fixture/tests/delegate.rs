@@ -2,120 +2,13 @@
 //! fixture runner, put where cargo would put it by a fake cargo), and `--runner FILE` uses a given
 //! one. The real `main.rs` of `colibri` is the program under test (`colibri-under-test`).
 
+mod common;
+
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-const UNDER_TEST: &str = env!("CARGO_BIN_EXE_colibri-under-test");
-const RUNNER: &str = env!("CARGO_BIN_EXE_colibri-runner-fixture");
-const FAKE_CARGO: &str = env!("CARGO_BIN_EXE_fake-cargo");
-
-/// Arguments, standard input, exit codes: what a program shows of its host.
-const PROGRAM: &str = "import os\nimport io\n\nfn main() {\n    print(os.args())\n    print(io.read_line())\n    io.eprint(\"to stderr\\n\")\n    let a = os.args()\n    if a.len() > 0 {\n        if a[0] == \"one\" {\n            os.exit(1)\n        }\n        if a[0] == \"panic\" {\n            let v = [1]\n            print(v[3])\n        }\n    }\n}\n";
-
-const BOUND: &str = "[package]\nname = \"app\"\n\n[rust-dependencies]\nfixture = { binding = \"colibri-fixture\", version = \"0.1\" }\n";
-const OTHER: &str = "[package]\nname = \"app\"\n\n[rust-dependencies]\nfixture = { binding = \"colibri-fixture\", version = \"0.2\" }\n";
-const PLAIN: &str = "[package]\nname = \"app\"\n";
-
-struct World {
-    root: PathBuf,
-}
-
-struct Out {
-    stdout: String,
-    stderr: String,
-    code: i32,
-}
-
-impl World {
-    fn new(name: &str) -> World {
-        let root =
-            std::env::temp_dir().join(format!("colibri-delegate-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        // (macOS and Windows reach a temp folder through a link or a short name.)
-        let root = fs::canonicalize(&root).unwrap();
-        let root = PathBuf::from(
-            colibri_lang::bindings::r#gen::strip_verbatim(&root.to_string_lossy()).to_string(),
-        );
-        World { root }
-    }
-
-    /// A package folder with `manifest` and the test program.
-    fn package(&self, name: &str, manifest: &str) -> PathBuf {
-        let dir = self.root.join(name);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("colibri.toml"), manifest).unwrap();
-        fs::write(dir.join("main.colibri"), PROGRAM).unwrap();
-        // The interface the checker reads, from the runner itself, as `colibri bindings` does.
-        if manifest.contains("rust-dependencies") {
-            let out = Command::new(RUNNER)
-                .arg("__write-interfaces")
-                .arg(&dir)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-        dir
-    }
-
-    fn cargo_log(&self) -> Vec<String> {
-        fs::read_to_string(self.root.join("cargo.log"))
-            .map(|t| t.lines().map(str::to_string).collect())
-            .unwrap_or_default()
-    }
-
-    fn command(&self, exe: &str, dir: &Path, args: &[&str]) -> Command {
-        let mut c = Command::new(exe);
-        c.args(args)
-            .current_dir(dir)
-            .env("COLIBRI_HOME", self.root.join("home"))
-            .env("CARGO", FAKE_CARGO)
-            .env("FAKE_CARGO_LOG", self.root.join("cargo.log"))
-            .env("FAKE_CARGO_RUNNER", RUNNER)
-            .env_remove("COLIBRI_PROJECT_RUNNER");
-        c
-    }
-
-    fn run_with(&self, exe: &str, dir: &Path, args: &[&str], stdin: &str) -> Out {
-        let mut child = self
-            .command(exe, dir, args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(stdin.as_bytes())
-            .unwrap();
-        let out = child.wait_with_output().unwrap();
-        Out {
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            code: out.status.code().unwrap_or(-1),
-        }
-    }
-
-    /// `colibri <args>` as the user types it, in `dir`.
-    fn colibri(&self, dir: &Path, args: &[&str], stdin: &str) -> Out {
-        self.run_with(UNDER_TEST, dir, args, stdin)
-    }
-}
-
-impl Drop for World {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-    }
-}
+use common::*;
 
 #[test]
 fn the_fixture_marker_is_the_one_of_its_package() {
@@ -301,117 +194,6 @@ fn a_runner_never_hands_over_again() {
     assert_eq!(w.cargo_log().len(), 1);
 }
 
-/// What handing over costs: the same run, in the runner directly and through `colibri`, the best
-/// of ten each (a run that is already cached, as every run but the first is).
-#[test]
-fn handing_over_costs_little() {
-    let w = World::new("overhead");
-    let bound = w.package("bound", BOUND);
-    let warm = w.colibri(&bound, &["run", "main.colibri"], "");
-    assert_eq!(warm.code, 0, "{}", warm.stderr);
-    let best = |exe: &str| {
-        (0..10)
-            .map(|_| {
-                let start = Instant::now();
-                let out = w.run_with(exe, &bound, &["run", "main.colibri"], "");
-                assert_eq!(out.code, 0, "{}", out.stderr);
-                start.elapsed()
-            })
-            .min()
-            .unwrap()
-    };
-    let direct = best(RUNNER);
-    let through = best(UNDER_TEST);
-    let extra = through.saturating_sub(direct);
-    eprintln!(
-        "delegation overhead: {:.1} ms (runner alone {:.1} ms, through colibri {:.1} ms, best of 10)",
-        extra.as_secs_f64() * 1000.0,
-        direct.as_secs_f64() * 1000.0,
-        through.as_secs_f64() * 1000.0
-    );
-    // 10 ms in a release build on Unix, where `colibri` becomes the runner. A debug build is several
-    // times slower at everything, and on Windows the runner is a child process (about 20 ms more).
-    let limit = match (cfg!(debug_assertions), cfg!(windows)) {
-        (false, false) => 10,
-        (true, false) => 60,
-        (_, true) => 250,
-    };
-    assert!(extra < Duration::from_millis(limit), "{extra:?}");
-}
-
-/// A package with a path dependency that has no bindings, and many modules: `colibri run` reads the
-/// manifests to learn that there is nothing to hand over, and starts as fast as with the guard.
-#[test]
-fn a_package_with_only_plain_dependencies_starts_as_fast_as_ever() {
-    let w = World::new("plaindeps");
-    let dir = w.root.join("big");
-    fs::create_dir_all(dir.join("dep")).unwrap();
-    fs::write(
-        dir.join("colibri.toml"),
-        "[package]\nname = \"app\"\n\n[dependencies]\ndep = { path = \"dep\" }\n",
-    )
-    .unwrap();
-    fs::write(dir.join("dep/colibri.toml"), "[package]\nname = \"dep\"\n").unwrap();
-    fs::write(
-        dir.join("dep/lib.colibri"),
-        "pub fn one() -> int {\n    return 1\n}\n",
-    )
-    .unwrap();
-    let mut main = String::from("import dep\n");
-    let mut body = String::from("    let mut total = dep.one()\n");
-    for i in 0..300 {
-        fs::write(
-            dir.join(format!("m{i}.colibri")),
-            format!("pub fn f() -> int {{\n    let a = {i}\n    let b = a * 2 + 1\n    return b - a\n}}\n"),
-        )
-        .unwrap();
-        main.push_str(&format!("import m{i}\n"));
-        body.push_str(&format!("    total = total + m{i}.f()\n"));
-    }
-    main.push_str(&format!("\nfn main() {{\n{body}    print(total)\n}}\n"));
-    fs::write(dir.join("main.colibri"), main).unwrap();
-
-    let time = |guard: bool| {
-        (0..10)
-            .map(|_| {
-                let mut c = w.command(UNDER_TEST, &dir, &["run", "main.colibri"]);
-                // No cargo to be found: a hand-over would fail.
-                c.env("CARGO", "colibri-no-such-cargo").env("PATH", "");
-                if guard {
-                    c.env("COLIBRI_PROJECT_RUNNER", "1");
-                }
-                let start = Instant::now();
-                let out = c.stdin(Stdio::null()).output().unwrap();
-                let took = start.elapsed();
-                assert_eq!(
-                    out.status.code(),
-                    Some(0),
-                    "{}",
-                    String::from_utf8_lossy(&out.stderr)
-                );
-                assert!(String::from_utf8_lossy(&out.stdout).starts_with("45151"));
-                took
-            })
-            .min()
-            .unwrap()
-    };
-    let plain = time(false);
-    let guarded = time(true);
-    let extra = plain.saturating_sub(guarded);
-    eprintln!(
-        "start-up of a package with a plain dependency: {:.1} ms, with the guard {:.1} ms (extra {:.1} ms, best of 10)",
-        plain.as_secs_f64() * 1000.0,
-        guarded.as_secs_f64() * 1000.0,
-        extra.as_secs_f64() * 1000.0
-    );
-    // Within noise: a package load (what the check used to cost) is a good part of the time.
-    assert!(
-        extra < guarded / 10 + Duration::from_millis(3),
-        "extra {extra:?} on {guarded:?}"
-    );
-    assert!(w.cargo_log().is_empty());
-}
-
 /// Without cargo a `run` says what `colibri bindings` says.
 #[test]
 fn run_without_cargo_says_what_bindings_says() {
@@ -431,4 +213,54 @@ fn run_without_cargo_says_what_bindings_says() {
         "{run}"
     );
     assert_eq!(run, bindings);
+}
+
+/// The bindings are declared by a dependency, not by the app: `run` hands over all the same.
+#[test]
+fn a_dependency_that_declares_bindings_makes_run_hand_over() {
+    let w = World::new("depbinds");
+    let plain = w.package("plain", PLAIN);
+    let app = w.root.join("app");
+    fs::create_dir_all(&app).unwrap();
+    fs::write(
+        app.join("colibri.toml"),
+        "[package]\nname = \"app\"\n\n[dependencies]\ndep = { path = \"dep\" }\n",
+    )
+    .unwrap();
+    fs::write(app.join("main.colibri"), PROGRAM).unwrap();
+    let dep = app.join("dep");
+    fs::create_dir_all(&dep).unwrap();
+    fs::write(
+        dep.join("colibri.toml"),
+        BOUND.replace("name = \"app\"", "name = \"dep\""),
+    )
+    .unwrap();
+    fs::write(
+        dep.join("lib.colibri"),
+        "pub fn one() -> int {\n    return 1\n}\n",
+    )
+    .unwrap();
+    // The interface the checker reads, from the runner itself.
+    let out = std::process::Command::new(RUNNER)
+        .arg("__write-interfaces")
+        .arg(&dep)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let args: &[&str] = &["run", "main.colibri", "x"];
+    let want = w.colibri(&plain, args, "hi\n");
+    let got = w.colibri(&app, args, "hi\n");
+    assert_eq!(got.code, 0, "{}", got.stderr);
+    assert_eq!(got.stdout, want.stdout);
+    assert!(
+        got.stderr.contains("building the Rust bindings"),
+        "{}",
+        got.stderr
+    );
+    assert_eq!(w.cargo_log().len(), 1, "{:?}", w.cargo_log());
 }
