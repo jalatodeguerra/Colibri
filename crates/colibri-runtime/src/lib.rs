@@ -511,6 +511,18 @@ pub fn project_bindings(
     Ok(out)
 }
 
+/// Whether the package in `dir` or any package it depends on declares Rust bindings, from the
+/// manifests alone (no source file is read): what `colibri run` asks before it knows whether to
+/// hand over to a project runner.
+pub fn declares_rust_bindings(
+    fs: &dyn SourceFs,
+    dir: &Path,
+    cfg: BuildCfg,
+) -> Result<bool, String> {
+    colibri_check::package::declares_rust_bindings(fs, dir, cfg)
+        .map_err(|e| format!("{}: {}", e.path, e.message))
+}
+
 /// [`check_entry`] where the standard modules `lazy_names` are known by name only: the
 /// interface of one is asked from `interface` when the program imports it.
 fn check_entry_lazy(

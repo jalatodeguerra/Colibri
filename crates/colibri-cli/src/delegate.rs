@@ -34,7 +34,7 @@ pub fn delegate(request: &Request<'_>) -> Option<ExitCode> {
     // A plain script, and a package without Rust bindings, are left alone: nothing is read but the
     // manifest, and the cache is not touched.
     let wants = manifest_wants_bindings(&folder.join(colibri_runtime::MANIFEST_FILE));
-    if !wants && request.runner.is_none() {
+    if wants == Wants::No && request.runner.is_none() {
         return None;
     }
     if !folder.join(colibri_runtime::MANIFEST_FILE).is_file() {
@@ -47,7 +47,7 @@ pub fn delegate(request: &Request<'_>) -> Option<ExitCode> {
         }
         return None;
     }
-    match hand_over(request, &folder) {
+    match hand_over(request, &folder, wants) {
         Ok(code) => code,
         Err(message) => Some(fail(&message)),
     }
@@ -64,21 +64,38 @@ fn package_folder(file: &Path) -> PathBuf {
     }
 }
 
-/// Whether the manifest declares Rust bindings itself, or has dependencies (which may). A
-/// manifest that cannot be read or parsed says no: the command reports it as it always did.
-fn manifest_wants_bindings(manifest: &Path) -> bool {
+/// What the manifest of a package says about Rust bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wants {
+    /// Neither `[rust-dependencies]` nor `[dependencies]` (or no manifest that can be read: the
+    /// command reports it as it always did).
+    No,
+    /// Dependencies, one of which may declare bindings.
+    Maybe,
+    /// `[rust-dependencies]`.
+    Yes,
+}
+
+fn manifest_wants_bindings(manifest: &Path) -> Wants {
     let Ok(text) = std::fs::read_to_string(manifest) else {
-        return false;
+        return Wants::No;
     };
     let Ok(table) = toml::de::DeTable::parse(&text) else {
-        return false;
+        return Wants::No;
     };
     let table = table.get_ref();
-    ["rust-dependencies", "dependencies"].iter().any(|key| {
+    let filled = |key: &str| {
         table
-            .get(*key)
+            .get(key)
             .is_some_and(|v| v.get_ref().as_table().is_some_and(|t| !t.is_empty()))
-    })
+    };
+    if filled("rust-dependencies") {
+        Wants::Yes
+    } else if filled("dependencies") {
+        Wants::Maybe
+    } else {
+        Wants::No
+    }
 }
 
 fn fail(message: &str) -> ExitCode {
@@ -86,9 +103,26 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::from(1)
 }
 
-fn hand_over(request: &Request<'_>, folder: &Path) -> Result<Option<ExitCode>, String> {
-    if let Err(code) = depscmd::prepare(request.file, request.deps) {
+fn hand_over(
+    request: &Request<'_>,
+    folder: &Path,
+    wants: Wants,
+) -> Result<Option<ExitCode>, String> {
+    // Once: the command that runs here does not prepare again.
+    if let Err(code) = depscmd::prepare_once(request.file, request.deps) {
         return Ok(Some(code));
+    }
+    // A package that only has dependencies is asked from the manifests alone (no source is read):
+    // most of them have no bindings, and for them the command must start as fast as ever.
+    if wants == Wants::Maybe
+        && request.runner.is_none()
+        && !colibri_runtime::declares_rust_bindings(
+            &colibri_runtime::DiskFs,
+            folder,
+            crate::build_cfg(),
+        )?
+    {
+        return Ok(None);
     }
     let (root, found) = build::project(folder)?;
     let runner = match request.runner {
@@ -218,16 +252,24 @@ mod tests {
             std::fs::write(&p, text).unwrap();
             manifest_wants_bindings(&p)
         };
-        assert!(!wants("[package]\nname = \"a\"\n"));
-        assert!(!wants("[package]\nname = \"a\"\n\n[dependencies]\n"));
-        assert!(wants(
-            "[package]\nname = \"a\"\n\n[rust-dependencies]\nx = { path = \"x\" }\n"
-        ));
-        assert!(wants(
-            "[package]\nname = \"a\"\n\n[dependencies]\nb = { path = \"b\" }\n"
-        ));
-        assert!(!wants("not = toml ="));
-        assert!(!manifest_wants_bindings(&dir.join("missing.toml")));
+        assert_eq!(wants("[package]\nname = \"a\"\n"), Wants::No);
+        assert_eq!(
+            wants("[package]\nname = \"a\"\n\n[dependencies]\n"),
+            Wants::No
+        );
+        assert_eq!(
+            wants("[package]\nname = \"a\"\n\n[rust-dependencies]\nx = { path = \"x\" }\n"),
+            Wants::Yes
+        );
+        assert_eq!(
+            wants("[package]\nname = \"a\"\n\n[dependencies]\nb = { path = \"b\" }\n"),
+            Wants::Maybe
+        );
+        assert_eq!(wants("not = toml ="), Wants::No);
+        assert_eq!(
+            manifest_wants_bindings(&dir.join("missing.toml")),
+            Wants::No
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

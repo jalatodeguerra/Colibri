@@ -338,3 +338,97 @@ fn handing_over_costs_little() {
     };
     assert!(extra < Duration::from_millis(limit), "{extra:?}");
 }
+
+/// A package with a path dependency that has no bindings, and many modules: `colibri run` reads the
+/// manifests to learn that there is nothing to hand over, and starts as fast as with the guard.
+#[test]
+fn a_package_with_only_plain_dependencies_starts_as_fast_as_ever() {
+    let w = World::new("plaindeps");
+    let dir = w.root.join("big");
+    fs::create_dir_all(dir.join("dep")).unwrap();
+    fs::write(
+        dir.join("colibri.toml"),
+        "[package]\nname = \"app\"\n\n[dependencies]\ndep = { path = \"dep\" }\n",
+    )
+    .unwrap();
+    fs::write(dir.join("dep/colibri.toml"), "[package]\nname = \"dep\"\n").unwrap();
+    fs::write(
+        dir.join("dep/lib.colibri"),
+        "pub fn one() -> int {\n    return 1\n}\n",
+    )
+    .unwrap();
+    let mut main = String::from("import dep\n");
+    let mut body = String::from("    let mut total = dep.one()\n");
+    for i in 0..300 {
+        fs::write(
+            dir.join(format!("m{i}.colibri")),
+            format!("pub fn f() -> int {{\n    let a = {i}\n    let b = a * 2 + 1\n    return b - a\n}}\n"),
+        )
+        .unwrap();
+        main.push_str(&format!("import m{i}\n"));
+        body.push_str(&format!("    total = total + m{i}.f()\n"));
+    }
+    main.push_str(&format!("\nfn main() {{\n{body}    print(total)\n}}\n"));
+    fs::write(dir.join("main.colibri"), main).unwrap();
+
+    let time = |guard: bool| {
+        (0..10)
+            .map(|_| {
+                let mut c = w.command(UNDER_TEST, &dir, &["run", "main.colibri"]);
+                // No cargo to be found: a hand-over would fail.
+                c.env("CARGO", "colibri-no-such-cargo").env("PATH", "");
+                if guard {
+                    c.env("COLIBRI_PROJECT_RUNNER", "1");
+                }
+                let start = Instant::now();
+                let out = c.stdin(Stdio::null()).output().unwrap();
+                let took = start.elapsed();
+                assert_eq!(
+                    out.status.code(),
+                    Some(0),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                assert!(String::from_utf8_lossy(&out.stdout).starts_with("45151"));
+                took
+            })
+            .min()
+            .unwrap()
+    };
+    let plain = time(false);
+    let guarded = time(true);
+    let extra = plain.saturating_sub(guarded);
+    eprintln!(
+        "start-up of a package with a plain dependency: {:.1} ms, with the guard {:.1} ms (extra {:.1} ms, best of 10)",
+        plain.as_secs_f64() * 1000.0,
+        guarded.as_secs_f64() * 1000.0,
+        extra.as_secs_f64() * 1000.0
+    );
+    // Within noise: a package load (what the check used to cost) is a good part of the time.
+    assert!(
+        extra < guarded / 10 + Duration::from_millis(3),
+        "extra {extra:?} on {guarded:?}"
+    );
+    assert!(w.cargo_log().is_empty());
+}
+
+/// Without cargo a `run` says what `colibri bindings` says.
+#[test]
+fn run_without_cargo_says_what_bindings_says() {
+    let w = World::new("nocargo");
+    let bound = w.package("bound", BOUND);
+    let message = |args: &[&str]| {
+        let mut c = w.command(UNDER_TEST, &bound, args);
+        c.env("CARGO", "colibri-no-such-cargo").env("PATH", "");
+        let out = c.stdin(Stdio::null()).output().unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let run = message(&["run", "main.colibri"]);
+    let bindings = message(&["bindings", "."]);
+    assert!(
+        run.contains("rustup.rs") && run.contains("--runner PATH"),
+        "{run}"
+    );
+    assert_eq!(run, bindings);
+}
