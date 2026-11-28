@@ -1,0 +1,11 @@
+[package]
+name = "colibri-example-native"
+description = "Rust side of the bindings example: text widths and graphemes, and a Table class"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+colibri-runtime = "0.1"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"

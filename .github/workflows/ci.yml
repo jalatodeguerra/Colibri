@@ -12,6 +12,7 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -32,6 +33,7 @@ jobs:
   # `std::time::Instant`, no disk, no FFI. Nothing runs here; the build is the proof.
   wasm:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -50,6 +52,7 @@ jobs:
   # account table) under Miri. Its unit tests call `CountingAlloc(System)` directly.
   miri:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       # A dated nightly, so that a new one cannot turn the job red by itself; move it forward
@@ -66,6 +69,7 @@ jobs:
   # packs. `crates/colibri-web/js/test/run.mjs` says what it checks.
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -94,6 +98,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -130,6 +135,7 @@ jobs:
   # the build of `colibri` (`crates/colibri-cli/build.rs`); embedded raw it would not fit.
   gates:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -181,3 +187,39 @@ jobs:
           done
           echo "built httpd hello: best of 10 runs $best ms (goal 50, limit 250)"
           test "$best" -le 250
+
+  # Phase 4's finish line, on each system with a real toolchain: `examples/bindings` (a package
+  # with a Rust crate of its own) runs, passes its tests, reloads a Colibri edit under `--watch`,
+  # ships as one executable under 15,000,000 bytes, and a fresh clone checks without cargo. The
+  # steps are `examples/bindings/smoke.sh`, which can be run by hand. The project runner is built
+  # against this checkout (`COLIBRI_SOURCE`). `COLIBRI_HOME` is cached (keyed on the lock and the
+  # example), which saves downloading and compiling the third-party crates; the engine's own
+  # crates have new modification times in every checkout, so both runners (the one `run` uses and
+  # the release one `build` ships) are compiled again on every run: expect 4 to 8 minutes a system.
+  bindings:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      COLIBRI_SOURCE: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p colibri-lang --bin colibri
+      - name: The crate of the example is formatted
+        run: cargo fmt --check --manifest-path examples/bindings/native/Cargo.toml
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/colibri-home
+          key: bindings-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'examples/bindings/**') }}
+          restore-keys: bindings-${{ runner.os }}-
+      - name: The bindings example
+        shell: bash
+        env:
+          COLIBRI_HOME: ${{ runner.temp }}/colibri-home
+          EXE: ${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: bash examples/bindings/smoke.sh "target/release/colibri$EXE"

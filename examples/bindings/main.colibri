@@ -1,0 +1,28 @@
+import native
+
+fn show(
+    name: str,
+    script: str,
+) -> str => "{name} ({script}): width {native.display_width(name)}, {native.graphemes(name).len()} graphemes"
+
+fn main() {
+    let names = [
+        ("Ada", "Latin"),
+        ("Müller", "Latin, accents"),
+        ("Zoe\u{308}", "Latin, combining mark"),
+        ("東京", "Han"),
+        ("こんにちは", "Hiragana"),
+        ("Привет", "Cyrillic"),
+        ("🇯🇵", "flag"),
+    ]
+    let table = native.Table.new(["Text", "Script", "Columns"])
+    for entry in names {
+        match table.add_row([entry.0, entry.1, "{native.display_width(entry.0)}"]) {
+            ok(_)  => {}
+            err(e) => print("cannot add {entry.0}: {e}")
+        }
+    }
+    print(table.render())
+    print("{table.row_count()} rows, the first column is {table.column_width(0)} columns wide")
+    print(show("e\u{301}", "combining"))
+}
