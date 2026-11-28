@@ -176,7 +176,10 @@ fn hand_over(
 /// each), and one warning for those that differ and were not written.
 pub fn say_interfaces(runner: &build::Runner) {
     for path in &runner.written {
-        eprintln!("updated {} (the Rust bindings changed)", path.display());
+        build::say(&format!(
+            "updated {} (the Rust bindings changed)",
+            path.display()
+        ));
     }
     if !runner.stale.is_empty() {
         let names: Vec<String> = runner
@@ -184,25 +187,30 @@ pub fn say_interfaces(runner: &build::Runner) {
             .iter()
             .map(|p| p.display().to_string())
             .collect();
-        eprintln!(
+        build::say(&format!(
             "warning: the interface of the Rust bindings is out of date: {}; run `colibri bindings` to update it",
             names.join(", ")
-        );
+        ));
     }
     for (key, path) in &runner.git_stale {
-        eprintln!(
+        build::say(&format!(
             "warning: the interface of the git dependency `{key}` is out of date: {}; `colibri build` refuses it until you `colibri update` it to a revision whose author regenerated it, or depend on a local copy with `path =`",
             path.display()
-        );
+        ));
     }
     if let Some(problem) = &runner.interface_problem {
-        eprintln!("warning: cannot compare the interfaces of the Rust bindings: {problem}");
+        build::say(&format!(
+            "warning: cannot compare the interfaces of the Rust bindings: {problem}"
+        ));
     }
 }
 
 /// Refuses a runner that is not a `colibri` of this version holding exactly the bindings of the
 /// package, saying what is missing.
-fn check_runner(runner: &Path, found: &[colibri_runtime::ProjectBinding]) -> Result<(), String> {
+pub(crate) fn check_runner(
+    runner: &Path,
+    found: &[colibri_runtime::ProjectBinding],
+) -> Result<(), String> {
     use std::io::Seek;
     let shown = runner.display();
     let mut file = std::fs::File::open(runner)

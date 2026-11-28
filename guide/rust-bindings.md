@@ -93,7 +93,16 @@ or depend on a local copy with `path =` and run `colibri bindings` there.
 
 `colibri check`, `fmt`, `doc`, `new`, `update` (git dependencies only) and the language server
 read the committed `.cbi` files, so an editor and a CI check need no Rust toolchain.
-`colibri debug` does not use the runner yet.
+
+## Debugging
+
+`colibri debug` of a package with `[rust-dependencies]` runs the program in the project runner, so
+a breakpoint in a script that calls a binding stops as usual, and a host object shows as its class
+(`<fixture.Counter #0>`). The adapter reads the editor's requests up to `launch`, builds the runner
+if it is missing (what the build prints reaches the editor as `output` events, since standard output
+is the protocol), starts it, and passes the requests and answers through. A launch configuration
+may name a runner with `"runner": "PATH"`, checked as `run --runner` is. A package without Rust
+bindings is served as it always was.
 
 ## A runner built elsewhere
 

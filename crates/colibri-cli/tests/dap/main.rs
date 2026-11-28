@@ -631,6 +631,53 @@ fn main() {
     dap.disconnect();
 }
 
+/// The messages of a session are numbered 1, 2, 3, ... by the adapter (the `colibri` that starts
+/// first is a proxy that renumbers what it forwards), and `initialize` is answered once.
+#[test]
+fn a_session_is_numbered_in_order_and_initialize_is_answered_once() {
+    let mut dap = Dap::start("numbers");
+    // A request answered before the launch: the proxy's numbers and the adapter's own diverge
+    // unless what is forwarded is renumbered.
+    dap.request_fails("threads", json!({}));
+    dap.launch("fn main() {\n    print(1)\n}\n", json!({}));
+    dap.configuration_done();
+    assert_eq!(dap.finish(), Some(0));
+    dap.disconnect_after_history();
+}
+
+/// Before `launch` a request is answered at once as the adapter always did: a client may wait for
+/// the answer (`attach` is never served), and a `disconnect` ends the session.
+#[test]
+fn requests_before_launch_are_answered_at_once() {
+    let mut dap = Dap::start("before-launch");
+    dap.request("initialize", json!({}));
+    let why = dap.request_fails("attach", json!({}));
+    assert!(why.contains("`attach` needs a `launch` first"), "{why}");
+    let why = dap.request_fails(
+        "setBreakpoints",
+        json!({"source": {"path": "x.colibri"}, "breakpoints": [{"line": 1}]}),
+    );
+    assert!(why.contains("needs a `launch` first"), "{why}");
+    // The session goes on: the program is launched and runs.
+    let path = dap
+        .temp
+        .write("main.colibri", "fn main() {\n    print(2)\n}\n");
+    dap.request("launch", json!({"program": json_path(&path)}));
+    dap.event("initialized");
+    dap.configuration_done();
+    assert_eq!(dap.finish(), Some(0));
+    assert_eq!(dap.output("stdout"), "2\n");
+    dap.disconnect_after_history();
+}
+
+#[test]
+fn a_client_that_attaches_and_leaves_ends_the_session() {
+    let mut dap = Dap::start("attach");
+    dap.request("initialize", json!({}));
+    dap.request_fails("attach", json!({}));
+    dap.disconnect();
+}
+
 #[test]
 fn a_program_that_does_not_compile_fails_the_launch() {
     let mut dap = Dap::start("compile-error");

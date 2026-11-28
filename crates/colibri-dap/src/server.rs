@@ -392,6 +392,35 @@ struct State {
     program: PathBuf,
 }
 
+/// Why a message is not a request the adapter can use (`None` when it is one): what it reports as
+/// "message ignored".
+pub fn request_problem(message: &Value) -> Option<String> {
+    request_of(message).err()
+}
+
+/// What the adapter answers to `initialize`: the capabilities it has.
+pub fn capabilities() -> Value {
+    json!({
+        "supportsConfigurationDoneRequest": true,
+        "supportsHitConditionalBreakpoints": true,
+        "supportsLogPoints": true,
+        "supportsConditionalBreakpoints": false,
+        "supportsEvaluateForHovers": true,
+        "supportsTerminateRequest": true,
+        "supportsSetVariable": false,
+        "supportsStepBack": false,
+        "supportsRestartRequest": false,
+        "supportsExceptionInfoRequest": false,
+        "exceptionBreakpointFilters": [{
+            "filter": "panic",
+            "label": "Panics",
+            "description": "Stop at every panic, before anything unwinds (also one that \
+                            `join_result` turns into an `err` later)",
+            "default": false,
+        }],
+    })
+}
+
 /// Runs a debug session on `input` and `output` until the client disconnects or the input ends.
 /// `launcher` builds the `Vm` for the program a `launch` names (with the standard library, the
 /// writers of [`LaunchArgs`], and every capability). Returns the adapter's own exit code
@@ -940,25 +969,7 @@ impl State {
         self.lines_start_at_1 = flag("linesStartAt1").unwrap_or(true);
         self.columns_start_at_1 = flag("columnsStartAt1").unwrap_or(true);
         self.initialized = true;
-        Ok(json!({
-            "supportsConfigurationDoneRequest": true,
-            "supportsHitConditionalBreakpoints": true,
-            "supportsLogPoints": true,
-            "supportsConditionalBreakpoints": false,
-            "supportsEvaluateForHovers": true,
-            "supportsTerminateRequest": true,
-            "supportsSetVariable": false,
-            "supportsStepBack": false,
-            "supportsRestartRequest": false,
-            "supportsExceptionInfoRequest": false,
-            "exceptionBreakpointFilters": [{
-                "filter": "panic",
-                "label": "Panics",
-                "description": "Stop at every panic, before anything unwinds (also one that \
-                                `join_result` turns into an `err` later)",
-                "default": false,
-            }],
-        }))
+        Ok(capabilities())
     }
 
     /// The requests that make sense before there is a program.

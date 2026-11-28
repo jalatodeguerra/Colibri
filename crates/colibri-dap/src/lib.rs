@@ -13,4 +13,4 @@ mod path;
 mod server;
 
 pub use frame::{ReadError, read_message, write_message};
-pub use server::{LaunchArgs, serve};
+pub use server::{LaunchArgs, capabilities, request_problem, serve};

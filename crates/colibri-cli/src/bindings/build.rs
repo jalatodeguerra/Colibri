@@ -30,6 +30,43 @@ pub const REBUILDING: &str = "building the Rust bindings of this project again";
 /// and `release` runners, and the one before each).
 const KEEP: usize = 4;
 
+static CANCELLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Asks the build in progress to stop: the cargo it started is ended (`colibri debug` does this
+/// when its client goes away during a build).
+pub fn cancel_build() {
+    CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Forgets an earlier [`cancel_build`], before a build that is to run.
+pub fn reset_cancel() {
+    CANCELLED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+type Progress = Box<dyn Fn(&str) + Send + Sync>;
+
+static PROGRESS: std::sync::Mutex<Option<Progress>> = std::sync::Mutex::new(None);
+
+/// Where the progress of a build (and what cargo prints) goes, a line at a time, instead of
+/// standard error: `colibri debug` sends it to its client as `output` events, because its
+/// standard output is the protocol and nothing else may write there. `None` restores standard
+/// error.
+pub fn set_progress(sink: Option<Progress>) {
+    *PROGRESS.lock().unwrap_or_else(|e| e.into_inner()) = sink;
+}
+
+fn progress_sink() -> bool {
+    PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
+/// One line of progress: to the sink, or to standard error.
+pub fn say(line: &str) {
+    match &*PROGRESS.lock().unwrap_or_else(|e| e.into_inner()) {
+        Some(sink) => sink(line),
+        None => eprintln!("{line}"),
+    }
+}
+
 /// What the cargo profile of the runner is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Profile {
@@ -198,7 +235,7 @@ pub fn ensure_runner(
     // One build at a time on this machine: two projects share the target folder (and its binary's
     // path), and two builds of one project share its workspace and its lock. What the build
     // before ours made is looked at again once we hold the lock.
-    let _guard = BuildLock::acquire(&env.runners, &mut |m| eprintln!("{m}"))?;
+    let _guard = BuildLock::acquire(&env.runners, &mut |m| say(m))?;
     let (lock_in, lock_present, tree) = state();
     let first = runner_in(&stamp_of(&lock_in, &tree));
     if first.is_file() {
@@ -210,14 +247,11 @@ pub fn ensure_runner(
     let target = env
         .runners
         .join(format!("target-{}", env!("CARGO_PKG_VERSION")));
-    eprintln!(
-        "{}",
-        if options.rebuilding {
-            REBUILDING
-        } else {
-            BUILDING
-        }
-    );
+    say(if options.rebuilding {
+        REBUILDING
+    } else {
+        BUILDING
+    });
     run_cargo(env, &cargo, &dir, &target, options)?;
 
     let produced = target
@@ -721,43 +755,91 @@ fn run_cargo(
         cmd.env(k, v);
     }
     // Everything cargo prints goes to stderr, as it would in a terminal; its standard error is
-    // read here too, to recognise a network failure.
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::from(std::io::stderr()))
-        .stderr(Stdio::piped());
+    // read here too, to recognise a network failure. With a progress sink (see
+    // [`set_progress`]) both streams go to the sink, a line at a time, and nothing is printed.
+    let sink = progress_sink();
+    cmd.stdin(Stdio::null());
+    if sink {
+        cmd.stdout(Stdio::piped());
+        // A build that can be cancelled has no terminal to send Ctrl-C to: cargo, rustc and the
+        // build scripts get a process group of their own, which is ended as a whole.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    } else {
+        cmd.stdout(Stdio::from(std::io::stderr()));
+    }
+    cmd.stderr(Stdio::piped());
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("cannot run cargo (`{}`): {e}", cargo.display()))?;
-    let mut tail: Vec<u8> = Vec::new();
-    if let Some(mut err) = child.stderr.take() {
-        let mut buf = [0u8; 4096];
-        let mut out = std::io::stderr();
-        while let Ok(n) = err.read(&mut buf) {
-            if n == 0 {
-                break;
+    let forward = child.stdout.take().map(|out| {
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                say(&line);
             }
-            let _ = out.write_all(&buf[..n]);
-            let _ = out.flush();
-            tail.extend_from_slice(&buf[..n]);
-            if tail.len() > 64 * 1024 {
-                tail.drain(..tail.len() - 32 * 1024);
+        })
+    });
+    let reader = child.stderr.take().map(|mut err| {
+        std::thread::spawn(move || {
+            let mut tail: Vec<u8> = Vec::new();
+            let mut buf = [0u8; 4096];
+            let mut out = std::io::stderr();
+            let mut pending: Vec<u8> = Vec::new();
+            while let Ok(n) = err.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                if sink {
+                    pending.extend_from_slice(&buf[..n]);
+                    while let Some(at) = pending.iter().position(|b| *b == b'\n') {
+                        let line: Vec<u8> = pending.drain(..=at).collect();
+                        say(String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']));
+                    }
+                } else {
+                    let _ = out.write_all(&buf[..n]);
+                    let _ = out.flush();
+                }
+                tail.extend_from_slice(&buf[..n]);
+                if tail.len() > 64 * 1024 {
+                    tail.drain(..tail.len() - 32 * 1024);
+                }
             }
+            tail
+        })
+    });
+    // This thread owns the child: it waits for it, and ends it (with what it started) when the
+    // build is cancelled, so no signal is ever sent to a process that was waited for.
+    let mut cancelled = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => return Err(format!("cannot wait for cargo: {e}")),
         }
+        if !cancelled && CANCELLED.load(std::sync::atomic::Ordering::SeqCst) {
+            cancelled = true;
+            end_build(&mut child, sink);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let tail = reader.map_or_else(Vec::new, |r| r.join().unwrap_or_default());
+    if let Some(forward) = forward {
+        let _ = forward.join();
     }
-    let status = child
-        .wait()
-        .map_err(|e| format!("cannot wait for cargo: {e}"))?;
     if status.success() {
         return Ok(());
     }
     let tail = String::from_utf8_lossy(&tail);
     let why = network_trouble(&tail, options.offline);
+    // A build that was cancelled was stopped, whatever status the system gives for it (Windows
+    // says 1 for a process that was ended).
+    let how = status
+        .code()
+        .filter(|c| !stopped_code(*c) && !cancelled)
+        .map_or("was stopped".to_string(), |c| format!("exited with {c}"));
     let mut message = format!(
-        "the Rust bindings of this project could not be built (cargo {}); the generated workspace is `{}`",
-        status
-            .code()
-            .filter(|c| !stopped_code(*c))
-            .map_or("was stopped".to_string(), |c| format!("exited with {c}")),
+        "the Rust bindings of this project could not be built (cargo {how}); the generated workspace is `{}`",
         dir.display()
     );
     if let Some(why) = why {
@@ -1050,4 +1132,31 @@ mod prune_tests {
 /// Windows reports a console interrupt as STATUS_CONTROL_C_EXIT: cargo was stopped, it did not fail.
 fn stopped_code(code: i32) -> bool {
     cfg!(windows) && code as u32 == 0xC000_013A
+}
+
+/// Ends cargo and what it started: the process group on Unix when it has one of its own
+/// (`own_group`), the process tree on Windows.
+fn end_build(child: &mut std::process::Child, own_group: bool) {
+    #[cfg(unix)]
+    if own_group {
+        // SAFETY: `kill` with a negative pid signals the group cargo leads, of which the child
+        // that is not yet waited for is the leader (so the id is not reused).
+        unsafe {
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGTERM);
+        }
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let _ = own_group;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .output();
+        return;
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = own_group;
+        let _ = child.kill();
+    }
 }
