@@ -94,6 +94,8 @@ Every sample in the guide is checked, formatted and, where it shows output, run 
   hot reload and a leak detector.
 - **Embeddable in Rust.** Load scripts, call their functions with typed arguments, and expose
   Rust functions and types to them through the `colibri-runtime` crate.
+- **Rust crates from Colibri.** List a binding crate under `[rust-dependencies]` and
+  `colibri run`, `test`, `debug`, `run --watch` and `build` use a runner with it built in.
 - **C FFI** with `@repr(C)` structs passed by value.
 
 ## A short tour
@@ -1177,6 +1179,27 @@ A script panic comes back to the host as an `Error` and leaves the `Vm` usable.
 whose logic comes from Colibri scripts (host classes, handles, callbacks and a scheduler). The API reference is in the crate's documentation:
 `cargo doc -p colibri-runtime --open`.
 
+### Using Rust crates from a Colibri package
+
+The other way round, a Colibri package can call Rust crates. A binding crate exposes Rust types
+and functions with `#[colibri::export]` and one `#[colibri::module]` function, and the package
+names it in `colibri.toml`:
+
+```toml
+[rust-dependencies]
+native = { path = "native/" }
+```
+
+`import native` then works in the package. `colibri bindings` builds a project runner (your
+`colibri` with the crates built in, compiled once with cargo and cached) and writes `native.cbi`,
+the interface `colibri check` and the editor read; commit it, together with `colibri.rust.lock`.
+`colibri run`, `test`, `debug` and `run --watch` use that runner on their own (a Rust edit under
+`--watch` rebuilds it and restarts the program), and `colibri build` ships one executable with
+the runner inside. `check`, `fmt` and the language server never call cargo. Bindings do not run
+in a web build yet. [`examples/bindings`](examples/bindings) is a complete package: Unicode
+text widths and graphemes from two Rust crates, a stateful Rust `Table` class, Rust errors as
+`err` and Rust panics caught by `join_result`. The guide page is `guide/rust-bindings.md`.
+
 ## Standard library
 
 | Module | Contents |
@@ -1225,6 +1248,8 @@ they have.
 - Operator interfaces (`Add`, `Sub`, `Mul`, `Div`, `Neg`) with default type parameters, which
   let a library such as `vec` define its own arithmetic.
 - Tooling: `run`, `check`, `test`, `fmt`, `new`, `build` (single-file executables, other platforms, web pages), `repl`, `lsp`, `debug` (DAP), hot reload, the leak detector and a sampling profiler.
+- Using Rust crates from a Colibri package through generated bindings (`[rust-dependencies]`,
+  `colibri bindings`), on Linux, macOS and Windows; not yet in web builds.
 
 **Next:**
 
@@ -1236,7 +1261,7 @@ they have.
 
 - TLS for `net` and `httpd` (https), HTTP/2, WebSockets, response compression, and UDP and Unix
   domain sockets in `net`: none of them is built yet.
-- Using Rust crates from Colibri through generated bindings.
+- Rust bindings in web builds.
 
 **Not planned:** a JIT, exceptions, inheritance, macros, `async`/`await` and a package registry
 in v1.
@@ -1247,6 +1272,8 @@ in v1.
   JSON/HTTP report generator, a TCP key-value server and a JSON API served with `httpd`.
 - [`examples/host_jobs`](examples/host_jobs/README.md): a Rust job runner that takes its job
   logic from Colibri scripts (host classes, handles, callbacks and the scheduler).
+- [`examples/bindings`](examples/bindings): a package that calls two Rust crates and a Rust
+  class through `[rust-dependencies]`; its `smoke.sh` is what CI runs on three systems.
 - [`examples/web`](examples/web/main.colibri): a program built with `colibri build --web` into a
   folder for a static web server; the page shows what it prints (coroutines, JSON, assets and
   the clock in a browser).
