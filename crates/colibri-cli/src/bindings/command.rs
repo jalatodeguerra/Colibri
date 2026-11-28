@@ -61,7 +61,8 @@ pub fn bindings(env: &Env, args: &Args<'_>) -> Result<bool, String> {
     if let Some(out) = args.output {
         copy_runner(&runner, out)?;
     }
-    let report = write_interfaces(&runner, &found, args.check)?;
+    // Asked live: what this command says is what the runner says now, whatever was kept before.
+    let report = write_interfaces_with(&runner, &found, args.check, true)?;
     for path in &report.changed {
         eprintln!(
             "{}: {}",
@@ -102,32 +103,71 @@ pub fn write_interfaces(
     found: &[ProjectBinding],
     check: bool,
 ) -> Result<Report, String> {
-    let live = live_interfaces(runner)?;
-    let mut report = Report::default();
-    for b in found {
-        let text = std::fs::read_to_string(live.join(format!("{}.cbi", b.dep.name)))
-            .map_err(|e| format!("the runner wrote no interface for `{}`: {e}", b.dep.name))?;
-        let same = std::fs::read_to_string(&b.interface).is_ok_and(|old| old == text);
-        if same {
+    write_interfaces_with(runner, found, check, false)
+}
+
+/// [`write_interfaces`]; with `live` the runner is asked now and the kept copy replaced (what
+/// `colibri bindings` does), else a kept copy is believed. A kept copy that cannot be read is
+/// dropped and the runner asked again.
+#[doc(hidden)]
+pub fn write_interfaces_with(
+    runner: &Runner,
+    found: &[ProjectBinding],
+    check: bool,
+    live: bool,
+) -> Result<Report, String> {
+    let mut asked = live;
+    loop {
+        let dir = live_interfaces(runner, asked)?;
+        let mut texts = Vec::new();
+        let mut damaged = None;
+        for b in found {
+            match std::fs::read_to_string(dir.join(format!("{}.cbi", b.dep.name))) {
+                Ok(text) => texts.push(text),
+                Err(e) => {
+                    damaged = Some(format!(
+                        "the runner wrote no interface for `{}`: {e}",
+                        b.dep.name
+                    ));
+                    break;
+                }
+            }
+        }
+        if let Some(problem) = damaged {
+            if asked {
+                return Err(problem);
+            }
+            // The kept folder was damaged (or is another runner's): ask the runner itself.
+            asked = true;
             continue;
         }
-        if b.from_git {
-            report.git_stale.push(b.interface.clone());
-            continue;
+        let mut report = Report::default();
+        for (b, text) in found.iter().zip(texts) {
+            let same = std::fs::read_to_string(&b.interface).is_ok_and(|old| old == text);
+            if same {
+                continue;
+            }
+            if b.from_git {
+                report.git_stale.push(b.interface.clone());
+                continue;
+            }
+            if !check {
+                build::write_if_changed(&b.interface, &text)?;
+            }
+            report.changed.push(b.interface.clone());
         }
-        if !check {
-            build::write_if_changed(&b.interface, &text)?;
-        }
-        report.changed.push(b.interface.clone());
+        return Ok(report);
     }
-    Ok(report)
 }
 
 /// The folder of the interfaces `runner` writes: kept from the first time it was asked (it is
-/// made aside and moved into place, so a folder that is there is whole).
-fn live_interfaces(runner: &Runner) -> Result<PathBuf, String> {
+/// made aside and moved into place, so a folder that is there is whole). With `fresh` the kept
+/// folder is dropped and the runner asked again.
+fn live_interfaces(runner: &Runner, fresh: bool) -> Result<PathBuf, String> {
     let dir = build::interfaces_dir(&runner.path);
-    if dir.is_dir() {
+    if fresh {
+        let _ = std::fs::remove_dir_all(&dir);
+    } else if dir.is_dir() {
         return Ok(dir);
     }
     let scratch = runner

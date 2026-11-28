@@ -169,8 +169,14 @@ fn say_interfaces(runner: &build::Runner) {
             .map(|p| p.display().to_string())
             .collect();
         eprintln!(
-            "warning: the interface of the Rust bindings is out of date: {}; run `colibri bindings` to update it (the author of a git dependency commits its own)",
+            "warning: the interface of the Rust bindings is out of date: {}; run `colibri bindings` to update it",
             names.join(", ")
+        );
+    }
+    for (key, path) in &runner.git_stale {
+        eprintln!(
+            "warning: the interface of the git dependency `{key}` is out of date: {}; its author regenerates and commits it",
+            path.display()
         );
     }
     if let Some(problem) = &runner.interface_problem {

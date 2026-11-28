@@ -175,3 +175,54 @@ fn the_runner_is_asked_for_its_interfaces_once() {
         run.stderr
     );
 }
+
+/// The kept folder outlives a deleted runner file; the rebuilt runner (same name) says something
+/// else, and what is kept is not believed.
+#[test]
+fn a_kept_folder_that_outlived_its_runner_is_not_believed() {
+    let app = App::new("outlived");
+    let v1 = app.cbi();
+    app.colibri(&["bindings", "."], RUNNER, &[]);
+    let runners = runners_of(&app.w);
+    assert_eq!(runners.len(), 1);
+    // Only the runner file goes; the same stamp builds again, now with another signature.
+    fs::remove_file(&runners[0]).unwrap();
+    let out = app.colibri(&["run", "main.colibri"], RUNNER_V2, &[]);
+    assert!(out.stderr.contains("updated "), "{}", out.stderr);
+    let v2 = app.cbi();
+    assert_ne!(v2, v1);
+    assert!(v2.contains("times"), "{v2}");
+
+    // And `bindings --check` asks the runner, whatever is kept: a kept copy that lies is found out.
+    let kept = colibri_lang::bindings::build::interfaces_dir(&runners_of(&app.w)[0]);
+    fs::write(kept.join("fixture.cbi"), "lie\n").unwrap();
+    fs::write(app.dir.join("fixture.cbi"), "lie\n").unwrap();
+    let run = app.colibri(&["run", "main.colibri"], RUNNER_V2, &[]);
+    assert!(
+        !run.stderr.contains("warning"),
+        "a run believes what is kept: {}",
+        run.stderr
+    );
+    let check = app.colibri(&["bindings", "--check", "."], RUNNER_V2, &[]);
+    assert_eq!(check.code, 1, "{}", check.stderr);
+    assert!(check.stderr.contains("out of date"), "{}", check.stderr);
+    // `colibri bindings` also puts the truth back in the kept folder.
+    app.colibri(&["bindings", "."], RUNNER_V2, &[]);
+    assert_eq!(app.cbi(), v2);
+    assert_eq!(fs::read_to_string(kept.join("fixture.cbi")).unwrap(), v2);
+}
+
+/// A kept folder that is damaged is dropped and the runner asked again; no warning loop.
+#[test]
+fn a_damaged_kept_folder_is_asked_for_again() {
+    let app = App::new("damaged");
+    app.colibri(&["run", "main.colibri"], RUNNER, &[]);
+    let kept = colibri_lang::bindings::build::interfaces_dir(&runners_of(&app.w)[0]);
+    fs::remove_file(kept.join("fixture.cbi")).unwrap();
+    for _ in 0..2 {
+        let run = app.colibri(&["run", "main.colibri"], RUNNER, &[]);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert!(!run.stderr.contains("warning"), "{}", run.stderr);
+        assert!(kept.join("fixture.cbi").is_file());
+    }
+}
