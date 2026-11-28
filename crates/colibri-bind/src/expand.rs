@@ -62,6 +62,12 @@ pub fn export(args: TokenStream, item: TokenStream) -> TokenStream {
     let parsed = Options::parse.parse2(args);
     let item_copy = item.clone();
     let result = parsed.and_then(|options| {
+        if let Some(span) = options.nested {
+            return Err(Error::new(
+                span,
+                "`nested` is for `#[colibri::module]`: `#[colibri::export]` takes `value`, `no_methods` and `crate = path`",
+            ));
+        }
         let parsed: Item = syn::parse2(item)?;
         let runtime = match &options.runtime {
             Some(path) => quote!(#path),
@@ -817,6 +823,17 @@ mod tests {
         let out = run(args, item);
         assert!(out.contains("compile_error"), "no error in: {out}");
         out
+    }
+
+    #[test]
+    fn export_refuses_the_nested_option_of_module() {
+        let out = error_of("nested", "pub struct P { pub x: f32 }");
+        assert!(
+            out.contains("`nested` is for `#[colibri::module]`"),
+            "{out}"
+        );
+        let out = error_of("value, nested", "pub struct P { pub x: f32 }");
+        assert!(out.contains("`nested` is for"), "{out}");
     }
 
     #[test]

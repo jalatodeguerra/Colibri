@@ -157,6 +157,9 @@ struct Loader<'a> {
     /// names are global to the program), in the order the packages were loaded.
     rust_bindings: Vec<RustBinding>,
     rust_identities: Vec<(String, String, Span)>,
+    /// The package that declares each binding key, and whether its `<key>.cbi` exists: only
+    /// that package may import the key.
+    binding_owner: HashMap<String, (usize, bool)>,
 }
 
 /// The interface file of the binding module `key`: `<key>.cbi`, next to `colibri.toml`.
@@ -397,6 +400,7 @@ impl<'a> Loader<'a> {
             rust_reported: HashSet::new(),
             rust_bindings: Vec::new(),
             rust_identities: Vec::new(),
+            binding_owner: HashMap::new(),
         }
     }
 
@@ -581,7 +585,7 @@ impl<'a> Loader<'a> {
         });
         self.trees_by_dir.insert(key, tree);
         if let Some((m, _)) = &manifest {
-            self.check_rust_dependencies(dir, m, git_root.is_some());
+            self.check_rust_dependencies(tree, dir, m, git_root.is_some());
             for dep in &m.dependencies {
                 let (dep_dir, dep_root, span) = match &dep.source {
                     Source::Path { path, path_span } => {
@@ -708,7 +712,7 @@ impl<'a> Loader<'a> {
     /// (`colibri bindings` writes it), and a key may be used once in the whole program: host
     /// modules are global, so two packages with one key (or one crate under two keys) would
     /// register the same module twice.
-    fn check_rust_dependencies(&mut self, dir: &Path, m: &Manifest, from_git: bool) {
+    fn check_rust_dependencies(&mut self, tree: usize, dir: &Path, m: &Manifest, from_git: bool) {
         for r in &m.rust_dependencies {
             let std_name = std_module(&[r.name.as_str()], self.host_modules)
                 .or_else(|| self.std_source_name(&[r.name.as_str()]))
@@ -787,6 +791,8 @@ impl<'a> Loader<'a> {
                 });
                 self.diags.push(d);
             }
+            let exists = self.fs.is_file(&cbi);
+            self.binding_owner.insert(r.name.clone(), (tree, exists));
             self.rust_bindings.push(RustBinding {
                 key: r.name.clone(),
                 span: r.span,
@@ -1183,9 +1189,18 @@ impl<'a> Loader<'a> {
                 });
             }
         }
-        // 3. A named host module.
-        if path.len() == 1 && self.host_modules.iter().any(|m| m == path[0]) {
-            out.push(Candidate::Host(path[0].to_string()));
+        // 3. A named host module. A Rust binding is one only for the package that declares it
+        // (and only once its interface file exists); the host's own list does not make it
+        // visible to the others.
+        if path.len() == 1 {
+            let owner = self.binding_owner.get(path[0]);
+            let host = match owner {
+                Some(&(owner_tree, exists)) => owner_tree == tree && exists,
+                None => self.host_modules.iter().any(|m| m == path[0]),
+            };
+            if host {
+                out.push(Candidate::Host(path[0].to_string()));
+            }
         }
         // 4. The standard library.
         if let Some(name) = std_module(path, self.host_modules) {
@@ -1275,6 +1290,28 @@ impl<'a> Loader<'a> {
         let mut candidates = self.candidates(tree, &names);
         match candidates.len() {
             0 => {
+                if names.len() == 1
+                    && let Some(&(owner, _)) = self.binding_owner.get(names[0])
+                {
+                    // The key has its own diagnostics when the interface file is missing; a
+                    // package that does not declare it may not import it.
+                    if owner != tree {
+                        let declared_by = self.trees[owner].name.clone();
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!(
+                                    "`{}` is a Rust binding declared by the package `{declared_by}`, not by this package",
+                                    names[0]
+                                ),
+                                span,
+                            )
+                            .with_hint(
+                                "a package imports a binding only if its own `colibri.toml` declares it under `[rust-dependencies]`",
+                            ),
+                        );
+                    }
+                    return ImportTarget::Failed;
+                }
                 self.report_missing(tree, &names, span);
                 ImportTarget::Failed
             }
