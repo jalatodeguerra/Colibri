@@ -351,6 +351,30 @@ fn project_runner(options: &Options<'_>, project: &Project) -> Result<Chosen, St
             rebuilding: false,
         },
     )?;
+    // A cached runner is not asked again: a committed interface that differs from its own would
+    // let the check pass a program the runner then refuses at start.
+    let mut stale: Vec<String> = runner
+        .stale
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    if !stale.is_empty() {
+        return Err(format!(
+            "the interface of the Rust bindings is out of date: {}; run `colibri bindings` to update it, then build again",
+            stale.join(", ")
+        ));
+    }
+    stale = runner
+        .git_stale
+        .iter()
+        .map(|(key, path)| format!("`{key}` ({})", path.display()))
+        .collect();
+    if !stale.is_empty() {
+        return Err(format!(
+            "the interface of a git dependency is out of date: {}; its author regenerates and commits it",
+            stale.join(", ")
+        ));
+    }
     crate::delegate::say_interfaces(&runner);
     Ok(Chosen { path: runner.path })
 }

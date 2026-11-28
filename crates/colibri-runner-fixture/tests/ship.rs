@@ -216,3 +216,57 @@ fn a_package_without_bindings_is_built_as_before() {
     assert!(!String::from_utf8_lossy(&built.stderr).contains("runner"));
     assert!(w.cargo_log().is_empty());
 }
+
+/// A cached release runner and a committed interface that is not the runner's: the build stops
+/// (it would check the program against the wrong interface and ship one that fails at start).
+#[test]
+fn a_stale_committed_interface_stops_the_build() {
+    let w = World::new("ship-stale");
+    let bound = package(&w, "bound", BOUND);
+    let out = exe(&w, "app");
+    let target = out.display().to_string();
+    let built = w.colibri(&bound, &["build", "-o", &target], "");
+    assert_eq!(built.code, 0, "{}", built.stderr);
+    fs::remove_file(&out).unwrap();
+    // The v2 interface (`double(n, times)`) in place of the runner's own, and a program for it.
+    let run = std::process::Command::new(RUNNER_V2)
+        .arg("__write-interfaces")
+        .arg(&bound)
+        .output()
+        .unwrap();
+    assert!(run.status.success());
+    fs::write(
+        bound.join("main.colibri"),
+        "import fixture\n\nfn main() {\n    print(fixture.double(21, 2))\n}\n",
+    )
+    .unwrap();
+    let refused = w.colibri(&bound, &["build", "-o", &target], "");
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("out of date") && refused.stderr.contains("`colibri bindings`"),
+        "{}",
+        refused.stderr
+    );
+    assert!(!out.exists(), "a refused build wrote a file");
+}
+
+/// A built program is a runner plus a pack: as `--runner` it would run its own program.
+#[test]
+fn a_built_program_is_not_a_runner() {
+    let w = World::new("ship-notrunner");
+    let bound = package(&w, "bound", BOUND);
+    let out = exe(&w, "app");
+    let target = out.display().to_string();
+    let built = w.colibri(&bound, &["build", "-o", &target], "");
+    assert_eq!(built.code, 0, "{}", built.stderr);
+    for command in ["run", "test"] {
+        let refused = w.colibri(&bound, &[command, "--runner", &target, "main.colibri"], "");
+        assert_eq!(refused.code, 1, "{command}: {}", refused.stderr);
+        assert!(
+            refused.stderr.contains("is a built program already"),
+            "{}",
+            refused.stderr
+        );
+        assert!(refused.stdout.is_empty(), "{}", refused.stdout);
+    }
+}

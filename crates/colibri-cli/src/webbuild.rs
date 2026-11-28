@@ -146,6 +146,12 @@ fn refuse_rust_bindings(path: &Path, deps: DepFlags) -> Result<(), ExitCode> {
         return Ok(());
     }
     depscmd::prepare_once(path, deps)?;
+    if wants == crate::delegate::Wants::Maybe
+        && !colibri::declares_rust_bindings(&colibri::DiskFs, &folder, crate::build_cfg())
+            .unwrap_or(true)
+    {
+        return Ok(());
+    }
     // A manifest or dependency that cannot be read is reported by the build itself.
     let Ok((_, found)) = crate::bindings::build::project(&folder) else {
         return Ok(());

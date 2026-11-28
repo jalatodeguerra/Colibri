@@ -39,9 +39,9 @@ enum Command {
     /// resolved as for `run`. It runs on the platform of this `colibri`, unless `--target` and
     /// `--runner` name another. A package with `[rust-dependencies]` is built with a release
     /// runner that has them built in (cargo builds it, once, then it is cached); for another
-    /// platform `--runner` is a project runner built on that one. With `--web` it writes a folder for a static web server
-    /// instead (`index.html`, `colibri.js`, `colibri.wasm`, `app.pack`): the program runs in
-    /// the page, which shows what it prints
+    /// platform `--runner` is a project runner built on that one. With `--web` it writes a
+    /// folder for a static web server instead (`index.html`, `colibri.js`, `colibri.wasm`,
+    /// `app.pack`): the program runs in the page, which shows what it prints
     Build {
         /// A script, or a package folder (the current folder by default)
         file: Option<PathBuf>,

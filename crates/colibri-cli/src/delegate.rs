@@ -211,6 +211,12 @@ fn check_runner(runner: &Path, found: &[colibri_runtime::ProjectBinding]) -> Res
         return Err(format!("the runner `{shown}` is not a file"));
     }
     let read = |e: std::io::Error| format!("cannot read the runner `{shown}`: {e}");
+    // A program made by `colibri build` is a runner with a pack after it: it would run its own
+    // program, not the command's. (`debug --runner` uses this check too.)
+    if crate::pack::has_pack(&mut file)? {
+        return Err(format!("the runner `{shown}` is a built program already"));
+    }
+    file.rewind().map_err(read)?;
     match platform::runner_version(&mut file).map_err(read)? {
         Some(v) if v == platform::own_version() => {}
         Some(v) => {
