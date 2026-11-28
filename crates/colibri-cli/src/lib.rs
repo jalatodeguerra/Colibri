@@ -1,6 +1,7 @@
 //! Support code for the `colibri` command line tool.
 
 pub mod assets;
+pub mod bindings;
 pub mod buildcmd;
 pub mod checkcmd;
 pub mod debugcmd;
@@ -20,11 +21,16 @@ pub mod profilecmd;
 pub mod repl;
 mod repl_input;
 pub mod runcmd;
+mod runner;
 pub mod testcmd;
 pub mod watch;
 pub mod webbuild;
 
 use std::thread;
+
+#[doc(hidden)]
+pub use runner::command_help as runner_command_help;
+pub use runner::runner_main;
 
 /// The stack of the thread that runs Colibri code. Colibri calls keep their frames on the heap,
 /// but a host function that calls back into Colibri, and the deep operations on values (`show`,
@@ -85,7 +91,7 @@ pub fn build_vm_with_assets(
     if let Some(make) = assets {
         worker = worker.with_assets(move || make());
     }
-    build_vm_with_worker_std(builder, config, worker)
+    build_vm_with_worker_std(builder, config, worker, bindings::installed())
 }
 
 /// [`build_vm`] with the whole standard library configuration given. The workers of thread
@@ -96,25 +102,30 @@ pub fn build_vm_with_std(
     config: colibri_std::StdConfig,
 ) -> colibri_runtime::Vm {
     let worker = colibri_std::WorkerStd::from_config(&config);
-    build_vm_with_worker_std(builder, config, worker)
+    build_vm_with_worker_std(builder, config, worker, bindings::installed())
 }
 
 /// [`build_vm_with_std`] with what the workers of thread tasks see given too: a thread task's
 /// isolate gets the library installed with `worker`'s settings and every capability the `Vm` was
-/// given, so what it reads of the world is the main thread's.
+/// given, so what it reads of the world is the main thread's. `bindings` are registered in the
+/// `Vm` and in every isolate (the other functions pass what `runner_main` installed: none in a
+/// plain `colibri`).
 pub fn build_vm_with_worker_std(
     builder: colibri_runtime::VmBuilder,
     config: colibri_std::StdConfig,
     worker: colibri_std::WorkerStd,
+    bindings: &'static [bindings::Binding],
 ) -> colibri_runtime::Vm {
     let mut vm = builder
         .worker_setup(move |isolate| {
             colibri_std::install_worker(isolate, &worker)
                 .expect("the standard library registers into a new Vm");
+            bindings::register_all(isolate, bindings).expect("a binding registers into a new Vm");
         })
         .build();
     colibri_std::install_with(&mut vm, config)
         .expect("the standard library registers into a new Vm");
+    bindings::register_all(&mut vm, bindings).expect("a binding registers into a new Vm");
     vm
 }
 

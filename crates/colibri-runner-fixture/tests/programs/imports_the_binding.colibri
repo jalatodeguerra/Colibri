@@ -1,0 +1,9 @@
+import fixture
+
+fn main() {
+    print(fixture.double(21))
+    print(fixture.shout("hello"))
+    let c = fixture.Counter.new(5)
+    print(c.bump(3))
+    print(c.bump(by: 2))
+}

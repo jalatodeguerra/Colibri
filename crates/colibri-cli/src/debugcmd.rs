@@ -164,6 +164,7 @@ pub fn build_program_vm(args: LaunchArgs) -> Result<colibri_runtime::Vm, String>
         crate::vm_builder().allow_all().stdout_shared(args.stdout),
         config,
         worker,
+        crate::bindings::installed(),
     );
     colibri_std::set_stderr(&mut vm, Box::new(SharedWrite(stderr)));
     Ok(vm)

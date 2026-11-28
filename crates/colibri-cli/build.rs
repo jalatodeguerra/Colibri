@@ -9,8 +9,39 @@
 
 use std::path::Path;
 
+/// The commit this `colibri` is built from, for a project runner that cannot find the source tree
+/// (`bindings::engine`): `git rev-parse HEAD`, if this is a git checkout and git is there.
+fn git_commit() {
+    println!("cargo:rerun-if-env-changed=COLIBRI_GIT_COMMIT");
+    if let Some(commit) = std::env::var_os("COLIBRI_GIT_COMMIT").filter(|v| !v.is_empty()) {
+        println!(
+            "cargo:rustc-env=COLIBRI_GIT_COMMIT={}",
+            commit.to_string_lossy()
+        );
+        return;
+    }
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    // The commit changes with `HEAD` and with the branch it names.
+    for what in ["HEAD", "logs/HEAD"] {
+        if let Some(path) = git(&["rev-parse", "--git-path", what]) {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
+    if let Some(commit) = git(&["rev-parse", "HEAD"]).filter(|c| c.len() == 40) {
+        println!("cargo:rustc-env=COLIBRI_GIT_COMMIT={commit}");
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    git_commit();
     println!("cargo:rerun-if-env-changed=COLIBRI_WEB_RUNNER");
     println!("cargo:rustc-check-cfg=cfg(web_runner)");
     let Some(value) = std::env::var_os("COLIBRI_WEB_RUNNER").filter(|v| !v.is_empty()) else {

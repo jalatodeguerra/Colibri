@@ -54,7 +54,8 @@ pub fn build_test_vm(options: &Options, captured: &colibri::SyncBuffer) -> colib
         let captured = captured.clone();
         worker = worker.with_stderr(move || Box::new(captured.clone()));
     }
-    let mut vm = crate::build_vm_with_worker_std(builder, config, worker);
+    let mut vm =
+        crate::build_vm_with_worker_std(builder, config, worker, crate::bindings::installed());
     if !options.nocapture {
         colibri_std::set_stderr(&mut vm, Box::new(captured.clone()));
     }

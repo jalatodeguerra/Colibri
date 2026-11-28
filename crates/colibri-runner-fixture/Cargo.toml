@@ -1,0 +1,16 @@
+[package]
+name = "colibri-runner-fixture"
+description = "A project runner with a test binding, for the tests of the runner (not published)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+colibri-lang = { path = "../colibri-cli" }
+colibri-runtime = { path = "../colibri-runtime" }
+
+[[bin]]
+name = "colibri-runner-fixture"
+path = "src/main.rs"
