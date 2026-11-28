@@ -159,7 +159,7 @@ pub fn runner_main(table: &'static [Binding]) -> ExitCode {
             crate::set_build_cfg(build.cfg());
             crate::repl::run()
         }
-        Command::Debug => crate::debugcmd::run(),
+        Command::Debug => crate::debugcmd::run_local(),
         Command::WriteInterfaces { dir } => write_interfaces(&dir, table),
     })
 }

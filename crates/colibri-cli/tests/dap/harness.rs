@@ -19,6 +19,14 @@ use serde_json::{Value, json};
 /// How long a wait for one message may take before the test is called hung.
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
+/// The `colibri` under test: this package's own binary, or (in the runner fixture, which includes
+/// this file) the copy of its `main.rs` built there.
+fn adapter_exe() -> &'static str {
+    option_env!("CARGO_BIN_EXE_colibri")
+        .or(option_env!("CARGO_BIN_EXE_colibri-under-test"))
+        .expect("a `colibri` binary to test")
+}
+
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
 /// A folder of the test's own, removed at the end.
@@ -120,7 +128,7 @@ impl Dap {
 
     /// [`Dap::start`] with environment variables set for the adapter (the internal knobs).
     pub fn start_with_env(name: &str, env: &[(&str, String)]) -> Dap {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_colibri"));
+        let mut command = Command::new(adapter_exe());
         for (key, value) in env {
             command.env(key, value);
         }
