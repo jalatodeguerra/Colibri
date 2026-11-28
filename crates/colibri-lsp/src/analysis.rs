@@ -338,35 +338,11 @@ fn std_interface_texts() -> &'static [String] {
     })
 }
 
-/// The `*.cbi` files at the top of `dir`, if `dir` is a package (has a `colibri.toml`).
-fn package_interfaces(fs: &dyn SourceFs, dir: &Path) -> Vec<PathBuf> {
-    if !fs.is_file(&dir.join(MANIFEST)) {
-        return Vec::new();
-    }
-    fs.list(dir)
-        .into_iter()
-        .filter(|n| n.ends_with(".cbi"))
-        .map(|n| dir.join(n))
-        .collect()
-}
-
-/// Reads the interface files: those the client configured, and the ones next to the manifests
-/// of the workspace and of the document's package. The tool trusts what it checks, so every
-/// capability is granted, as `colibri check` does.
-pub fn host_env(settings: &Settings, fs: &dyn SourceFs, package_dir: Option<&Path>) -> Hosts {
-    let mut paths: Vec<PathBuf> = settings.interfaces.clone();
-    for dir in settings
-        .root
-        .iter()
-        .map(PathBuf::as_path)
-        .chain(package_dir)
-    {
-        for p in package_interfaces(fs, dir) {
-            if !paths.contains(&p) {
-                paths.push(p);
-            }
-        }
-    }
+/// Reads the interface files the client configured. The interfaces of Rust bindings are not
+/// here: they are read after the load, for the keys the packages declare ([`Reader::load`]). The
+/// tool trusts what it checks, so every capability is granted, as `colibri check` does.
+pub fn host_env(settings: &Settings, fs: &dyn SourceFs, _package_dir: Option<&Path>) -> Hosts {
+    let paths: Vec<PathBuf> = settings.interfaces.clone();
     let mut env = HostEnv::new();
     let mut problems = Vec::new();
     // The standard library is always there, as for `colibri check`.
@@ -525,7 +501,38 @@ impl<'a> Reader<'a> {
                 ..LoadOptions::default()
             },
         )?;
+        let env = self.with_binding_interfaces(&loaded, env);
         Ok(Pending::new(spec.clone(), sources, loaded, env))
+    }
+
+    /// `env` with the interface of each Rust binding key the loaded packages declare (the root's
+    /// and every dependency's): `<key>.cbi` next to the manifest that declares it, as `colibri
+    /// check` reads it. No other `.cbi` is a binding. A file that cannot be read is a problem.
+    fn with_binding_interfaces(&self, loaded: &Loaded, env: Rc<HostEnv>) -> Rc<HostEnv> {
+        let mut merged: Option<HostEnv> = None;
+        for binding in &loaded.rust_bindings {
+            if !self.fs.is_file(&binding.interface) {
+                continue;
+            }
+            match self
+                .fs
+                .read(&binding.interface)
+                .and_then(|text| HostEnv::from_text(&text))
+            {
+                Ok(one) => merged.get_or_insert_with(|| (*env).clone()).merge(one),
+                Err(message) => self
+                    .problems
+                    .borrow_mut()
+                    .push((binding.interface.clone(), message)),
+            }
+        }
+        match merged {
+            Some(mut e) => {
+                e.grant_all();
+                Rc::new(e)
+            }
+            None => env,
+        }
     }
 
     /// Reads and checks the program of `spec`.

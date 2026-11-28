@@ -106,7 +106,8 @@ fn a_binding_may_use_a_standard_type() {
     assert!(text.contains("uses = [\"std.json\"]"), "{text}");
     let out = pkg.run();
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(out.stdout.lines().count(), 2, "{}", out.stdout);
+    // The json value came back from the binding, in the main Vm and in the worker's.
+    assert_eq!(out.stdout, "null\nok(ok(\"null\"))\n");
 }
 
 #[test]

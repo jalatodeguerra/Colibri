@@ -42,6 +42,11 @@ fn git_commit() {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     git_commit();
+    // The platform of this `colibri`: part of what a project runner's cache key is made of.
+    println!(
+        "cargo:rustc-env=COLIBRI_HOST_TARGET={}",
+        std::env::var("TARGET").unwrap_or_default()
+    );
     println!("cargo:rerun-if-env-changed=COLIBRI_WEB_RUNNER");
     println!("cargo:rustc-check-cfg=cfg(web_runner)");
     let Some(value) = std::env::var_os("COLIBRI_WEB_RUNNER").filter(|v| !v.is_empty()) else {

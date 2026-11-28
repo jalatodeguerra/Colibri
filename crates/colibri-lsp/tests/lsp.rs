@@ -853,12 +853,13 @@ fn interface_files_make_host_functions_check() {
     assert!(hover_text(&c.hover(&file, l, col)).contains("fn engine_add(a: int, b: int) -> int"));
     c.shutdown();
 
-    // Found next to a `colibri.toml`.
+    // Not found by sitting next to a `colibri.toml`: only a binding key's `<key>.cbi` is read
+    // from a package folder (as `colibri check` does), and `engine` is no key.
     write(&dir, "colibri.toml", "[package]\nname = \"demo\"\n");
     write(&dir, "main.colibri", text);
     let mut c = Client::start(Some(&dir), Value::Null);
     c.open(&dir.join("main.colibri"), text);
-    assert!(c.diags(&dir.join("main.colibri")).is_empty());
+    assert_eq!(c.diags(&dir.join("main.colibri")).len(), 1);
     c.shutdown();
 
     // A broken interface file is reported in the log, and checking goes on.
@@ -920,6 +921,70 @@ fn a_rust_binding_key_gets_hover_completion_and_the_missing_file_hint() {
     c.change(&main, typing);
     let items = c.complete_after(&main, typing, "    native.");
     assert!(labels(&items).contains(&"add"), "{:?}", labels(&items));
+    c.shutdown();
+}
+
+#[test]
+fn a_dependency_packages_binding_is_read_and_a_stray_interface_is_not() {
+    let base = temp_dir("rust_binding_dep");
+    let dir = base.join("app");
+    let mut vm = colibri_runtime::Vm::builder().build();
+    vm.module("native")
+        .register_fn("add", |a: i64, b: i64| a + b)
+        .unwrap();
+    write(
+        &dir,
+        "colibri.toml",
+        "[package]\nname = \"demo\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    );
+    write(
+        &base,
+        "dep/colibri.toml",
+        "[package]\nname = \"dep\"\n\n[rust-dependencies]\nnative = { path = \"native/\" }\n",
+    );
+    let dep_file = base.join("dep/util.colibri");
+    let dep_text = "import native\n\npub fn three() -> int {\n    return native.add(1, 2)\n}\n";
+    write(&base, "dep/util.colibri", dep_text);
+    let main = dir.join("main.colibri");
+    let text = "import dep.util\n\nfn main() {\n    print(util.three())\n}\n";
+    write(&dir, "main.colibri", text);
+    // An interface that no manifest declares as a binding is just a file.
+    let mut stray = colibri_runtime::Vm::builder().build();
+    stray.module("extra").register_fn("one", || 1_i64).unwrap();
+    write(&dir, "extra.cbi", &stray.module("extra").interface_text());
+
+    // The dependency's key has no interface yet: its manifest says what to run.
+    let dep_manifest = base.join("dep/colibri.toml");
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, text);
+    let hint = format!(
+        "{:?}{:?}",
+        c.diagnostics.get(&uri(&dep_manifest)),
+        c.diags(&main)
+    );
+    assert!(
+        hint.contains("run `colibri bindings` to generate `native.cbi`"),
+        "{hint}"
+    );
+    c.shutdown();
+
+    // With the interface in the dependency's own folder, the whole program checks.
+    write(
+        &base,
+        "dep/native.cbi",
+        &vm.module("native").interface_text(),
+    );
+    let mut c = Client::start(Some(&dir), Value::Null);
+    c.open(&main, text);
+    assert!(c.diags(&main).is_empty(), "{:?}", c.diags(&main));
+    c.open(&dep_file, dep_text);
+    assert!(c.diags(&dep_file).is_empty(), "{:?}", c.diags(&dep_file));
+    let uses_stray = "import extra\n\nfn main() {\n    print(extra.one())\n}\n";
+    c.change(&main, uses_stray);
+    assert!(
+        !c.diags(&main).is_empty(),
+        "`extra.cbi` is not a binding, so `extra` is no module"
+    );
     c.shutdown();
 }
 

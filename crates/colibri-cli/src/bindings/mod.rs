@@ -5,6 +5,8 @@
 //! a [`Binding`] table and passes it to [`crate::runner_main`]; every `Vm` it makes (the main one
 //! and the isolates of thread tasks) registers the table. Nothing here calls cargo.
 
+pub mod build;
+pub mod command;
 pub mod engine;
 pub mod r#gen;
 
