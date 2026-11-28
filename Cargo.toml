@@ -23,6 +23,11 @@ strip = true
 opt-level = "s"
 [profile.release.package.colibri-dap]
 opt-level = "s"
+# The checker is the largest crate and runs once per start (a 2900-line program checks about 10%
+# slower at "s", still a few ms): size for the same gate, which B5 (project runner build) had
+# pushed over by 224 KB.
+[profile.release.package.colibri-check]
+opt-level = "s"
 
 # The web runner (`colibri.wasm`) is built with `--profile web`: it is embedded in `colibri`, whose
 # size is gated, and `z` makes it 25% smaller than `3` (3.6 MB against 4.8 MB) with no measurable

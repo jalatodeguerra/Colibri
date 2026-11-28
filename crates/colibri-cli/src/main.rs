@@ -248,6 +248,25 @@ enum Command {
         #[command(flatten)]
         build: BuildFlags,
     },
+    /// Build the project runner for the `[rust-dependencies]` of a package (once, then cached;
+    /// this is the one command besides `run`, `test` and the like that calls cargo) and write
+    /// each binding's interface, `<key>.cbi`, next to the `colibri.toml` that declares the key.
+    /// With `--check`, write nothing and exit with 1 if an interface is out of date
+    Bindings {
+        /// The package folder
+        path: Option<PathBuf>,
+        /// Build the runner as `colibri build` does (fat LTO) instead of for `colibri run`
+        #[arg(long)]
+        release: bool,
+        /// Also copy the runner to FILE
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Change nothing; exit with 1 if an interface would change
+        #[arg(long)]
+        check: bool,
+        #[command(flatten)]
+        deps: DepFlags,
+    },
     /// Run the language server (LSP) on stdin and stdout
     Lsp,
     /// Debug adapter: speaks the Debug Adapter Protocol on standard input and output, for an
@@ -447,6 +466,19 @@ fn main() -> ExitCode {
             colibri_lang::set_build_cfg(build.cfg());
             colibri_lang::repl::run()
         }
+        Command::Bindings {
+            path,
+            release,
+            output,
+            check,
+            deps,
+        } => colibri_lang::bindings::command::run(&colibri_lang::bindings::command::Args {
+            path: &path.unwrap_or_else(|| PathBuf::from(".")),
+            release,
+            output: output.as_deref(),
+            check,
+            deps,
+        }),
         Command::Lsp => lsp(),
         Command::Debug => colibri_lang::debugcmd::run(),
         Command::Doc { std, check } => colibri_lang::doccmd::run(&std, check),

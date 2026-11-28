@@ -14,3 +14,9 @@ colibri-runtime = { path = "../colibri-runtime" }
 [[bin]]
 name = "colibri-runner-fixture"
 path = "src/main.rs"
+
+# A stand-in for cargo, for the tests of the runner build: it records its arguments and copies the
+# fixture runner where cargo would have put the project runner.
+[[bin]]
+name = "fake-cargo"
+path = "src/bin/fake-cargo.rs"

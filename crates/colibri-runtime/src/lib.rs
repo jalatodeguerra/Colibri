@@ -440,6 +440,77 @@ fn ask_lazy_uses<'a>(
     }
 }
 
+/// A `[rust-dependencies]` entry of one package of a program.
+#[derive(Clone, Debug)]
+pub struct ProjectBinding {
+    pub dep: RustDependency,
+    /// The folder of the manifest that declares it (a path source is relative to it).
+    pub dir: std::path::PathBuf,
+    /// Where its `<key>.cbi` is (it may not exist yet).
+    pub interface: std::path::PathBuf,
+    /// Declared by a git package: its folder is a checkout in the cache, which is not written to.
+    pub from_git: bool,
+}
+
+/// Every Rust binding the program at `entry` declares, the root's and each dependency's, for the
+/// tool that builds the project runner. The program is only loaded, not checked, and a missing
+/// `.cbi` is no problem here (the runner makes it). A git dependency that declares bindings
+/// without the root's `allow-rust` is refused with the loader's message: nothing of it may be
+/// built.
+pub fn project_bindings(
+    fs: &dyn SourceFs,
+    entry: Entry<'_>,
+    cfg: BuildCfg,
+    host_modules: &[String],
+) -> Result<Vec<ProjectBinding>, String> {
+    let mut sources = SourceMap::new();
+    let options = colibri_check::package::LoadOptions {
+        cfg,
+        ..colibri_check::package::LoadOptions::default()
+    };
+    let loaded = colibri_check::package::load_with(fs, &mut sources, entry, host_modules, options)
+        .map_err(|e| format!("{}: {}", e.path, e.message))?;
+    if let Some(b) = loaded.rust_bindings.iter().find(|b| !b.allowed) {
+        return Err(format!(
+            "the git dependency in `{}` declares the Rust dependency `{}` (it may build Rust code), and the root package has not allowed it\n  add its name to `allow-rust = [..]` in the `[package]` table of the root `colibri.toml`",
+            b.interface
+                .parent()
+                .map_or(String::new(), |d| d.display().to_string()),
+            b.key
+        ));
+    }
+    let mut out = Vec::new();
+    for binding in &loaded.rust_bindings {
+        let Some(dir) = binding.interface.parent() else {
+            continue;
+        };
+        let manifest_path = dir.join(MANIFEST_FILE);
+        let text = fs
+            .read(&manifest_path)
+            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+        let manifest = parse_manifest(colibri_syntax::FileId(0), &text).map_err(|errors| {
+            format!(
+                "{} is not valid: {}",
+                manifest_path.display(),
+                errors.first().map_or(String::new(), |d| d.message.clone())
+            )
+        })?;
+        if let Some(dep) = manifest
+            .rust_dependencies
+            .into_iter()
+            .find(|d| d.name == binding.key)
+        {
+            out.push(ProjectBinding {
+                dep,
+                dir: dir.to_path_buf(),
+                interface: binding.interface.clone(),
+                from_git: binding.from_git,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// [`check_entry`] where the standard modules `lazy_names` are known by name only: the
 /// interface of one is asked from `interface` when the program imports it.
 fn check_entry_lazy(

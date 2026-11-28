@@ -122,6 +122,12 @@ pub struct RustBinding {
     pub span: colibri_syntax::Span,
     /// `<key>.cbi` in the folder of the package that declares the key (it may not exist).
     pub interface: std::path::PathBuf,
+    /// The package is a git dependency (or in a git checkout): its folder is the cache's, not the
+    /// user's.
+    pub from_git: bool,
+    /// The root package may have Rust built for it: not a git package, or one the root's
+    /// `allow-rust` names.
+    pub allowed: bool,
 }
 
 /// Why part of a program is missing from a [`Loaded`].

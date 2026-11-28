@@ -27,6 +27,8 @@ pub struct Inputs {
     pub recorded: Option<PathBuf>,
     /// The version of this `colibri`.
     pub version: String,
+    /// What a relative `COLIBRI_SOURCE` is relative to: the current folder.
+    pub base: PathBuf,
     /// The repository url and the commit this `colibri` was compiled from, if known.
     pub git: Option<(String, String)>,
 }
@@ -45,6 +47,7 @@ impl Inputs {
             env: std::env::var_os(SOURCE_VAR).filter(|v| !v.is_empty()),
             recorded,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            base: std::env::current_dir().unwrap_or_default(),
             git,
         }
     }
@@ -56,7 +59,7 @@ impl Inputs {
 pub fn resolve(inputs: &Inputs) -> Result<Engine, String> {
     if let Some(value) = &inputs.env {
         // Absolute: the generated manifest is read from another folder.
-        let given = PathBuf::from(value);
+        let given = inputs.base.join(value);
         let dir = std::fs::canonicalize(&given)
             .map(|p| PathBuf::from(super::r#gen::strip_verbatim(&p.to_string_lossy())))
             .unwrap_or_else(|_| given.clone());
@@ -171,6 +174,7 @@ mod tests {
             env: env.map(|p| p.as_os_str().to_owned()),
             recorded: recorded.map(Path::to_path_buf),
             version: "0.1.0".to_string(),
+            base: std::env::temp_dir(),
             git: git.then(|| {
                 (
                     "https://example.test/colibri".to_string(),
@@ -193,17 +197,31 @@ mod tests {
 
     #[test]
     fn a_relative_environment_becomes_absolute() {
-        // A tree inside the current folder, named relatively.
-        let name = format!("colibri-engine-{}-rel", std::process::id());
-        let here = std::env::current_dir().unwrap().join(&name);
-        let moved = Tree::at(here, "0.1.0");
+        let tree = Tree::new("rel", "0.1.0");
+        let name = tree.0.file_name().unwrap().to_owned();
+        // Named relative to the base folder, which is the temp folder here.
         let got = resolve(&inputs(Some(Path::new(&name)), None, false)).unwrap();
         let Engine::Path(dir) = got else {
             panic!("a path")
         };
         assert!(dir.is_absolute(), "{dir:?}");
         assert!(dir.ends_with(&name), "{dir:?}");
-        drop(moved);
+        assert!(dir.join("Cargo.toml").is_file());
+    }
+
+    #[test]
+    fn a_relative_environment_with_dots_is_cleaned_up() {
+        let tree = Tree::new("dots", "0.1.0");
+        let name = tree.0.file_name().unwrap().to_owned();
+        let dotted = Path::new(".")
+            .join("..")
+            .join(std::env::temp_dir().file_name().unwrap())
+            .join(&name);
+        let got = resolve(&inputs(Some(&dotted), None, false)).unwrap();
+        let Engine::Path(dir) = got else {
+            panic!("a path")
+        };
+        assert!(!dir.to_string_lossy().contains(".."), "{dir:?}");
     }
 
     #[test]

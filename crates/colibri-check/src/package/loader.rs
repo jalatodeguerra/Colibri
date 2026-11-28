@@ -793,10 +793,13 @@ impl<'a> Loader<'a> {
             }
             let exists = self.fs.is_file(&cbi);
             self.binding_owner.insert(r.name.clone(), (tree, exists));
+            let allowed = !from_git || self.trees[0].allow_rust.contains(&self.trees[tree].name);
             self.rust_bindings.push(RustBinding {
                 key: r.name.clone(),
                 span: r.span,
                 interface: cbi,
+                from_git,
+                allowed,
             });
         }
     }

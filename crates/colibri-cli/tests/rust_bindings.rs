@@ -507,3 +507,57 @@ fn the_run_error_for_a_binding_points_at_the_import_path() {
     let out = pkg.run();
     assert!(out.stderr.contains("main.colibri:1:8"), "{}", out.stderr);
 }
+
+const REGISTRY: &str =
+    "\n[rust-dependencies]\nnative = { binding = \"colibri-native\", version = \"0.1\" }\n";
+
+/// `colibri bindings` on `pkg` with this `CARGO` (none: unset) and an empty `PATH`, and a cache
+/// folder of its own.
+fn bindings_without_cargo(pkg: &Pkg, cargo: Option<&str>) -> Out {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_colibri"));
+    cmd.args(["bindings", pkg.0.to_str().unwrap()])
+        .env("PATH", "")
+        .env("COLIBRI_HOME", pkg.0.join("home"))
+        .env_remove("CARGO");
+    if let Some(cargo) = cargo {
+        cmd.env("CARGO", cargo);
+    }
+    let out = cmd.output().expect("the colibri binary runs");
+    Out {
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code: out.status.code().unwrap_or(-1),
+    }
+}
+
+#[test]
+fn bindings_without_cargo_says_where_to_get_it_and_writes_nothing() {
+    let pkg = Pkg::new("nocargo", REGISTRY, CALL);
+    let out = bindings_without_cargo(&pkg, None);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    for want in ["cargo was not found", "https://rustup.rs", "--runner PATH"] {
+        assert!(out.stderr.contains(want), "{want}: {}", out.stderr);
+    }
+    assert!(!pkg.0.join("native.cbi").exists());
+    // A `CARGO` that names nothing is said to be that, not "not found".
+    let nowhere = pkg.0.join("no").join("such").join("cargo");
+    let out = bindings_without_cargo(&pkg, Some(nowhere.to_str().unwrap()));
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("the CARGO variable names"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stderr.contains("https://rustup.rs"), "{}", out.stderr);
+}
+
+#[test]
+fn bindings_in_a_package_without_the_table_says_so() {
+    let pkg = Pkg::new("notable", "", "fn main() {\n}\n");
+    let out = bindings_without_cargo(&pkg, None);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.contains("declares no `[rust-dependencies]`"),
+        "{}",
+        out.stderr
+    );
+}

@@ -1115,6 +1115,17 @@ fn a_git_dependency_with_rust_dependencies_must_be_allowed_by_the_root() {
     ] {
         assert!(out.stderr.contains(want), "{want}: {}", out.stderr);
     }
+    // `colibri bindings` refuses it too, before anything is built (it would run its build scripts).
+    let refused = app_with("app_refused", "");
+    let out = sb.colibri(&["bindings", refused.to_str().unwrap()]);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    for want in [
+        "the root package has not allowed it",
+        "`native`",
+        "`allow-rust = [..]`",
+    ] {
+        assert!(out.stderr.contains(want), "{want}: {}", out.stderr);
+    }
     // `allow-ffi` is another capability: it does not allow this one.
     let app = app_with("app2", "allow-ffi = [\"bound\"]\n");
     assert_eq!(sb.colibri(&["check", app.to_str().unwrap()]).code, 1);
