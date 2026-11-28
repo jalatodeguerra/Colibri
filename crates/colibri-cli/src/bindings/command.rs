@@ -186,11 +186,28 @@ fn live_interfaces(runner: &Runner, fresh: bool) -> Result<PathBuf, String> {
 }
 
 fn ask_runner(runner: &Runner, scratch: &Path) -> Result<(), String> {
-    let status = Command::new(&runner.path)
-        .arg("__write-interfaces")
-        .arg(scratch)
-        .status()
-        .map_err(|e| format!("cannot run the runner `{}`: {e}", runner.path.display()))?;
+    // A binary that was just written can be "busy" while another thread's
+    // fork still holds its write handle; that clears in milliseconds.
+    let mut tries = 0;
+    let status = loop {
+        match Command::new(&runner.path)
+            .arg("__write-interfaces")
+            .arg(scratch)
+            .status()
+        {
+            Ok(status) => break status,
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "cannot run the runner `{}`: {e}",
+                    runner.path.display()
+                ));
+            }
+        }
+    };
     if status.success() {
         Ok(())
     } else {
