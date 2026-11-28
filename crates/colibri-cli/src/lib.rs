@@ -28,6 +28,8 @@ pub mod webbuild;
 
 use std::thread;
 
+#[doc(hidden)]
+pub use runner::command_help as runner_command_help;
 pub use runner::runner_main;
 
 /// The stack of the thread that runs Colibri code. Colibri calls keep their frames on the heap,

@@ -95,6 +95,21 @@ fn the_written_interface_names_the_module_and_its_members() {
 }
 
 #[test]
+fn a_binding_may_use_a_standard_type() {
+    // `import json` and `fixture.same` meet `std.json` in the pre-check, in `__write-interfaces`,
+    // in the main `Vm` and in a thread task.
+    let pkg = Pkg::new(
+        "json",
+        "import fixture\nimport json\n\nfn main() {\n    print(fixture.same(json.Value.null()))\n    let t = task.run(fn() => json.encode(fixture.same(json.Value.null())))\n    print(t.join())\n}\n",
+    );
+    let text = fs::read_to_string(pkg.0.join("fixture.cbi")).unwrap();
+    assert!(text.contains("uses = [\"std.json\"]"), "{text}");
+    let out = pkg.run();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout.lines().count(), 2, "{}", out.stdout);
+}
+
+#[test]
 fn test_blocks_see_the_binding_too() {
     let pkg = Pkg::new(
         "tests",

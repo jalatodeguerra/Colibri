@@ -55,12 +55,16 @@ impl Inputs {
 /// that says what to set.
 pub fn resolve(inputs: &Inputs) -> Result<Engine, String> {
     if let Some(value) = &inputs.env {
-        let dir = PathBuf::from(value);
+        // Absolute: the generated manifest is read from another folder.
+        let given = PathBuf::from(value);
+        let dir = std::fs::canonicalize(&given)
+            .map(|p| PathBuf::from(super::r#gen::strip_verbatim(&p.to_string_lossy())))
+            .unwrap_or_else(|_| given.clone());
         return match tree_version(&dir) {
             Some(_) => Ok(Engine::Path(dir)),
             None => Err(format!(
                 "{SOURCE_VAR} is `{}`, which is not a Colibri source tree (it needs a `Cargo.toml` that lists the workspace and `crates/colibri-cli` and `crates/colibri-runtime`)",
-                dir.display()
+                given.display()
             )),
         };
     }
@@ -176,6 +180,24 @@ mod tests {
         let recorded = Tree::new("env-rec", "0.1.0");
         let got = resolve(&inputs(Some(&env.0), Some(&recorded.0), true)).unwrap();
         assert_eq!(got, Engine::Path(env.0.clone()));
+    }
+
+    #[test]
+    fn a_relative_environment_becomes_absolute() {
+        // A tree inside the current folder, named relatively.
+        let name = format!("colibri-engine-{}-rel", std::process::id());
+        let tree = Tree::new("rel-src", "0.1.0");
+        let here = std::env::current_dir().unwrap().join(&name);
+        let _ = std::fs::remove_dir_all(&here);
+        std::fs::rename(&tree.0, &here).unwrap();
+        let moved = Tree(here.clone());
+        let got = resolve(&inputs(Some(Path::new(&name)), None, false)).unwrap();
+        let Engine::Path(dir) = got else {
+            panic!("a path")
+        };
+        assert!(dir.is_absolute(), "{dir:?}");
+        assert!(dir.ends_with(&name), "{dir:?}");
+        drop(moved);
     }
 
     #[test]

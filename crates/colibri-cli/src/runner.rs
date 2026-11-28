@@ -136,6 +136,16 @@ enum Command {
     WriteInterfaces { dir: PathBuf },
 }
 
+/// The long help of one of the runner's commands, for the test that compares its flags with
+/// `colibri`'s.
+#[doc(hidden)]
+pub fn command_help(name: &str) -> Option<String> {
+    use clap::CommandFactory;
+    let mut cmd = Cli::command();
+    cmd.find_subcommand_mut(name)
+        .map(|sub| sub.render_long_help().to_string())
+}
+
 /// The `main` of a project runner: parses the command line and runs it with `table` registered
 /// in every `Vm`, the main one and the isolates of thread tasks.
 pub fn runner_main(table: &'static [Binding]) -> ExitCode {
@@ -145,7 +155,7 @@ pub fn runner_main(table: &'static [Binding]) -> ExitCode {
     let cli = Cli::parse();
     // A binding that cannot register (a clash, a panic) is said once, here, instead of being
     // found by whichever `Vm` is built first.
-    if let Err(e) = bindings::register_all(&mut colibri_runtime::Vm::builder().build(), table) {
+    if let Err(e) = bindings::register_all(&mut std_vm(), table) {
         eprintln!("error: {e}");
         return ExitCode::from(1);
     }
@@ -206,9 +216,16 @@ pub fn runner_main(table: &'static [Binding]) -> ExitCode {
     })
 }
 
-/// Registers each binding into a bare `Vm` and writes its module's interface to `dir/<name>.cbi`.
-fn write_interfaces(dir: &std::path::Path, table: &[Binding]) -> ExitCode {
+/// A `Vm` with the standard library, like the real ones: a binding may use its types.
+fn std_vm() -> colibri_runtime::Vm {
     let mut vm = colibri_runtime::Vm::builder().build();
+    colibri_std::install(&mut vm).expect("the standard library registers into a new Vm");
+    vm
+}
+
+/// Registers each binding into a `Vm` with the standard library and writes its module's interface to `dir/<name>.cbi`.
+fn write_interfaces(dir: &std::path::Path, table: &[Binding]) -> ExitCode {
+    let mut vm = std_vm();
     if let Err(e) = bindings::register_all(&mut vm, table) {
         eprintln!("error: {e}");
         return ExitCode::from(1);

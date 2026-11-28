@@ -21,9 +21,19 @@ const OWN_LOCK: &str = include_str!("../../../../Cargo.lock");
 /// Where the crate of a binding comes from, with a path made absolute.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CrateSource {
-    Registry { version: String },
-    Path { dir: PathBuf },
-    Git { url: String, spec: GitSpec },
+    Registry {
+        version: String,
+    },
+    /// `dir` is where the crate is on this machine; `written` is the path as the manifest says it
+    /// (the only part of it that is the same on another machine).
+    Path {
+        dir: PathBuf,
+        written: String,
+    },
+    Git {
+        url: String,
+        spec: GitSpec,
+    },
 }
 
 /// One binding crate of the runner.
@@ -103,7 +113,13 @@ pub fn resolve_crates(
                 match read_path_crate(&dir, path) {
                     Ok(package) => {
                         let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-                        (package, CrateSource::Path { dir })
+                        (
+                            package,
+                            CrateSource::Path {
+                                dir,
+                                written: path.clone(),
+                            },
+                        )
                     }
                     Err(message) => {
                         errors.push(format!("the Rust dependency `{}`: {message}", dep.name));
@@ -320,7 +336,7 @@ fn dependency_table(c: &BindingCrate) -> Result<String, String> {
     let mut parts = vec![format!("package = {}", quote(&c.package))];
     match &c.source {
         CrateSource::Registry { version } => parts.push(format!("version = {}", quote(version))),
-        CrateSource::Path { dir } => {
+        CrateSource::Path { dir, .. } => {
             parts.push(format!("path = {}", quote_path(&display_path(dir))?));
         }
         CrateSource::Git { url, spec } => {
@@ -371,15 +387,36 @@ fn main_rs(crates: &[&BindingCrate]) -> String {
 /// Start of the marker a runner holds for its bindings (the twin of `colibri-runner-version`).
 pub const MARKER_PREFIX: &str = "\u{1}colibri-bindings=";
 
-/// `\x01colibri-bindings=<16 hex digits>\x02`: a hash of the binding table (key, package and
-/// source of each crate), so that two runners with the same bindings carry the same marker.
+/// `\x01colibri-bindings=<16 hex digits>\x02`: a hash of the binding table, so that two runners
+/// with the same bindings carry the same marker wherever they were built. The text hashed has,
+/// for each crate in key order: the key, the package, the kind of source and what names it (the
+/// path as written in the manifest, the git url and rev, tag or branch, the registry version),
+/// the sorted features and `default-features`. Nothing of this machine is in it.
 fn bindings_marker(crates: &[&BindingCrate]) -> String {
+    let mut sorted: Vec<&&BindingCrate> = crates.iter().collect();
+    sorted.sort_by(|a, b| a.key.cmp(&b.key));
     let mut text = String::new();
-    for c in crates {
+    for c in sorted {
+        let (kind, detail) = match &c.source {
+            CrateSource::Registry { version } => ("registry", version.clone()),
+            CrateSource::Path { written, .. } => ("path", written.clone()),
+            CrateSource::Git { url, spec } => (
+                "git",
+                match spec.key_value() {
+                    Some((key, value)) => format!("{url}\0{key}\0{value}"),
+                    None => url.clone(),
+                },
+            ),
+        };
+        let mut features = c.features.clone();
+        features.sort();
         let _ = writeln!(
             text,
-            "{}\0{}\0{:?}\0{:?}\0{}",
-            c.key, c.package, c.source, c.features, c.default_features
+            "{}\0{}\0{kind}\0{detail}\0{}\0{}",
+            c.key,
+            c.package,
+            features.join(","),
+            c.default_features
         );
     }
     format!("{MARKER_PREFIX}{:016x}\u{2}", fnv1a64(text.as_bytes()))
@@ -526,6 +563,7 @@ mod tests {
             package: "colibri-native".to_string(),
             source: CrateSource::Path {
                 dir: PathBuf::from("/work/app/native"),
+                written: "native/".to_string(),
             },
             features: vec!["simd".to_string(), "fast".to_string()],
             default_features: false,
@@ -601,6 +639,78 @@ mod tests {
         assert_ne!(m(&one), m(&other));
     }
 
+    fn path_crate(dir: &str, written: &str) -> BindingCrate {
+        BindingCrate {
+            source: CrateSource::Path {
+                dir: PathBuf::from(dir),
+                written: written.to_string(),
+            },
+            ..registry("native", "colibri-native")
+        }
+    }
+
+    fn marker_of(c: &[BindingCrate]) -> String {
+        bindings_marker(&c.iter().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn the_marker_does_not_depend_on_where_the_project_sits() {
+        let a = [path_crate("/ci/app/native", "native/")];
+        let b = [path_crate(r"C:\Users\u\other place\app\native", "native/")];
+        assert_eq!(marker_of(&a), marker_of(&b));
+        // The generated Cargo.toml does differ: it names the folder.
+        assert_ne!(
+            generate(&engine(), &a).unwrap().cargo_toml,
+            generate(&engine(), &b).unwrap().cargo_toml
+        );
+    }
+
+    #[test]
+    fn the_marker_changes_with_source_and_features() {
+        let base = [path_crate("/p/native", "native/")];
+        let m = marker_of(&base);
+        // Another path as written.
+        assert_ne!(m, marker_of(&[path_crate("/p/native", "other/")]));
+        // Another kind of source, another version, another git revision.
+        let reg = |v: &str| BindingCrate {
+            source: CrateSource::Registry {
+                version: v.to_string(),
+            },
+            ..registry("native", "colibri-native")
+        };
+        let git = |spec: GitSpec| BindingCrate {
+            source: CrateSource::Git {
+                url: "https://example.test/n".to_string(),
+                spec,
+            },
+            ..registry("native", "colibri-native")
+        };
+        let all = [
+            m.clone(),
+            marker_of(&[reg("0.1")]),
+            marker_of(&[reg("0.2")]),
+            marker_of(&[git(GitSpec::Rev("a1".to_string()))]),
+            marker_of(&[git(GitSpec::Rev("a2".to_string()))]),
+            marker_of(&[git(GitSpec::Tag("a1".to_string()))]),
+            marker_of(&[git(GitSpec::DefaultBranch)]),
+        ];
+        for (i, x) in all.iter().enumerate() {
+            for y in &all[i + 1..] {
+                assert_ne!(x, y);
+            }
+        }
+        // Features (in any order) and default-features.
+        let mut with = base.clone();
+        with[0].features = vec!["b".to_string(), "a".to_string()];
+        let mut sorted = base.clone();
+        sorted[0].features = vec!["a".to_string(), "b".to_string()];
+        assert_ne!(m, marker_of(&with));
+        assert_eq!(marker_of(&with), marker_of(&sorted));
+        let mut off = base.clone();
+        off[0].default_features = false;
+        assert_ne!(m, marker_of(&off));
+    }
+
     /// Strings a path can hold, in the order of the spec: spaces, quotes, backslashes,
     /// non-ASCII, a `\\?\` prefix, control characters.
     const NASTY: &[&str] = &[
@@ -658,6 +768,7 @@ mod tests {
                 package: "colibri-native".to_string(),
                 source: CrateSource::Path {
                     dir: PathBuf::from(text),
+                    written: "native".to_string(),
                 },
                 features: Vec::new(),
                 default_features: true,
@@ -785,7 +896,10 @@ mod tests {
         );
         assert_eq!(got[0].features, ["a", "b"]);
         match &got[0].source {
-            CrateSource::Path { dir } => assert!(dir.ends_with("native"), "{dir:?}"),
+            CrateSource::Path { dir, written } => {
+                assert!(dir.ends_with("native"), "{dir:?}");
+                assert_eq!(written, "native/");
+            }
             other => panic!("{other:?}"),
         }
         assert_eq!(got[1].key, "rapier");

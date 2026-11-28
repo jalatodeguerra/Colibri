@@ -32,8 +32,31 @@ pub fn shout(text: &str) -> String {
     text.to_uppercase()
 }
 
+/// A value of `std.json`'s `Value`, passed through: a binding may use a standard type.
+struct JsonValue(colibri::Value);
+
+impl colibri::FromColibri for JsonValue {
+    fn ty(reg: &mut colibri::TypeRegistry) -> colibri::TypeDesc {
+        reg.foreign_type("std.json", "Value")
+    }
+    fn from_colibri(v: &colibri::Value, _cx: &mut colibri::Cx<'_>) -> Result<Self, colibri::Error> {
+        Ok(JsonValue(v.clone()))
+    }
+}
+
+impl colibri::IntoColibri for JsonValue {
+    fn ty(reg: &mut colibri::TypeRegistry) -> colibri::TypeDesc {
+        reg.foreign_type("std.json", "Value")
+    }
+    fn into_colibri(self, _cx: &mut colibri::Cx<'_>) -> colibri::Value {
+        self.0
+    }
+}
+
 #[colibri::module]
 fn fixture(m: &mut colibri::Module<'_>) -> Result<(), colibri::Error> {
+    m.uses("std.json")?;
+    m.register_fn("same", |j: JsonValue| j)?;
     m.add_class::<Counter>()?;
     m.add_fn(double::export)?;
     m.add_fn(shout::export)?;
