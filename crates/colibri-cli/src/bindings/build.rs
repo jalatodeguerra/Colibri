@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use colibri_runtime::ProjectBinding;
 
+use super::command;
 use super::engine::{self, Engine};
 use super::r#gen::{self, BindingCrate, CrateSource, RUNNER_BIN};
 
@@ -56,6 +57,9 @@ pub struct Options {
     /// Copy the lock cargo resolved back to `colibri.rust.lock` (`colibri bindings --check` does
     /// not: it reports instead).
     pub write_lock: bool,
+    /// After a build, write the `<key>.cbi` that differ (never into a git checkout), and when the
+    /// runner was cached, say which differ without writing: what `run` and `test` do.
+    pub write_interfaces: bool,
 }
 
 /// What a build depends on besides the project: the machine's facts, replaceable in a test.
@@ -91,6 +95,15 @@ pub struct Runner {
     /// The resolved lock differs from `colibri.rust.lock` (or there is none): it was written back
     /// if `Options::write_lock`, else the project's lock is out of date.
     pub lock_changed: bool,
+    /// Interfaces written after this build (`Options::write_interfaces`).
+    pub written: Vec<PathBuf>,
+    /// Interfaces that differ from the runner's and were not written because the runner was
+    /// cached (`Options::write_interfaces`).
+    pub stale: Vec<PathBuf>,
+    /// Those of a git dependency (the dependency's key and the file): never written.
+    pub git_stale: Vec<(String, PathBuf)>,
+    /// Why the interfaces could not be compared or written (the run goes on without them).
+    pub interface_problem: Option<String>,
 }
 
 /// The package that holds `path` (a folder, or a script below one) and its Rust bindings.
@@ -173,11 +186,7 @@ pub fn ensure_runner(
     let (lock_in, _, tree) = state();
     let first = runner_in(&stamp_of(&lock_in, &tree));
     if first.is_file() {
-        return Ok(Runner {
-            path: first,
-            built: false,
-            lock_changed: false,
-        });
+        return cached_runner(first, bindings, options);
     }
 
     let cargo = find_cargo(env.cargo.as_deref())?;
@@ -188,11 +197,7 @@ pub fn ensure_runner(
     let (lock_in, lock_present, tree) = state();
     let first = runner_in(&stamp_of(&lock_in, &tree));
     if first.is_file() {
-        return Ok(Runner {
-            path: first,
-            built: false,
-            lock_changed: false,
-        });
+        return cached_runner(first, bindings, options);
     }
     write_if_changed(&dir.join("Cargo.toml"), &generated.cargo_toml)?;
     write_if_changed(&dir.join("src").join("main.rs"), &generated.main_rs)?;
@@ -220,17 +225,87 @@ pub fn ensure_runner(
     // The runner is named for the lock it was built with, which is what the next call will see
     // once the lock is copied back.
     let path = runner_in(&stamp_of(&lock_out, &tree));
+    // What an earlier runner of this name left (the file was deleted, the folder was not) is not
+    // what this one says.
+    let _ = std::fs::remove_dir_all(interfaces_dir(&path));
     install(&produced, &path)?;
     let lock_changed = lock_out != lock_in || !lock_present;
     if lock_changed && options.write_lock {
         write_if_changed(&lock_path, &lock_out)?;
     }
     prune(&dir, &path);
-    Ok(Runner {
+    let mut runner = Runner {
         path,
         built: true,
         lock_changed,
-    })
+        written: Vec::new(),
+        stale: Vec::new(),
+        git_stale: Vec::new(),
+        interface_problem: None,
+    };
+    // Only now: the build is over, installed and its lock copied back. A build that failed anywhere
+    // before leaves the interfaces as they were.
+    if options.write_interfaces {
+        match command::write_interfaces(&runner, bindings, false) {
+            Ok(report) => {
+                runner.written = report.changed;
+                runner.git_stale = named(bindings, report.git_stale);
+            }
+            Err(e) => runner.interface_problem = Some(e),
+        }
+    }
+    Ok(runner)
+}
+
+/// A runner that was there already. With `Options::write_interfaces` the project's interfaces are
+/// compared with the runner's (kept next to it, so this reads files and does not start it) and the
+/// ones that differ are named, not written.
+fn cached_runner(
+    path: PathBuf,
+    bindings: &[ProjectBinding],
+    options: Options,
+) -> Result<Runner, String> {
+    let mut runner = Runner {
+        path,
+        built: false,
+        lock_changed: false,
+        written: Vec::new(),
+        stale: Vec::new(),
+        git_stale: Vec::new(),
+        interface_problem: None,
+    };
+    if options.write_interfaces {
+        match command::write_interfaces(&runner, bindings, true) {
+            Ok(report) => {
+                runner.stale = report.changed;
+                runner.git_stale = named(bindings, report.git_stale);
+            }
+            Err(e) => runner.interface_problem = Some(e),
+        }
+    }
+    Ok(runner)
+}
+
+/// The key of the binding each interface file belongs to.
+fn named(bindings: &[ProjectBinding], files: Vec<PathBuf>) -> Vec<(String, PathBuf)> {
+    files
+        .into_iter()
+        .map(|f| {
+            let key = bindings
+                .iter()
+                .find(|b| b.interface == f)
+                .map_or_else(String::new, |b| b.dep.name.clone());
+            (key, f)
+        })
+        .collect()
+}
+
+/// The folder next to a runner that holds the interfaces it wrote (`<key>.cbi`): a runner never
+/// changes, so what it says of its bindings is asked once.
+pub fn interfaces_dir(runner: &Path) -> PathBuf {
+    let mut name = runner.file_name().unwrap_or_default().to_os_string();
+    name.push(".interfaces");
+    runner.with_file_name(name)
 }
 
 /// The marker (`\x01colibri-bindings=<hex>\x02`) a runner of exactly these bindings holds, and
@@ -702,18 +777,38 @@ fn prune(dir: &Path, keep: &Path) {
     let Ok(read) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut runners: Vec<(std::time::SystemTime, PathBuf)> = read
-        .filter_map(Result::ok)
+    let entries: Vec<_> = read.filter_map(Result::ok).collect();
+    let mut runners: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .iter()
         .filter(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            name.starts_with("runner-") && !name.contains(".tmp")
+            name.starts_with("runner-") && !name.contains(".tmp") && !name.ends_with(".interfaces")
         })
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
     runners.sort_by(|a, b| b.cmp(a));
     for (_, path) in runners.into_iter().skip(KEEP) {
         if path != keep {
-            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_dir_all(interfaces_dir(&path));
+        }
+    }
+    // Leftovers: a kept folder whose runner is gone, and the scratch folder of an interrupted
+    // `__write-interfaces` (only old ones: a running process may be using a young one).
+    let old = std::time::Duration::from_secs(600);
+    for e in &entries {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let orphan = name.starts_with("runner-")
+            && name.ends_with(".interfaces")
+            && !dir.join(name.trim_end_matches(".interfaces")).exists();
+        let abandoned = name.starts_with("interfaces-")
+            && e.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > old);
+        if orphan || abandoned {
+            let _ = std::fs::remove_dir_all(e.path());
         }
     }
 }
@@ -862,6 +957,27 @@ mod lock_tests {
             "{said:?}"
         );
         drop(second);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+
+    #[test]
+    fn a_kept_folder_without_its_runner_is_removed_and_one_with_it_stays() {
+        let dir = std::env::temp_dir().join(format!("colibri-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("runner-b.interfaces")).unwrap();
+        std::fs::create_dir_all(dir.join("runner-a.interfaces")).unwrap();
+        std::fs::create_dir_all(dir.join("interfaces-1")).unwrap();
+        std::fs::write(dir.join("runner-a"), "r").unwrap();
+        prune(&dir, &dir.join("runner-a"));
+        assert!(dir.join("runner-a.interfaces").is_dir());
+        assert!(!dir.join("runner-b.interfaces").exists());
+        // A scratch folder of a process that may still run is left (it is young).
+        assert!(dir.join("interfaces-1").is_dir());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

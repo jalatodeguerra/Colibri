@@ -19,14 +19,23 @@ mimalloc = { version = "0.1", default-features = false, features = ["v2"] }
 [[bin]]
 name = "colibri-runner-fixture"
 path = "src/main.rs"
+test = false
 
 # A stand-in for cargo, for the tests of the runner build: it records its arguments and copies the
 # fixture runner where cargo would have put the project runner.
 [[bin]]
 name = "fake-cargo"
 path = "src/bin/fake-cargo.rs"
+test = false
 
 # `colibri` itself (its `main.rs`, unchanged), for the tests of delegation to a project runner.
 [[bin]]
 name = "colibri-under-test"
 path = "../colibri-cli/src/main.rs"
+test = false
+
+# The fixture runner with another signature, for the tests of interfaces that follow a rebuild.
+[[bin]]
+name = "colibri-runner-fixture-v2"
+path = "src/bin/runner-v2.rs"
+test = false

@@ -35,6 +35,12 @@ resolved are kept in `colibri.rust.lock`, which you commit like `colibri.lock`.
 A script that has no `colibri.toml`, and a package without `[rust-dependencies]` (and without
 dependencies that have them), is run by `colibri` itself and never touches the cache.
 
+When a run had to build the runner, it also brings the interface files up to date: a `.cbi` whose
+text differs from what the new runner says is rewritten (one line names it), and then `colibri
+check` sees the new signatures. Files in a git dependency are never written. When the runner was
+already there and a committed `.cbi` differs from what it says, the run goes on and prints one
+warning that names `colibri bindings`, which brings the files up to date.
+
 Two builds at once on one machine take turns: the second says "waiting for another Colibri build"
 and goes on when the first is done.
 

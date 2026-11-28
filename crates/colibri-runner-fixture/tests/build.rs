@@ -96,6 +96,7 @@ const RUN: Options = Options {
     locked: false,
     offline: false,
     write_lock: true,
+    write_interfaces: false,
 };
 
 fn bump_mtime(path: &Path) {
