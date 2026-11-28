@@ -191,7 +191,7 @@ pub fn say_interfaces(runner: &build::Runner) {
     }
     for (key, path) in &runner.git_stale {
         eprintln!(
-            "warning: the interface of the git dependency `{key}` is out of date: {}; its author regenerates and commits it",
+            "warning: the interface of the git dependency `{key}` is out of date: {}; `colibri build` refuses it until you `colibri update` it to a revision whose author regenerated it, or depend on a local copy with `path =`",
             path.display()
         );
     }

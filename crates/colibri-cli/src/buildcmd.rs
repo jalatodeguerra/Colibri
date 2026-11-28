@@ -371,7 +371,7 @@ fn project_runner(options: &Options<'_>, project: &Project) -> Result<Chosen, St
         .collect();
     if !stale.is_empty() {
         return Err(format!(
-            "the interface of a git dependency is out of date: {}; its author regenerates and commits it",
+            "the interface of a git dependency is out of date: {}; `colibri update` it to a revision whose author regenerated it, or depend on a local copy with `path =` and run `colibri bindings` there",
             stale.join(", ")
         ));
     }

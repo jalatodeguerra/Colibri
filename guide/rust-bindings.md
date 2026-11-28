@@ -80,8 +80,14 @@ and name it: `colibri build --target windows-x86_64 --runner FILE`. The runner m
 another project, is refused; the check reads the crates and versions, not the code, so a runner
 built from edited sources at the same crate version passes it and may still fail when the program
 starts (build the runner from the sources the package builds from). A built program is not a
-runner either (`--runner` of `run`, `test` and `repl` refuses it). Nothing is cross-compiled. `colibri build --web` refuses a package
-with Rust bindings (they cannot run in a page yet).
+runner either (`--runner` of `run`, `test` and `repl` refuses it). With `--runner`, the interface
+files are not compared with the runner, so it is no way around a stale `.cbi`. Nothing is
+cross-compiled. `colibri build --web` refuses a package with Rust bindings (they cannot run in a
+page yet).
+
+A stale `.cbi` stops `colibri build`: run `colibri bindings` and build again. If the stale file
+belongs to a git dependency, `colibri update` it to a revision whose author regenerated the file,
+or depend on a local copy with `path =` and run `colibri bindings` there.
 
 ## Commands that never call cargo
 
