@@ -636,6 +636,9 @@ fn main() {
 #[test]
 fn a_session_is_numbered_in_order_and_initialize_is_answered_once() {
     let mut dap = Dap::start("numbers");
+    // A request answered before the launch: the proxy's numbers and the adapter's own diverge
+    // unless what is forwarded is renumbered.
+    dap.request_fails("threads", json!({}));
     dap.launch("fn main() {\n    print(1)\n}\n", json!({}));
     dap.configuration_done();
     assert_eq!(dap.finish(), Some(0));

@@ -7,6 +7,8 @@
 //! - `FAKE_CARGO_FAIL`: `build` (a compile error) or `network` (a download failure);
 //! - `FAKE_CARGO_CONTROL`: a file read at every call, whose lines `runner=PATH` and `fail=build`
 //!   override the two variables above (a test that is watching changes what the next build does);
+//! - `FAKE_CARGO_CHILD_PID`: start a child that sleeps and write its pid to this file (what rustc
+//!   is to cargo);
 //! - `FAKE_CARGO_DUP_RUNTIME`: resolve a lock with two `colibri-runtime` packages.
 //!
 //! It also writes the lock a build would: the one it was given plus a marker line, once.
@@ -16,6 +18,20 @@ use std::path::PathBuf;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // A child of the build (rustc, a build script): waits a long time, and is there to be found.
+    if args.first().is_some_and(|a| a == "--sleep") {
+        std::thread::sleep(std::time::Duration::from_secs(120));
+        return;
+    }
+    if let Some(file) = std::env::var_os("FAKE_CARGO_CHILD_PID") {
+        // (It is left running on purpose: the test looks for it.)
+        #[allow(clippy::zombie_processes)]
+        let child = std::process::Command::new(std::env::current_exe().expect("own path"))
+            .arg("--sleep")
+            .spawn()
+            .expect("the child starts");
+        std::fs::write(file, child.id().to_string()).expect("the pid is written");
+    }
     if let Some(log) = std::env::var_os("FAKE_CARGO_LOG") {
         let mut file = std::fs::OpenOptions::new()
             .create(true)

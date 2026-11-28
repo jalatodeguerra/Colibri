@@ -179,22 +179,38 @@ fn a_runner_in_the_launch_is_used_without_cargo() {
     dap.disconnect();
 }
 
-/// A `disconnect` while the runner is being built stops cargo: the launch fails as stopped and the
-/// session ends without waiting for the build (the fake build would take half a minute).
+/// A `disconnect` while the runner is being built stops cargo and what it started: the launch
+/// fails as stopped and the session ends without waiting for the build (the fake build would take
+/// half a minute), and the child the fake cargo started is gone.
 #[test]
 fn a_disconnect_during_the_build_stops_cargo() {
-    let mut dap = start("cancel", &[("FAKE_CARGO_SLEEP_MS", "30000".to_string())]);
+    let pid_file =
+        std::env::temp_dir().join(format!("colibri-cancel-child-{}", std::process::id()));
+    let _ = std::fs::remove_file(&pid_file);
+    let mut dap = start(
+        "cancel",
+        &[
+            ("FAKE_CARGO_SLEEP_MS", "30000".to_string()),
+            ("FAKE_CARGO_CHILD_PID", pid_file.display().to_string()),
+        ],
+    );
     package(&dap, BOUND, PROGRAM);
     initialize(&mut dap);
     let started = std::time::Instant::now();
     let path = dap.temp.0.join("main.colibri");
     let launch = dap.send("launch", json!({"program": path.to_str().unwrap()}));
-    // The build line says the build has begun.
+    // The build line says the build has begun (and the fake cargo has started its child).
+    let deadline = std::time::Instant::now() + harness::HANG_GUARD;
     loop {
         dap.drain_available();
-        if dap.output("console").contains("building the Rust bindings") {
+        if dap.output("console").contains("building the Rust bindings") && pid_file.is_file() {
             break;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the build did not start: {:#?}",
+            dap.history
+        );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let disconnect = dap.send("disconnect", json!({}));
@@ -214,4 +230,26 @@ fn a_disconnect_during_the_build_stops_cargo() {
         started.elapsed()
     );
     dap.wait_exit();
+    #[cfg(unix)]
+    {
+        let child = std::fs::read_to_string(&pid_file).unwrap();
+        let gone = |pid: &str| {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", pid])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&out.stdout);
+            let state = state.trim();
+            state.is_empty() || state.starts_with('Z')
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !gone(&child) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child of cargo (pid {child}) is still running"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    let _ = std::fs::remove_file(&pid_file);
 }

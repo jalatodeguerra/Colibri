@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 /// How long a wait for one message may take before the test is called hung.
-const HANG_GUARD: Duration = Duration::from_secs(120);
+pub const HANG_GUARD: Duration = Duration::from_secs(120);
 
 /// The `colibri` under test: this package's own binary, or (in the runner fixture, which includes
 /// this file) the copy of its `main.rs` built there.

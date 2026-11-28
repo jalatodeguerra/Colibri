@@ -382,8 +382,8 @@ fn proxy() -> ExitCode {
     };
     // From here the input is read on a thread of its own: a `disconnect` during the build stops
     // cargo.
-    let mut input = ChannelInput::start(input);
     crate::bindings::build::reset_cancel();
+    let mut input = ChannelInput::start(input);
     match runner_for(&launch, &out) {
         Ok(Some(runner)) => through_runner(&runner, &buffered, input, out, answered),
         Ok(None) => serve_here(&buffered, input, Box::new(SharedWrite(out)), true, answered),
