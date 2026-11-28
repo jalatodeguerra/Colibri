@@ -1,0 +1,11 @@
+Text       | Script                | Columns
+-----------+-----------------------+--------
+Ada        | Latin                 | 3
+Müller     | Latin, accents        | 6
+Zoë        | Latin, combining mark | 3
+東京       | Han                   | 4
+こんにちは | Hiragana              | 10
+Привет     | Cyrillic              | 6
+🇯🇵         | flag                  | 2
+7 rows, the first column is 10 columns wide
+é (combining): width 1, 1 graphemes

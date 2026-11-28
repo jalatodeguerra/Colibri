@@ -1,0 +1,18 @@
+import native
+
+// For the watch smoke test (`smoke.sh`): prints for as long as it runs, and a Colibri edit of
+// `label` is patched into the running program.
+fn label() -> str => "one"
+
+fn ticker() {
+    let mut ticks = 0
+    while true {
+        ticks = ticks + 1
+        print("{label()} {native.display_width("東京")} {ticks}")
+        wait_real(0.1)
+    }
+}
+
+fn main() {
+    go ticker()
+}
