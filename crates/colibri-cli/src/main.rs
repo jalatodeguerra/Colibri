@@ -1,9 +1,10 @@
 //! The `colibri` command line tool.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use colibri_lang::cliargs::{BuildFlags, ReplArgs, RunArgs, TestArgs};
 use colibri_lang::depscmd::{self, DepFlags};
 use colibri_lang::on_big_stack;
 
@@ -12,41 +13,6 @@ use colibri_lang::on_big_stack;
 #[cfg(not(target_family = "wasm"))]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-/// The flags that decide `@when` conditions (DESIGN §3.6).
-#[derive(clap::Args, Clone, Debug, Default)]
-struct BuildFlags {
-    /// Turn on a feature flag: `@when(name)` items are kept. With a `colibri.toml` the feature
-    /// must be declared in its `[features]` table. May be given more than once
-    #[arg(long = "feature", value_name = "NAME", value_parser = feature_name)]
-    features: Vec<String>,
-    /// Do not turn on the features of the `default` list in `[features]`
-    #[arg(long)]
-    no_default_features: bool,
-    /// A release build: `@when(debug)` is false
-    #[arg(long)]
-    release: bool,
-}
-
-/// A feature name, checked as in `colibri.toml` (`--feature debug` would mean nothing).
-fn feature_name(name: &str) -> Result<String, String> {
-    match colibri_runtime::feature_name_problem(name) {
-        Some((message, hint)) => Err(format!("{message} ({hint})")),
-        None => Ok(name.to_string()),
-    }
-}
-
-impl BuildFlags {
-    fn cfg(&self) -> colibri_runtime::BuildCfg {
-        let mut cfg = colibri_runtime::BuildCfg::default();
-        for name in &self.features {
-            cfg = cfg.with_feature(name);
-        }
-        cfg.no_default_features = self.no_default_features;
-        cfg.debug = !self.release;
-        cfg
-    }
-}
 
 #[derive(Parser)]
 #[command(name = "colibri", version, about = "The Colibri programming language")]
@@ -59,54 +25,10 @@ struct Cli {
 enum Command {
     /// Run a Colibri script, or the package in a folder (the current folder by default)
     Run {
-        file: Option<PathBuf>,
-        /// Keep running and reload the program when its source files change: edits that only
-        /// touch function bodies are patched into the running program, other edits restart
-        /// it (`save_state() -> str` and `restore_state(s: str)` carry state across), and a
-        /// panic or the end of the program waits for the next edit
-        #[arg(long)]
-        watch: bool,
-        /// Arguments for the script, which it reads with `os.args()` (after `--` if they
-        /// start with a dash)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-        /// Run the leak detector when the program ends and report the reference cycles that
-        /// were never freed to stderr; `--leaks=error` also exits with 1
-        #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn", conflicts_with = "watch")]
-        leaks: Option<colibri_lang::leakcmd::LeakMode>,
-        /// Sample the running program and write a flame graph (SVG) to FILE (`profile.svg` by
-        /// default) and the folded stacks it was drawn from next to it (`profile.folded`; a FILE without an extension gets `.svg`), then
-        /// print the heaviest functions and lines to stderr. A sample is taken about every
-        /// 1,024 steps, so a long call into a host function or a built-in is charged to the
-        /// line that made the call; stacks deeper than 200 frames are cut in the middle; time the program spends waiting is `[idle]`
-        #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "profile.svg", conflicts_with = "watch")]
-        profile: Option<PathBuf>,
-        /// What a sample weighs with `--profile`: `time` (the default) is real time, so time in
-        /// host functions counts; `steps` counts instructions, which gives the same profile on
-        /// every run
-        #[arg(
-            long,
-            value_enum,
-            value_name = "WEIGHT",
-            default_value = "time",
-            requires = "profile"
-        )]
-        profile_weight: colibri_lang::profilecmd::Weight,
-        /// Count the reference-count traffic of each line (references taken and given up by
-        /// copying, reading and dropping strings, lists, structs and other values that have a
-        /// reference count, and `x.clone()`) and print the lines with the most to stderr. It
-        /// works on its own and does not need `--profile`. The program is compiled with a
-        /// counter next to each such instruction, which makes it slower (10 to 30% for most
-        /// programs, up to 2 times for one that mostly passes structs around, not at all for
-        /// arithmetic) and changes nothing else. Not counted: what built-ins written in Rust do
-        /// inside (`sort`, `join`, map lookups), host functions, field and element writes and
-        /// the cleanup of a panic
-        #[arg(long, conflicts_with = "watch")]
-        profile_rc: bool,
         #[command(flatten)]
-        build: BuildFlags,
+        args: colibri_lang::cliargs::RunArgs,
         #[command(flatten)]
-        deps: DepFlags,
+        runner: colibri_lang::cliargs::RunnerFlag,
     },
     /// Write one executable that holds a script or package, its dependencies and the standard
     /// library, and runs it when started: `colibri build app -o app-bin`. It is a copy of this
@@ -176,53 +98,10 @@ enum Command {
     /// Run the `test "name" { .. }` blocks of a script or package (the current folder by
     /// default); a failing test does not stop the others
     Test {
-        file: Option<PathBuf>,
-        /// Run only the tests whose `module::name` contains this text
-        #[arg(long, value_name = "TEXT")]
-        filter: Option<String>,
-        /// Steps one test may take before it fails (0 is unlimited)
-        #[arg(long, value_name = "STEPS", default_value_t = colibri_lang::testcmd::DEFAULT_BUDGET)]
-        budget: u64,
-        /// Show what the tests print at once, not only for failing tests
-        #[arg(long)]
-        nocapture: bool,
-        /// Report the reference cycles each test leaks; `--leaks=error` fails the test
-        #[arg(long, value_enum, value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "warn")]
-        leaks: Option<colibri_lang::leakcmd::LeakMode>,
-        /// Sample the running program and write a flame graph (SVG) to FILE (`profile.svg` by
-        /// default) and the folded stacks it was drawn from next to it (`profile.folded`; a FILE without an extension gets `.svg`), then
-        /// print the heaviest functions and lines to stderr. A sample is taken about every
-        /// 1,024 steps, so a long call into a host function or a built-in is charged to the
-        /// line that made the call; stacks deeper than 200 frames are cut in the middle; time the program spends waiting is `[idle]`; all the tests make
-        /// one profile
-        #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "profile.svg")]
-        profile: Option<PathBuf>,
-        /// What a sample weighs with `--profile`: `time` (the default) is real time, so time in
-        /// host functions counts; `steps` counts instructions, which gives the same profile on
-        /// every run
-        #[arg(
-            long,
-            value_enum,
-            value_name = "WEIGHT",
-            default_value = "time",
-            requires = "profile"
-        )]
-        profile_weight: colibri_lang::profilecmd::Weight,
-        /// Count the reference-count traffic of each line (references taken and given up by
-        /// copying, reading and dropping strings, lists, structs and other values that have a
-        /// reference count, and `x.clone()`) and print the lines with the most to stderr (one
-        /// report for all the tests). It works on its own and does not need `--profile`. The program is compiled with a
-        /// counter next to each such instruction, which makes it slower (10 to 30% for most
-        /// programs, up to 2 times for one that mostly passes structs around, not at all for
-        /// arithmetic) and changes nothing else. Not counted: what built-ins written in Rust do
-        /// inside (`sort`, `join`, map lookups), host functions, field and element writes and
-        /// the cleanup of a panic
-        #[arg(long)]
-        profile_rc: bool,
         #[command(flatten)]
-        build: BuildFlags,
+        args: colibri_lang::cliargs::TestArgs,
         #[command(flatten)]
-        deps: DepFlags,
+        runner: colibri_lang::cliargs::RunnerFlag,
     },
     /// Resolve the git dependencies of a package again (branches, tags and default branches
     /// move) and write the new commits to `colibri.lock`
@@ -246,7 +125,9 @@ enum Command {
     /// line by line without a prompt)
     Repl {
         #[command(flatten)]
-        build: BuildFlags,
+        args: colibri_lang::cliargs::ReplArgs,
+        #[command(flatten)]
+        runner: colibri_lang::cliargs::RunnerFlag,
     },
     /// Build the project runner for the `[rust-dependencies]` of a package (once, then cached;
     /// this is the one command besides `run`, `test` and the like that calls cargo) and write
@@ -296,6 +177,11 @@ fn web_platform(cfg: &mut colibri_runtime::BuildCfg) {
 }
 
 /// Serves the language server protocol on stdin and stdout.
+/// A package with `[rust-dependencies]` runs in its project runner (see `colibri_lang::delegate`).
+fn hand_over(file: &Path, runner: Option<&Path>, deps: DepFlags) -> Option<ExitCode> {
+    colibri_lang::delegate::delegate(&colibri_lang::delegate::Request { file, runner, deps })
+}
+
 fn lsp() -> ExitCode {
     let config = colibri_lsp::Config {
         stack_budget: colibri_lang::NATIVE_STACK_BUDGET,
@@ -411,18 +297,25 @@ fn main() -> ExitCode {
             })
         }
         Command::Run {
-            file,
-            watch,
-            args,
-            leaks,
-            profile,
-            profile_weight,
-            profile_rc,
-            build,
-            deps,
+            args:
+                RunArgs {
+                    file,
+                    watch,
+                    args,
+                    leaks,
+                    profile,
+                    profile_weight,
+                    profile_rc,
+                    build,
+                    deps,
+                },
+            runner,
         } => {
-            colibri_lang::set_build_cfg(build.cfg());
             let file = file.unwrap_or_else(|| PathBuf::from("."));
+            if let Some(code) = hand_over(&file, runner.runner.as_deref(), deps) {
+                return code;
+            }
+            colibri_lang::set_build_cfg(build.cfg());
             if watch {
                 match depscmd::prepare(&file, deps) {
                     Ok(()) => colibri_lang::watch::run(&file, args),
@@ -435,20 +328,28 @@ fn main() -> ExitCode {
             }
         }
         Command::Test {
-            file,
-            filter,
-            budget,
-            nocapture,
-            leaks,
-            profile,
-            profile_weight,
-            profile_rc,
-            build,
-            deps,
+            args:
+                TestArgs {
+                    file,
+                    filter,
+                    budget,
+                    nocapture,
+                    leaks,
+                    profile,
+                    profile_weight,
+                    profile_rc,
+                    build,
+                    deps,
+                },
+            runner,
         } => {
+            let file = file.unwrap_or_else(|| PathBuf::from("."));
+            if let Some(code) = hand_over(&file, runner.runner.as_deref(), deps) {
+                return code;
+            }
             colibri_lang::set_build_cfg(build.cfg());
             colibri_lang::testcmd::run(&colibri_lang::testcmd::Options {
-                path: file.unwrap_or_else(|| PathBuf::from(".")),
+                path: file,
                 filter,
                 budget,
                 nocapture,
@@ -462,7 +363,17 @@ fn main() -> ExitCode {
         Command::Update { names, path, deps } => depscmd::update(&path, names, deps),
         Command::New { .. } => unreachable!("`new` runs before the big stack is made"),
         Command::Fmt { paths, check } => colibri_lang::fmt::run(&paths, check),
-        Command::Repl { build } => {
+        Command::Repl {
+            args: ReplArgs { build },
+            runner,
+        } => {
+            if let Some(code) = hand_over(
+                Path::new("."),
+                runner.runner.as_deref(),
+                DepFlags::default(),
+            ) {
+                return code;
+            }
             colibri_lang::set_build_cfg(build.cfg());
             colibri_lang::repl::run()
         }

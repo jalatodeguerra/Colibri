@@ -5,7 +5,7 @@
 //! dependency, fill the cache and write `colibri.lock`; the loader then reads only the lock
 //! and the cache.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Args;
@@ -27,7 +27,31 @@ pub struct DepFlags {
 /// `Err` is the exit code to stop with.
 pub fn prepare(target: &Path, flags: DepFlags) -> Result<(), ExitCode> {
     refuse_package_file(target)?;
+    // What the hand-over check already did for this very command is not done again.
+    if let Ok(mut done) = PREPARED.lock()
+        && done.take() == Some(prepared_key(target, flags))
+    {
+        return Ok(());
+    }
     sync(target, flags, Update::Nothing)
+}
+
+/// [`prepare`] for the check that decides whether to hand a command over: the next [`prepare`] of
+/// the same target and flags then does nothing (once), so a command that does not hand over
+/// prepares its dependencies once, as before.
+pub fn prepare_once(target: &Path, flags: DepFlags) -> Result<(), ExitCode> {
+    refuse_package_file(target)?;
+    sync(target, flags, Update::Nothing)?;
+    if let Ok(mut done) = PREPARED.lock() {
+        *done = Some(prepared_key(target, flags));
+    }
+    Ok(())
+}
+
+static PREPARED: std::sync::Mutex<Option<(PathBuf, bool, bool)>> = std::sync::Mutex::new(None);
+
+fn prepared_key(target: &Path, flags: DepFlags) -> (PathBuf, bool, bool) {
+    (target.to_path_buf(), flags.locked, flags.offline)
 }
 
 /// A `colibri.toml` or `colibri.lock` is not a script (`check`, `run` and `test` take scripts

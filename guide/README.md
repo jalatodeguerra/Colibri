@@ -8,6 +8,8 @@
   the functions that need no `import`.
 - [Debugging](debugging.md): breakpoints, stepping, coroutines as threads and hot reload with
   `colibri debug`.
+- [Rust bindings](rust-bindings.md): packages that call Rust crates, and the commands that build
+  and run them.
 - [Standard library reference](std/README.md): one generated page for each module.
 
 Colibri is early and pre-release. The pages describe what works today, and mark what is planned.

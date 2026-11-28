@@ -248,6 +248,7 @@ dependencies = [
  "rustyline",
  "serde_json",
  "toml",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -275,8 +276,11 @@ dependencies = [
 name = "colibri-runner-fixture"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "colibri-lang",
+ "colibri-lsp",
  "colibri-runtime",
+ "mimalloc",
 ]
 
 [[package]]

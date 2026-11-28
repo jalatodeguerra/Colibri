@@ -420,7 +420,7 @@ pub const MARKER_PREFIX: &str = "\u{1}colibri-bindings=";
 /// for each crate in key order: the key, the package, the kind of source and what names it (the
 /// path as written in the manifest, the git url and rev, tag or branch, the registry version),
 /// the sorted features and `default-features`. Nothing of this machine is in it.
-fn bindings_marker(crates: &[&BindingCrate]) -> String {
+pub fn bindings_marker(crates: &[&BindingCrate]) -> String {
     let mut sorted: Vec<&&BindingCrate> = crates.iter().collect();
     sorted.sort_by(|a, b| a.key.cmp(&b.key));
     let mut text = String::new();

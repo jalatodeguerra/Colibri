@@ -370,6 +370,26 @@ pub fn load_with(
     Ok(loader.finish(entry_id))
 }
 
+/// Whether the package in `dir`, or a package it depends on, declares `[rust-dependencies]`:
+/// only the manifests are read (the root's and each dependency's, which `load_tree` reads before
+/// any source file), no module is, so the answer costs what the manifests cost, whatever the size
+/// of the program. Problems in a manifest are not reported here: the load that follows says them.
+pub fn declares_rust_bindings(
+    fs: &dyn SourceFs,
+    dir: &Path,
+    cfg: BuildCfg,
+) -> Result<bool, LoadError> {
+    let mut sources = SourceMap::new();
+    let mut loader = Loader::new(fs, &mut sources, &[], cfg);
+    loader
+        .load_tree(dir, true, false, None)
+        .map_err(|message| LoadError {
+            path: fs.display_name(&dir.join(MANIFEST_FILE)),
+            message,
+        })?;
+    Ok(!loader.rust_bindings.is_empty())
+}
+
 impl<'a> Loader<'a> {
     fn new(
         fs: &'a dyn SourceFs,
@@ -1819,6 +1839,38 @@ mod tests {
             assert!(err.message.contains("not a script"), "{name}: {err:?}");
             assert!(!err.message.contains("SeCrEt"));
         }
+    }
+
+    #[test]
+    fn asking_for_rust_bindings_reads_manifests_and_no_source() {
+        use crate::package::fs::RecordingFs;
+        let mut fs = MemoryFs::new();
+        fs.insert(
+            "p/colibri.toml",
+            "[package]\nname = \"app\"\n[dependencies]\nlib = { path = \"../lib\" }\n",
+        );
+        fs.insert("p/main.colibri", "import lib\nthis is not a program");
+        fs.insert("lib/colibri.toml", "[package]\nname = \"lib\"\n");
+        fs.insert("lib/lib.colibri", "pub fn f() {");
+        let recording = RecordingFs::new(&fs);
+        let found = declares_rust_bindings(&recording, Path::new("p"), BuildCfg::default());
+        assert!(!found.unwrap());
+        let read: Vec<String> = recording
+            .into_files()
+            .iter()
+            .map(|r| r.path.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert!(
+            read.iter().all(|p| p.ends_with("colibri.toml")),
+            "a source was read: {read:?}"
+        );
+        assert_eq!(read.len(), 2, "{read:?}");
+        // And a dependency's bindings are found the same way.
+        fs.insert(
+            "lib/colibri.toml",
+            "[package]\nname = \"lib\"\n[rust-dependencies]\nnat = { path = \"nat\" }\n",
+        );
+        assert!(declares_rust_bindings(&fs, Path::new("p"), BuildCfg::default()).unwrap());
     }
 
     fn all_module_names(files: &[(&str, &str)]) -> Vec<String> {

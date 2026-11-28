@@ -68,6 +68,14 @@ static BINDINGS: &[Binding] = &[Binding {
     register: __colibri_binding::register,
 }];
 
+/// What a generated runner holds for these bindings (`bindings_marker`): the hash of the manifest
+/// line `fixture = { binding = "colibri-fixture", version = "0.1" }` that the delegation tests'
+/// package declares, so `--runner` accepts this binary for that package and refuses it for others.
+/// (The test `the_fixture_marker_is_the_one_of_its_package` says the value if it is out of date.)
+#[used]
+static BINDINGS_MARKER: [u8; 35] = *b"\x01colibri-bindings=864995e496153e0e\x02";
+
 fn main() -> std::process::ExitCode {
+    std::hint::black_box(&BINDINGS_MARKER);
     colibri_lang::runner_main(BINDINGS)
 }
