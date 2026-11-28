@@ -179,7 +179,10 @@ mod tests {
         let env = Tree::new("env", "9.9.9");
         let recorded = Tree::new("env-rec", "0.1.0");
         let got = resolve(&inputs(Some(&env.0), Some(&recorded.0), true)).unwrap();
-        assert_eq!(got, Engine::Path(env.0.clone()));
+        // The variable is canonicalized (on macOS the temp folder is a `/var` symlink to `/private/var`).
+        let want = std::fs::canonicalize(&env.0).unwrap();
+        let want = PathBuf::from(super::super::r#gen::strip_verbatim(&want.to_string_lossy()));
+        assert_eq!(got, Engine::Path(want));
     }
 
     #[test]
