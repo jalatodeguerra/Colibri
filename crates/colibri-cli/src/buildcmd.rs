@@ -11,6 +11,12 @@
 //! decides `@when(os == ..)` and `@when(arch == ..)` while the program is checked, since that
 //! is when the files to read are chosen. No runner is ever downloaded.
 //!
+//! A package with `[rust-dependencies]` is shipped with its project runner instead of `colibri`:
+//! the release runner of [`crate::bindings::build`] (built once and cached, like the runner `run`
+//! uses), or the one `--runner` names, which must hold exactly the package's bindings (its
+//! bindings marker is compared; a plain `colibri` or the runner of another project is refused).
+//! Another platform needs `--runner`, a project runner built there: nothing is cross-compiled.
+//!
 //! A program for macOS has its `__LINKEDIT` segment extended over the pack ([`crate::macho`]), so
 //! that `codesign -s -` accepts it: this build does that itself on a Mac, and elsewhere warns
 //! that it must be done there.
@@ -57,7 +63,9 @@ pub(crate) fn fail(message: impl std::fmt::Display) -> ExitCode {
 
 fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
     let path = options.path;
-    let runner = choose_runner(options).map_err(fail)?;
+    // A package with `[rust-dependencies]` is shipped with a runner that has them built in.
+    let project = project_of(options)?;
+    let runner = choose_runner(options, project.as_ref()).map_err(fail)?;
     // As `colibri run` does: the dependencies are fetched and locked before anything is read.
     depscmd::prepare(path, options.deps)?;
     let recorder = RecordingFs::new(&colibri::DiskFs);
@@ -80,7 +88,7 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
             out.display()
         )));
     }
-    if fs::canonicalize(&out).is_ok_and(|o| fs::canonicalize(&runner).is_ok_and(|r| r == o)) {
+    if fs::canonicalize(&out).is_ok_and(|o| fs::canonicalize(&runner.path).is_ok_and(|r| r == o)) {
         return Err(fail(format!(
             "the output `{}` is {}: choose another with `-o`",
             out.display(),
@@ -92,12 +100,12 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
         )));
     }
     let mac = crate::build_cfg().os == "macos";
-    let thin = mac && is_thin_file(&runner);
+    let thin = mac && is_thin_file(&runner.path);
     // On a Mac the program is signed before it is moved into place, so a failure leaves any
     // earlier program of that name as it was.
     let sign = |tmp: &Path| codesign(tmp, &out);
     let signer: Option<&Signer<'_>> = (thin && cfg!(target_os = "macos")).then_some(&sign);
-    write_executable(&runner, &out, &pack, mac, signer).map_err(fail)?;
+    write_executable(&runner.path, &out, &pack, mac, signer).map_err(fail)?;
     if mac {
         warn_unsigned(&out, thin);
     }
@@ -107,6 +115,14 @@ fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
         .filter(|f| f.path.ends_with(".colibri"))
         .count();
     let size = fs::metadata(&out).map_or(0, |m| m.len());
+    if let Some(project) = &project {
+        let runner_size = fs::metadata(&runner.path).map_or(0, |m| m.len());
+        eprintln!(
+            "  runner {} ({runner_size} bytes, with the Rust bindings of {})",
+            runner.path.display(),
+            project.names()
+        );
+    }
     let assets = &pack.assets;
     for asset in assets.iter().take(MAX_LISTED_ASSETS) {
         eprintln!("  asset {} ({} bytes)", asset.path, asset.len);
@@ -229,8 +245,50 @@ fn default_out(path: &Path, target: Option<Target>) -> PathBuf {
     PathBuf::from(format!("{}{suffix}", program_name(path)))
 }
 
-/// The file to copy as the runner: this `colibri`, or `--runner` after its checks.
-fn choose_runner(options: &Options<'_>) -> Result<PathBuf, String> {
+/// The Rust bindings of the package being built.
+struct Project {
+    root: PathBuf,
+    found: Vec<colibri_runtime::ProjectBinding>,
+}
+
+impl Project {
+    fn names(&self) -> String {
+        self.found
+            .iter()
+            .map(|b| format!("`{}`", b.dep.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// The runner to copy, and where it came from.
+struct Chosen {
+    path: PathBuf,
+}
+
+/// The Rust bindings the package declares, if any: the manifests are read, and the dependencies
+/// fetched first when a dependency may declare some. A package without bindings is not read
+/// further (a plain `colibri build` does nothing more than before).
+fn project_of(options: &Options<'_>) -> Result<Option<Project>, ExitCode> {
+    let folder = crate::delegate::package_folder(options.path);
+    let wants = crate::delegate::manifest_wants_bindings(&folder.join(colibri::MANIFEST_FILE));
+    if wants == crate::delegate::Wants::No {
+        return Ok(None);
+    }
+    depscmd::prepare_once(options.path, options.deps)?;
+    if wants == crate::delegate::Wants::Maybe
+        && !colibri::declares_rust_bindings(&colibri::DiskFs, &folder, crate::build_cfg())
+            .map_err(fail)?
+    {
+        return Ok(None);
+    }
+    let (root, found) = crate::bindings::build::project(&folder).map_err(fail)?;
+    Ok((!found.is_empty()).then_some(Project { root, found }))
+}
+
+/// The file to copy as the runner: this `colibri`, a project runner built here (for a package
+/// with Rust bindings), or `--runner` after its checks.
+fn choose_runner(options: &Options<'_>, project: Option<&Project>) -> Result<Chosen, String> {
     let list = || {
         platform::TARGETS
             .iter()
@@ -239,17 +297,29 @@ fn choose_runner(options: &Options<'_>) -> Result<PathBuf, String> {
             .join(", ")
     };
     let Some(given) = options.runner else {
-        if let Some(target) = options.target
-            && Some(target) != Target::host()
-        {
-            return Err(format!(
-                "building for {} needs `--runner PATH`, a `colibri` of that platform (version {}); \
-                 `colibri build` never downloads one",
-                target.name(),
-                platform::own_version()
-            ));
+        let foreign = options.target.filter(|t| Some(*t) != Target::host());
+        if let Some(target) = foreign {
+            return Err(if project.is_some() {
+                format!(
+                    "building for {} needs `--runner PATH`, a project runner built on that platform \
+                     (`colibri bindings --release -o FILE`, version {}); cargo is not asked to cross-compile",
+                    target.name(),
+                    platform::own_version()
+                )
+            } else {
+                format!(
+                    "building for {} needs `--runner PATH`, a `colibri` of that platform (version {}); \
+                     `colibri build` never downloads one",
+                    target.name(),
+                    platform::own_version()
+                )
+            });
+        }
+        if let Some(project) = project {
+            return project_runner(options, project);
         }
         return std::env::current_exe()
+            .map(|path| Chosen { path })
             .map_err(|e| format!("cannot find the running `colibri` to copy: {e}"));
     };
     let Some(target) = options.target else {
@@ -258,12 +328,65 @@ fn choose_runner(options: &Options<'_>) -> Result<PathBuf, String> {
             list()
         ));
     };
-    check_runner(given, target)?;
-    Ok(given.to_path_buf())
+    check_runner(given, target, project.map(|p| p.found.as_slice()))?;
+    Ok(Chosen {
+        path: given.to_path_buf(),
+    })
 }
 
-/// Refuses a runner that is not a `colibri` of `target`'s platform and of this version.
-fn check_runner(runner: &Path, target: Target) -> Result<(), String> {
+/// Builds (or finds, cached) the release runner of the package.
+fn project_runner(options: &Options<'_>, project: &Project) -> Result<Chosen, String> {
+    use crate::bindings::build::{self, Env, Profile};
+    let env = Env::current()?;
+    let runner = build::ensure_runner(
+        &env,
+        &project.root,
+        &project.found,
+        build::Options {
+            profile: Profile::Release,
+            locked: options.deps.locked,
+            offline: options.deps.offline,
+            write_lock: true,
+            write_interfaces: true,
+            rebuilding: false,
+        },
+    )?;
+    // A cached runner is not asked again: a committed interface that differs from its own would
+    // let the check pass a program the runner then refuses at start.
+    let mut stale: Vec<String> = runner
+        .stale
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    if !stale.is_empty() {
+        return Err(format!(
+            "the interface of the Rust bindings is out of date: {}; run `colibri bindings` to update it, then build again",
+            stale.join(", ")
+        ));
+    }
+    stale = runner
+        .git_stale
+        .iter()
+        .map(|(key, path)| format!("`{key}` ({})", path.display()))
+        .collect();
+    if !stale.is_empty() {
+        return Err(format!(
+            "the interface of a git dependency is out of date: {}; `colibri update` it to a revision whose author regenerated it, or depend on a local copy with `path =` and run `colibri bindings` there",
+            stale.join(", ")
+        ));
+    }
+    crate::delegate::say_interfaces(&runner);
+    Ok(Chosen { path: runner.path })
+}
+
+/// Refuses a runner that is not a `colibri` of `target`'s platform and of this version, and, for
+/// a package with Rust bindings, one that does not hold exactly those bindings (for one without,
+/// one that holds any).
+fn check_runner(
+    runner: &Path,
+    target: Target,
+    bindings: Option<&[colibri_runtime::ProjectBinding]>,
+) -> Result<(), String> {
     let shown = runner.display();
     let mut file =
         fs::File::open(runner).map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?;
@@ -278,14 +401,34 @@ fn check_runner(runner: &Path, target: Target) -> Result<(), String> {
     match platform::runner_version(&mut file)
         .map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?
     {
-        Some(v) if v == platform::own_version() => Ok(()),
-        Some(v) => Err(format!(
-            "the runner `{shown}` is `colibri` {v}, and this is {}: use a runner of the same version",
-            platform::own_version()
-        )),
-        None => Err(format!(
-            "the runner `{shown}` does not say which `colibri` version it is: it is not a `colibri` of this version"
-        )),
+        Some(v) if v == platform::own_version() => {}
+        Some(v) => {
+            return Err(format!(
+                "the runner `{shown}` is `colibri` {v}, and this is {}: use a runner of the same version",
+                platform::own_version()
+            ));
+        }
+        None => {
+            return Err(format!(
+                "the runner `{shown}` does not say which `colibri` version it is: it is not a `colibri` of this version"
+            ));
+        }
+    }
+    file.rewind()
+        .map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?;
+    match bindings {
+        Some(found) => crate::delegate::check_bindings(&mut file, runner, found),
+        None => {
+            let marker = platform::marker_after(&mut file, crate::bindings::r#gen::MARKER_PREFIX)
+                .map_err(|e| format!("cannot read the runner `{shown}`: {e}"))?;
+            if marker.is_some() {
+                Err(format!(
+                    "the runner `{shown}` is a project runner with Rust bindings built in, and this package declares none: use a plain `colibri` as the runner"
+                ))
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 

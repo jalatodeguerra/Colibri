@@ -37,9 +37,11 @@ enum Command {
     /// codes and `os.args()`, every capability granted). Arguments given to it go to the
     /// program, never to `colibri`. The program is checked first; git dependencies are
     /// resolved as for `run`. It runs on the platform of this `colibri`, unless `--target` and
-    /// `--runner` name another. With `--web` it writes a folder for a static web server
-    /// instead (`index.html`, `colibri.js`, `colibri.wasm`, `app.pack`): the program runs in
-    /// the page, which shows what it prints
+    /// `--runner` name another. A package with `[rust-dependencies]` is built with a release
+    /// runner that has them built in (cargo builds it, once, then it is cached); for another
+    /// platform `--runner` is a project runner built on that one. With `--web` it writes a
+    /// folder for a static web server instead (`index.html`, `colibri.js`, `colibri.wasm`,
+    /// `app.pack`): the program runs in the page, which shows what it prints
     Build {
         /// A script, or a package folder (the current folder by default)
         file: Option<PathBuf>,
@@ -211,22 +213,11 @@ fn warn_if_the_removed_engine_is_asked_for() {
     }
 }
 
-/// An executable made by `colibri build` is a program, not the tool: it runs what it holds and
-/// every argument is the program's.
-fn run_built(pack: colibri_lang::pack::Pack, file: std::fs::File) -> ExitCode {
-    colibri_lang::set_build_cfg(pack.cfg.clone());
-    let args: Vec<String> = std::env::args_os()
-        .skip(1)
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    on_big_stack(move || colibri_lang::runcmd::run_pack(pack, file, args))
-}
-
 fn main() -> ExitCode {
     // One seek and one read of 32 bytes tell whether this executable holds a program.
     match colibri_lang::pack::read_own() {
         Ok(None) => {}
-        Ok(Some((pack, file))) => return run_built(pack, file),
+        Ok(Some((pack, file))) => return colibri_lang::run_built(pack, file),
         Err(message) => {
             eprintln!("error: {message}");
             return ExitCode::from(1);

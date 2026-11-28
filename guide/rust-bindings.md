@@ -60,6 +60,35 @@ the project runner running; what you edit decides what happens.
 - The command ends with the program's exit code. Ctrl-C ends the program and the command. If
   `colibri` itself is killed, the runner ends too.
 
+## Shipping with `colibri build`
+
+`colibri build` of a package with `[rust-dependencies]` writes one executable: the release runner
+of the project (the one `colibri bindings --release` builds, once, then cached) with the program
+after it. It runs like `colibri run` does, needs no Rust, no cargo and no cache where it runs, and
+says how big the runner is. If a committed `.cbi` differs from the runner's own interface, the build
+stops and names `colibri bindings`, since the program would be checked against the wrong interface:
+
+```text
+building the Rust bindings of this project (once, then cached)
+  runner /home/me/.colibri/runners/.../runner-9f2c (SIZE bytes, with the Rust bindings of `native`)
+built app (3 source files, SIZE bytes)
+```
+
+For another platform, build the runner on that platform with `colibri bindings --release -o FILE`
+and name it: `colibri build --target windows-x86_64 --runner FILE`. The runner must be of the same
+`colibri` version and hold exactly the bindings of the package; a plain `colibri`, or the runner of
+another project, is refused; the check reads the crates and versions, not the code, so a runner
+built from edited sources at the same crate version passes it and may still fail when the program
+starts (build the runner from the sources the package builds from). A built program is not a
+runner either (`--runner` of `run`, `test` and `repl` refuses it). With `--runner`, the interface
+files are not compared with the runner, so it is no way around a stale `.cbi`. Nothing is
+cross-compiled. `colibri build --web` refuses a package with Rust bindings (they cannot run in a
+page yet).
+
+A stale `.cbi` stops `colibri build`: run `colibri bindings` and build again. If the stale file
+belongs to a git dependency, `colibri update` it to a revision whose author regenerated the file,
+or depend on a local copy with `path =` and run `colibri bindings` there.
+
 ## Commands that never call cargo
 
 `colibri check`, `fmt`, `doc`, `new`, `update` (git dependencies only) and the language server

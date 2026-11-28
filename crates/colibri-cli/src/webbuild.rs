@@ -138,8 +138,37 @@ fn runner_wasm(given: Option<&Path>) -> Result<Vec<u8>, String> {
     Ok(wasm)
 }
 
+/// A page cannot load Rust code: a package with `[rust-dependencies]` is refused, naming them.
+fn refuse_rust_bindings(path: &Path, deps: DepFlags) -> Result<(), ExitCode> {
+    let folder = crate::delegate::package_folder(path);
+    let wants = crate::delegate::manifest_wants_bindings(&folder.join(colibri::MANIFEST_FILE));
+    if wants == crate::delegate::Wants::No {
+        return Ok(());
+    }
+    depscmd::prepare_once(path, deps)?;
+    if wants == crate::delegate::Wants::Maybe
+        && !colibri::declares_rust_bindings(&colibri::DiskFs, &folder, crate::build_cfg())
+            .unwrap_or(true)
+    {
+        return Ok(());
+    }
+    // A manifest or dependency that cannot be read is reported by the build itself.
+    let Ok((_, found)) = crate::bindings::build::project(&folder) else {
+        return Ok(());
+    };
+    if found.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<String> = found.iter().map(|b| format!("`{}`", b.dep.name)).collect();
+    Err(fail(format!(
+        "Rust bindings cannot run in a web build yet ({})",
+        names.join(", ")
+    )))
+}
+
 fn try_build(options: &Options<'_>) -> Result<(), ExitCode> {
     let path = options.path;
+    refuse_rust_bindings(path, options.deps)?;
     // Before anything is checked: a build that cannot finish says so first.
     let wasm = runner_wasm(options.runner).map_err(fail)?;
     depscmd::prepare(path, options.deps)?;

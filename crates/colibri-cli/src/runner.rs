@@ -54,6 +54,17 @@ enum Command {
     WriteInterfaces { dir: PathBuf },
 }
 
+/// An executable made by `colibri build` is a program, not the tool: it runs what it holds and
+/// every argument is the program's.
+pub fn run_built(pack: crate::pack::Pack, file: std::fs::File) -> ExitCode {
+    crate::set_build_cfg(pack.cfg.clone());
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    on_big_stack(move || crate::runcmd::run_pack(pack, file, args))
+}
+
 /// The `main` of a project runner: parses the command line and runs it with `table` registered
 /// in every `Vm`, the main one and the isolates of thread tasks.
 pub fn runner_main(table: &'static [Binding]) -> ExitCode {
@@ -68,6 +79,16 @@ pub fn runner_main(table: &'static [Binding]) -> ExitCode {
     }
     // Under `run --watch` of a supervisor: end with it.
     crate::supervise::die_with_parent();
+    // A program made by `colibri build` with this runner holds its pack: it runs it, and every
+    // argument is the program's (as in `colibri`).
+    match crate::pack::read_own() {
+        Ok(None) => {}
+        Ok(Some((pack, file))) => return run_built(pack, file),
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::from(1);
+        }
+    }
     let cli = Cli::parse();
     // A binding that cannot register (a clash, a panic) is said once, here, instead of being
     // found by whichever `Vm` is built first.
