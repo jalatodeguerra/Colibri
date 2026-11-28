@@ -203,10 +203,9 @@ fn a_package_without_bindings_is_built_as_before() {
         &plain,
         &["build", "-o", &out.display().to_string()],
     );
-    // No cargo to be found: a project runner would fail.
-    command
-        .env("CARGO", "colibri-no-such-cargo")
-        .env("PATH", "");
+    // No cargo to be found: a project runner would fail. PATH stays, since macOS signs the
+    // program with `codesign`; CARGO is looked at first, so no cargo on PATH is ever used.
+    command.env("CARGO", "colibri-no-such-cargo");
     let built = command.stdin(Stdio::null()).output().unwrap();
     assert!(
         built.status.success(),
