@@ -60,14 +60,14 @@ pub fn runner_main(table: &'static [Binding]) -> ExitCode {
     // Keeps the version marker `colibri build --runner` looks for in the binary.
     std::hint::black_box(crate::platform::own_version());
     bindings::install(table);
-    // Under `run --watch` of a supervisor: end with it.
-    crate::supervise::die_with_parent();
     // What this runner was started with is not for the programs it runs: a program that starts
     // `colibri run` of another package with bindings must see a `colibri` that delegates.
     // SAFETY: nothing else runs yet (the big stack and the workers start later).
     unsafe {
         std::env::remove_var(crate::delegate::GUARD);
     }
+    // Under `run --watch` of a supervisor: end with it.
+    crate::supervise::die_with_parent();
     let cli = Cli::parse();
     // A binding that cannot register (a clash, a panic) is said once, here, instead of being
     // found by whichever `Vm` is built first.

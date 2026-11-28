@@ -756,6 +756,7 @@ fn run_cargo(
         "the Rust bindings of this project could not be built (cargo {}); the generated workspace is `{}`",
         status
             .code()
+            .filter(|c| !stopped_code(*c))
             .map_or("was stopped".to_string(), |c| format!("exited with {c}")),
         dir.display()
     );
@@ -1044,4 +1045,9 @@ mod prune_tests {
         assert!(dir.join("interfaces-1").is_dir());
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Windows reports a console interrupt as STATUS_CONTROL_C_EXIT: cargo was stopped, it did not fail.
+fn stopped_code(code: i32) -> bool {
+    cfg!(windows) && code as u32 == 0xC000_013A
 }

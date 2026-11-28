@@ -144,7 +144,8 @@ pub fn supervise(mut project: Project, runner: PathBuf) -> ExitCode {
                 failed_for = Some(expected);
             }
         }
-        next_look = Instant::now() + next_look_after(looked.elapsed());
+        // A build is not a look: the next one comes at the shortest wait.
+        next_look = Instant::now() + MIN_LOOK;
     }
 }
 
