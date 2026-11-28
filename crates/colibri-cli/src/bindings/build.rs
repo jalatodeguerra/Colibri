@@ -30,6 +30,19 @@ pub const REBUILDING: &str = "building the Rust bindings of this project again";
 /// and `release` runners, and the one before each).
 const KEEP: usize = 4;
 
+static CANCELLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Asks the build in progress to stop: the cargo it started is ended (`colibri debug` does this
+/// when its client goes away during a build).
+pub fn cancel_build() {
+    CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Forgets an earlier [`cancel_build`], before a build that is to run.
+pub fn reset_cancel() {
+    CANCELLED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
 type Progress = Box<dyn Fn(&str) + Send + Sync>;
 
 static PROGRESS: std::sync::Mutex<Option<Progress>> = std::sync::Mutex::new(None);
@@ -755,6 +768,21 @@ fn run_cargo(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("cannot run cargo (`{}`): {e}", cargo.display()))?;
+    // Watches for a cancel request: cargo is ended, and the build reports that it was stopped.
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watcher = {
+        let (finished, pid) = (std::sync::Arc::clone(&finished), child.id());
+        std::thread::spawn(move || {
+            use std::sync::atomic::Ordering::SeqCst;
+            while !finished.load(SeqCst) {
+                if CANCELLED.load(SeqCst) {
+                    end_process(pid);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        })
+    };
     let forward = child.stdout.take().map(|out| {
         std::thread::spawn(move || {
             use std::io::BufRead;
@@ -794,6 +822,8 @@ fn run_cargo(
     if let Some(forward) = forward {
         let _ = forward.join();
     }
+    finished.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = watcher.join();
     if status.success() {
         return Ok(());
     }
@@ -1097,4 +1127,19 @@ mod prune_tests {
 /// Windows reports a console interrupt as STATUS_CONTROL_C_EXIT: cargo was stopped, it did not fail.
 fn stopped_code(code: i32) -> bool {
     cfg!(windows) && code as u32 == 0xC000_013A
+}
+
+/// Ends a process (and, on Windows, what it started).
+fn end_process(pid: u32) {
+    #[cfg(unix)]
+    // SAFETY: `kill` only sends a signal to the process cargo is.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
+    }
 }

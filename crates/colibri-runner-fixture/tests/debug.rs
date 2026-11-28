@@ -93,7 +93,7 @@ fn a_breakpoint_in_a_script_that_calls_a_binding_stops_and_shows_the_host_object
         .filter(|m| m["type"] == "response" && m["command"] == "initialize")
         .count();
     assert_eq!(answers, 1);
-    dap.disconnect();
+    dap.disconnect_after_history();
 }
 
 #[test]
@@ -136,7 +136,8 @@ fn a_build_that_fails_is_a_failed_launch_with_the_cargo_output_as_events() {
         "{}",
         dap.output("console")
     );
-    dap.disconnect();
+    // The proxy wrote this whole session: numbered 1, 2, 3, ...
+    dap.disconnect_after_history();
 }
 
 #[test]
@@ -176,4 +177,41 @@ fn a_runner_in_the_launch_is_used_without_cargo() {
     assert_eq!(dap.output("stdout"), "8\n");
     assert!(!dap.output("console").contains("building the Rust bindings"));
     dap.disconnect();
+}
+
+/// A `disconnect` while the runner is being built stops cargo: the launch fails as stopped and the
+/// session ends without waiting for the build (the fake build would take half a minute).
+#[test]
+fn a_disconnect_during_the_build_stops_cargo() {
+    let mut dap = start("cancel", &[("FAKE_CARGO_SLEEP_MS", "30000".to_string())]);
+    package(&dap, BOUND, PROGRAM);
+    initialize(&mut dap);
+    let started = std::time::Instant::now();
+    let path = dap.temp.0.join("main.colibri");
+    let launch = dap.send("launch", json!({"program": path.to_str().unwrap()}));
+    // The build line says the build has begun.
+    loop {
+        dap.drain_available();
+        if dap.output("console").contains("building the Rust bindings") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let disconnect = dap.send("disconnect", json!({}));
+    let response = dap.response_to(launch);
+    assert_eq!(response["success"], false, "{response}");
+    assert!(
+        response["message"]
+            .as_str()
+            .unwrap()
+            .contains("was stopped"),
+        "{response}"
+    );
+    assert_eq!(dap.response_to(disconnect)["success"], true);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the build was waited for: {:?}",
+        started.elapsed()
+    );
+    dap.wait_exit();
 }

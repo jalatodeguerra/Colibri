@@ -26,24 +26,32 @@ pub fn run() -> ExitCode {
 
 /// The adapter in this process: what a runner, and `colibri` for a package without bindings, do.
 pub fn run_local() -> ExitCode {
-    serve_here(&[], BufReader::new(io::stdin()), protocol_output(), false)
+    serve_here(
+        &[],
+        BufReader::new(io::stdin()),
+        protocol_output(),
+        false,
+        false,
+    )
 }
 
 type Output = std::sync::Arc<std::sync::Mutex<Box<dyn io::Write + Send>>>;
 
 /// Serves in this process. `replay` is what a client already sent (read before it was known
-/// who serves it); with `answered`, the response to its `initialize` was written already, so the
-/// second one is dropped.
+/// who serves it); with `renumber` (a proxy's session) what the adapter writes is numbered after
+/// what the proxy wrote, and with `answered` the response to `initialize` was written already, so
+/// the adapter's is dropped.
 fn serve_here(
     replay: &[serde_json::Value],
     input: impl io::BufRead + Send + 'static,
     out: Box<dyn io::Write + Send>,
+    renumber: bool,
     answered: bool,
 ) -> ExitCode {
     let bytes = frames(replay);
     let input = BufReader::new(io::Read::chain(io::Cursor::new(bytes), input));
-    let out: Box<dyn io::Write + Send> = if answered {
-        Box::new(DropFirstInitialize::new(out))
+    let out: Box<dyn io::Write + Send> = if renumber {
+        Box::new(Renumber::new(out, answered))
     } else {
         out
     };
@@ -60,21 +68,36 @@ fn frames(replay: &[serde_json::Value]) -> Vec<u8> {
     bytes
 }
 
-/// Passes on what the adapter writes, except the first response to `initialize` (the client has
-/// the one its proxy wrote). Frames are told apart as the adapter writes them; after that
-/// response the bytes pass as they come.
-struct DropFirstInitialize {
-    inner: Box<dyn io::Write + Send>,
-    pending: Vec<u8>,
-    done: bool,
+/// The numbers of the messages this process writes to the client: the proxy's own and those it
+/// forwards from the adapter that serves the session, one sequence (1, 2, 3, ...) as the protocol
+/// asks.
+static SEQ: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+fn next_seq() -> i64 {
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
 }
 
-impl DropFirstInitialize {
-    fn new(inner: Box<dyn io::Write + Send>) -> Self {
-        DropFirstInitialize {
+/// Writes a message of the proxy's own, numbered.
+fn send(out: &Output, mut message: serde_json::Value) {
+    message["seq"] = next_seq().into();
+    let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = colibri_dap::write_message(&mut *out, &message);
+}
+
+/// Passes on what the adapter writes, renumbered, except the first response to `initialize` when
+/// `skip` (the client has the one its proxy wrote).
+struct Renumber {
+    inner: Box<dyn io::Write + Send>,
+    pending: Vec<u8>,
+    skip: bool,
+}
+
+impl Renumber {
+    fn new(inner: Box<dyn io::Write + Send>, skip: bool) -> Self {
+        Renumber {
             inner,
             pending: Vec::new(),
-            done: false,
+            skip,
         }
     }
 
@@ -92,28 +115,26 @@ impl DropFirstInitialize {
     }
 }
 
-impl io::Write for DropFirstInitialize {
+impl io::Write for Renumber {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.done {
-            return self.inner.write(buf);
-        }
         self.pending.extend_from_slice(buf);
-        while !self.done {
-            let Some((total, body)) = self.frame() else {
-                break;
-            };
-            let message: serde_json::Value =
-                serde_json::from_slice(&self.pending[body]).unwrap_or_default();
+        while let Some((total, body)) = self.frame() {
+            let message = serde_json::from_slice::<serde_json::Value>(&self.pending[body]);
             let frame: Vec<u8> = self.pending.drain(..total).collect();
-            if message["type"] == "response" && message["command"] == "initialize" {
-                self.done = true;
-            } else {
-                self.inner.write_all(&frame)?;
+            match message {
+                Ok(mut message) => {
+                    if self.skip
+                        && message["type"] == "response"
+                        && message["command"] == "initialize"
+                    {
+                        self.skip = false;
+                        continue;
+                    }
+                    message["seq"] = next_seq().into();
+                    colibri_dap::write_message(&mut self.inner, &message)?;
+                }
+                Err(_) => self.inner.write_all(&frame)?,
             }
-        }
-        if self.done {
-            let rest = std::mem::take(&mut self.pending);
-            self.inner.write_all(&rest)?;
         }
         Ok(buf.len())
     }
@@ -123,33 +144,97 @@ impl io::Write for DropFirstInitialize {
     }
 }
 
-/// An `output` event written by the proxy (it has no `seq` of the adapter's to continue).
+/// An `output` event written by the proxy.
 fn output_event(out: &Output, text: &str) {
     output_in(out, "console", &format!("{text}\n"));
 }
 
 fn output_in(out: &Output, category: &str, text: &str) {
-    let message = serde_json::json!({
-        "seq": 0,
-        "type": "event",
-        "event": "output",
-        "body": {"category": category, "output": text},
-    });
-    let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = colibri_dap::write_message(&mut *out, &message);
+    send(
+        out,
+        serde_json::json!({
+            "type": "event",
+            "event": "output",
+            "body": {"category": category, "output": text},
+        }),
+    );
 }
 
-/// What the adapter answers to `initialize`: its own capabilities, as its first message (the one
-/// the adapter that serves the rest then does not repeat).
+/// What the adapter answers to `initialize`: its own capabilities.
 fn initialize_response(request: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
-        "seq": 1,
         "type": "response",
         "request_seq": request["seq"],
         "command": "initialize",
         "success": true,
         "body": colibri_dap::capabilities(),
     })
+}
+
+/// The client's input after `launch`, read on a thread of its own so that a `disconnect` (or the
+/// end of the input) is seen while the runner is being built, and stops cargo.
+struct ChannelInput {
+    rx: std::sync::mpsc::Receiver<Option<serde_json::Value>>,
+    buf: io::Cursor<Vec<u8>>,
+}
+
+impl ChannelInput {
+    fn start(mut input: impl io::BufRead + Send + 'static) -> BufReader<ChannelInput> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            loop {
+                match colibri_dap::read_message(&mut input) {
+                    Ok(message) => {
+                        let ends = message["type"] == "request"
+                            && matches!(
+                                message["command"].as_str(),
+                                Some("disconnect" | "terminate")
+                            );
+                        if ends {
+                            crate::bindings::build::cancel_build();
+                        }
+                        if tx.send(Some(message)).is_err() {
+                            return;
+                        }
+                    }
+                    // The adapter that serves the rest says so, as it would have.
+                    Err(colibri_dap::ReadError::Malformed(_)) => {
+                        if tx.send(None).is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        crate::bindings::build::cancel_build();
+                        return;
+                    }
+                }
+            }
+        });
+        BufReader::new(ChannelInput {
+            rx,
+            buf: io::Cursor::new(Vec::new()),
+        })
+    }
+}
+
+impl io::Read for ChannelInput {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        loop {
+            let n = io::Read::read(&mut self.buf, out)?;
+            if n > 0 || out.is_empty() {
+                return Ok(n);
+            }
+            let mut bytes = Vec::new();
+            match self.rx.recv() {
+                Ok(Some(message)) => {
+                    let _ = colibri_dap::write_message(&mut bytes, &message);
+                }
+                Ok(None) => bytes.extend_from_slice(b"Content-Length: 1\r\n\r\n{"),
+                Err(_) => return Ok(0),
+            }
+            self.buf = io::Cursor::new(bytes);
+        }
+    }
 }
 
 /// The runner a launch needs, `None` when the package has no Rust bindings. `Err` is what to tell
@@ -250,22 +335,40 @@ fn proxy() -> ExitCode {
             }
             Ok(message) if message["type"] == "request" => {
                 let command = message["command"].as_str().unwrap_or("").to_string();
-                if command == "initialize" && !answered {
-                    answered = true;
-                    let mut w = out.lock().unwrap_or_else(|e| e.into_inner());
-                    let _ = colibri_dap::write_message(&mut *w, &initialize_response(&message));
-                }
-                buffered.push(message.clone());
-                if command == "launch" {
-                    break Some(message);
-                }
-                // A client that leaves before it launches: the adapter that serves here answers.
-                if matches!(command.as_str(), "disconnect" | "terminate") {
-                    break None;
+                match command.as_str() {
+                    "initialize" => {
+                        send(&out, initialize_response(&message));
+                        if !answered {
+                            answered = true;
+                            buffered.push(message);
+                        }
+                    }
+                    "launch" => {
+                        buffered.push(message.clone());
+                        break Some(message);
+                    }
+                    // A client that leaves before it launches: the adapter that serves here
+                    // answers.
+                    "disconnect" | "terminate" => {
+                        buffered.push(message);
+                        break None;
+                    }
+                    // What the adapter answers before there is a program, at once: the client may
+                    // wait for it (an `attach` is never going to be served).
+                    other => send(
+                        &out,
+                        serde_json::json!({
+                            "type": "response",
+                            "request_seq": message["seq"],
+                            "command": other,
+                            "success": false,
+                            "message": format!("`{other}` needs a `launch` first"),
+                        }),
+                    ),
                 }
             }
-            Ok(other) => buffered.push(other),
-            // What cannot be used is left to the adapter that serves the rest.
+            Ok(_) => {}
+            // What cannot be used is reported, as the adapter does.
             Err(colibri_dap::ReadError::Malformed(why)) => output_in(
                 &out,
                 "stderr",
@@ -274,17 +377,18 @@ fn proxy() -> ExitCode {
             Err(_) => break None,
         }
     };
-    let runner = match &launch {
-        Some(launch) => match runner_for(launch, &out) {
-            Ok(runner) => runner,
-            Err(why) => return refuse(launch, &why, &out, &mut input),
-        },
-        None => None,
+    let Some(launch) = launch else {
+        return serve_here(&buffered, input, Box::new(SharedWrite(out)), true, answered);
     };
-    let Some(runner) = runner else {
-        return serve_here(&buffered, input, Box::new(SharedWrite(out)), answered);
-    };
-    through_runner(&runner, &buffered, input, out, answered)
+    // From here the input is read on a thread of its own: a `disconnect` during the build stops
+    // cargo.
+    let mut input = ChannelInput::start(input);
+    crate::bindings::build::reset_cancel();
+    match runner_for(&launch, &out) {
+        Ok(Some(runner)) => through_runner(&runner, &buffered, input, out, answered),
+        Ok(None) => serve_here(&buffered, input, Box::new(SharedWrite(out)), true, answered),
+        Err(why) => refuse(&launch, &why, &out, &mut input),
+    }
 }
 
 /// The launch cannot be served: the client is told, and the session ends when it disconnects.
@@ -294,23 +398,28 @@ fn refuse(
     out: &Output,
     input: &mut impl io::BufRead,
 ) -> ExitCode {
-    let send = |message: serde_json::Value| {
-        let mut w = out.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = colibri_dap::write_message(&mut *w, &message);
-    };
-    send(serde_json::json!({
-        "seq": 0, "type": "response", "request_seq": launch["seq"], "command": "launch",
-        "success": false, "message": why,
-    }));
-    send(serde_json::json!({"seq": 0, "type": "event", "event": "terminated", "body": {}}));
+    send(
+        out,
+        serde_json::json!({
+            "type": "response", "request_seq": launch["seq"], "command": "launch",
+            "success": false, "message": why,
+        }),
+    );
+    send(
+        out,
+        serde_json::json!({"type": "event", "event": "terminated", "body": {}}),
+    );
     while let Ok(request) = colibri_dap::read_message(input) {
         let command = request["command"].as_str().unwrap_or("");
         let ok = matches!(command, "disconnect" | "terminate");
-        send(serde_json::json!({
-            "seq": 0, "type": "response", "request_seq": request["seq"], "command": command,
+        let mut reply = serde_json::json!({
+            "type": "response", "request_seq": request["seq"], "command": command,
             "success": ok,
-            "message": if ok { serde_json::Value::Null } else { "the program could not be started".into() },
-        }));
+        });
+        if !ok {
+            reply["message"] = "the program could not be started".into();
+        }
+        send(out, reply);
         if ok {
             return ExitCode::SUCCESS;
         }
@@ -344,7 +453,7 @@ fn through_runner(
         }
     };
     let mut to_runner = child.stdin.take().expect("piped");
-    let mut from_runner = BufReader::new(child.stdout.take().expect("piped"));
+    let from_runner = BufReader::new(child.stdout.take().expect("piped"));
     // The client's requests: those already read, then the rest as they come. The runner's end of
     // the pipe closes when the client's input ends, which is how it learns the client is gone.
     let replay = frames(buffered);
@@ -358,21 +467,14 @@ fn through_runner(
             }
         }
     });
-    // The runner's messages, except the response to the `initialize` that was answered already.
+    // The runner's messages, renumbered after the proxy's own, except the response to the
+    // `initialize` that was answered already.
     let copier = std::thread::spawn({
         let out = std::sync::Arc::clone(&out);
         move || {
-            let mut skip = answered;
-            while let Ok(message) = colibri_dap::read_message(&mut from_runner) {
-                if skip && message["type"] == "response" && message["command"] == "initialize" {
-                    skip = false;
-                    continue;
-                }
-                let mut w = out.lock().unwrap_or_else(|e| e.into_inner());
-                if colibri_dap::write_message(&mut *w, &message).is_err() {
-                    return;
-                }
-            }
+            let mut to_client = Renumber::new(Box::new(SharedWrite(out)), answered);
+            let mut from_runner = from_runner;
+            let _ = io::copy(&mut from_runner, &mut to_client);
         }
     });
     let status = child.wait();

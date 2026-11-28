@@ -423,6 +423,28 @@ impl Dap {
             .map(|m| m["body"]["exitCode"].as_i64().expect("an exit code"))
     }
 
+    /// `disconnect`; then everything received (before and after) must be numbered 1, 2, 3, ...
+    /// in order, with exactly one response to `initialize`.
+    pub fn disconnect_after_history(mut self) {
+        self.request("disconnect", json!({}));
+        drop(self.stdin.take());
+        self.drain();
+        let seqs: Vec<i64> = self
+            .history
+            .iter()
+            .map(|m| m["seq"].as_i64().unwrap_or(-1))
+            .collect();
+        let want: Vec<i64> = (1..=seqs.len() as i64).collect();
+        assert_eq!(seqs, want, "{:#?}", self.history);
+        let answers = self
+            .history
+            .iter()
+            .filter(|m| m["type"] == "response" && m["command"] == "initialize")
+            .count();
+        assert_eq!(answers, 1);
+        self.wait_exit();
+    }
+
     /// `disconnect`, then the adapter must end by itself.
     pub fn disconnect(self) {
         self.disconnect_stderr();
@@ -451,6 +473,19 @@ impl Dap {
 }
 
 impl Dap {
+    /// Takes into the inbox what has arrived, without waiting.
+    pub fn drain_available(&mut self) {
+        while let Ok(item) = self.rx.try_recv() {
+            match item {
+                Ok(message) => {
+                    self.history.push(message.clone());
+                    self.inbox.push_back(message);
+                }
+                Err(why) => panic!("the adapter wrote something that is not a DAP message ({why})"),
+            }
+        }
+    }
+
     /// Reads everything the adapter still writes until it closes its output: every frame must
     /// parse completely (the reader is strict), so a torn last frame fails here.
     pub fn drain(&mut self) {
