@@ -21,6 +21,9 @@ pub struct Request<'a> {
     /// `--runner FILE`.
     pub runner: Option<&'a Path>,
     pub deps: DepFlags,
+    /// `run --watch`: the runner is kept running by this process, which also looks at the Rust
+    /// code (see [`crate::supervise`]).
+    pub watch: bool,
 }
 
 /// `Some(code)` when the project runner ran the command (or could not be had: the error is
@@ -147,9 +150,22 @@ fn hand_over(
                 offline: request.deps.offline,
                 write_lock: true,
                 write_interfaces: true,
+                rebuilding: false,
             };
             let runner = build::ensure_runner(&env, &root, &found, options)?;
             say_interfaces(&runner);
+            if request.watch {
+                return Ok(Some(crate::supervise::supervise(
+                    crate::supervise::Project {
+                        env,
+                        folder: folder.to_path_buf(),
+                        root,
+                        found,
+                        options,
+                    },
+                    runner.path,
+                )));
+            }
             runner.path
         }
     };
@@ -158,7 +174,7 @@ fn hand_over(
 
 /// What the runner says of the project's interfaces: the ones it wrote after a build (one line
 /// each), and one warning for those that differ and were not written.
-fn say_interfaces(runner: &build::Runner) {
+pub fn say_interfaces(runner: &build::Runner) {
     for path in &runner.written {
         eprintln!("updated {} (the Rust bindings changed)", path.display());
     }

@@ -24,6 +24,7 @@ pub mod repl;
 mod repl_input;
 pub mod runcmd;
 mod runner;
+pub mod supervise;
 pub mod testcmd;
 pub mod watch;
 pub mod webbuild;

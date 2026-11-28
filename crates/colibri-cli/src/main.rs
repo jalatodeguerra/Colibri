@@ -178,8 +178,13 @@ fn web_platform(cfg: &mut colibri_runtime::BuildCfg) {
 
 /// Serves the language server protocol on stdin and stdout.
 /// A package with `[rust-dependencies]` runs in its project runner (see `colibri_lang::delegate`).
-fn hand_over(file: &Path, runner: Option<&Path>, deps: DepFlags) -> Option<ExitCode> {
-    colibri_lang::delegate::delegate(&colibri_lang::delegate::Request { file, runner, deps })
+fn hand_over(file: &Path, runner: Option<&Path>, deps: DepFlags, watch: bool) -> Option<ExitCode> {
+    colibri_lang::delegate::delegate(&colibri_lang::delegate::Request {
+        file,
+        runner,
+        deps,
+        watch,
+    })
 }
 
 fn lsp() -> ExitCode {
@@ -312,7 +317,7 @@ fn main() -> ExitCode {
             runner,
         } => {
             let file = file.unwrap_or_else(|| PathBuf::from("."));
-            if let Some(code) = hand_over(&file, runner.runner.as_deref(), deps) {
+            if let Some(code) = hand_over(&file, runner.runner.as_deref(), deps, watch) {
                 return code;
             }
             colibri_lang::set_build_cfg(build.cfg());
@@ -344,7 +349,7 @@ fn main() -> ExitCode {
             runner,
         } => {
             let file = file.unwrap_or_else(|| PathBuf::from("."));
-            if let Some(code) = hand_over(&file, runner.runner.as_deref(), deps) {
+            if let Some(code) = hand_over(&file, runner.runner.as_deref(), deps, false) {
                 return code;
             }
             colibri_lang::set_build_cfg(build.cfg());
@@ -371,6 +376,7 @@ fn main() -> ExitCode {
                 Path::new("."),
                 runner.runner.as_deref(),
                 DepFlags::default(),
+                false,
             ) {
                 return code;
             }

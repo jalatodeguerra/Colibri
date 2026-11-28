@@ -39,3 +39,9 @@ test = false
 name = "colibri-runner-fixture-v2"
 path = "src/bin/runner-v2.rs"
 test = false
+
+# The fixture runner whose `double` triples, for the watch tests (a Rust edit that changes behaviour).
+[[bin]]
+name = "colibri-runner-fixture-v3"
+path = "src/bin/runner-v3.rs"
+test = false
