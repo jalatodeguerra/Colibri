@@ -53,6 +53,10 @@ fn handing_over_costs_little() {
 
 /// A package with a path dependency that has no bindings, and many modules: `colibri run` reads the
 /// manifests to learn that there is nothing to hand over, and starts as fast as with the guard.
+/// Many modules, so that loading them (what the old check did) is a large part of a start-up
+/// and far above the noise of a busy machine.
+const MODULES: u32 = 1000;
+
 #[test]
 fn a_package_with_only_plain_dependencies_starts_as_fast_as_ever() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -72,7 +76,7 @@ fn a_package_with_only_plain_dependencies_starts_as_fast_as_ever() {
     .unwrap();
     let mut main = String::from("import dep\n");
     let mut body = String::from("    let mut total = dep.one()\n");
-    for i in 0..300 {
+    for i in 0..MODULES {
         fs::write(
             dir.join(format!("m{i}.colibri")),
             format!("pub fn f() -> int {{\n    let a = {i}\n    let b = a * 2 + 1\n    return b - a\n}}\n"),
@@ -84,6 +88,7 @@ fn a_package_with_only_plain_dependencies_starts_as_fast_as_ever() {
     main.push_str(&format!("\nfn main() {{\n{body}    print(total)\n}}\n"));
     fs::write(dir.join("main.colibri"), main).unwrap();
 
+    let expected = (MODULES * (MODULES + 1) / 2 + 1).to_string();
     let once = |guard: bool| {
         let mut c = w.command(UNDER_TEST, &dir, &["run", "main.colibri"]);
         // No cargo to be found: a hand-over would fail.
@@ -100,7 +105,7 @@ fn a_package_with_only_plain_dependencies_starts_as_fast_as_ever() {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        assert!(String::from_utf8_lossy(&out.stdout).starts_with("45151"));
+        assert!(String::from_utf8_lossy(&out.stdout).starts_with(&expected));
         took
     };
     // The two sides take turns, so a slow moment of the machine hits both.
