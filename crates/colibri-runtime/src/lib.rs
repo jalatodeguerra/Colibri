@@ -184,7 +184,8 @@ pub use class::{HostMethod, HostMethodMut, HostType, TypeBuilder};
 /// ```
 pub use colibri_bind::{export, module};
 pub use colibri_check::package::{
-    AssetPatterns, Build, Manifest, asset_path_problem, parse_manifest,
+    AssetPatterns, Build, GitSpec, Manifest, RustDependency, RustSource, asset_path_problem,
+    parse_manifest,
 };
 pub use colibri_check::package::{
     BuildCfg, COMPLETE_MARKER, DiskFs, Entry, MemoryFs, Recorded, RecordingFs, SourceFs, WEB_OS,

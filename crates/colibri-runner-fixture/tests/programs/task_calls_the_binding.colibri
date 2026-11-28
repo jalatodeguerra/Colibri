@@ -1,0 +1,8 @@
+import fixture
+
+fn main() {
+    let t = task.run(fn() => fixture.double(21))
+    print(t.join())
+    let u = task.run(fn() => fixture.Counter.new(1).bump(by: 4))
+    print(u.join())
+}

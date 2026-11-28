@@ -1786,6 +1786,13 @@ impl Vm {
         // Whatever the load reads is what a thread task's worker will read.
         let recorder = RecordingFs::new(fs);
         let (sources, loaded) = self.read_program(&recorder, entry, mode)?;
+        // The loader only probes for a binding's `<key>.cbi`; a worker's load must find it in the
+        // image too, or it would report the binding as having no interface.
+        for binding in &loaded.rust_bindings {
+            if recorder.is_file(&binding.interface) {
+                let _ = recorder.read(&binding.interface);
+            }
+        }
         self.materialize_imports(&loaded)?;
         let mut checked = self.check_loaded(sources, loaded, mode)?;
         if matches!(mode, LoadMode::Run | LoadMode::Deferred) {
