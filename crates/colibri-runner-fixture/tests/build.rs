@@ -44,6 +44,11 @@ impl Project {
     }
 
     fn env(&self, extra: &[(&str, &str)]) -> Env {
+        self.env_in(&self.root.join("cache"), extra)
+    }
+
+    /// An env whose runners live under `cache` (two projects may share one).
+    fn env_in(&self, cache: &Path, extra: &[(&str, &str)]) -> Env {
         let mut cargo_env = vec![
             (
                 "FAKE_CARGO_LOG".to_string(),
@@ -56,7 +61,7 @@ impl Project {
         ];
         cargo_env.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         Env {
-            runners: self.root.join("cache").join("runners"),
+            runners: cache.join("runners"),
             cargo: Some(PathBuf::from(env!("CARGO_BIN_EXE_fake-cargo"))),
             cargo_env,
             engine: Inputs::current(),
@@ -90,6 +95,7 @@ const RUN: Options = Options {
     profile: Profile::Run,
     locked: false,
     offline: false,
+    write_lock: true,
 };
 
 fn bump_mtime(path: &Path) {
@@ -172,9 +178,9 @@ fn locked_and_offline_reach_cargo() {
     let p = Project::new("flags");
     let env = p.env(&[]);
     let options = Options {
-        profile: Profile::Run,
         locked: true,
         offline: true,
+        ..RUN
     };
     p.ensure(&env, options).unwrap();
     let call = &p.calls()[0];
@@ -303,19 +309,24 @@ fn two_runtimes_in_the_resolved_lock_are_refused() {
 #[test]
 fn two_builds_at_once_both_end_with_a_working_runner() {
     let p = Project::new("concurrent");
-    let paths: Vec<PathBuf> = std::thread::scope(|s| {
+    let runs: Vec<(PathBuf, bool)> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..2)
             .map(|_| {
                 let env = p.env(&[("FAKE_CARGO_SLEEP_MS", "300")]);
                 s.spawn(|| {
                     let env = env;
-                    p.ensure(&env, RUN).unwrap().path
+                    let runner = p.ensure(&env, RUN).unwrap();
+                    (runner.path, runner.built)
                 })
             })
             .collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    assert_eq!(paths[0], paths[1]);
+    // One of them built; the other waited for the lock and found the runner.
+    assert_eq!(runs[0].0, runs[1].0);
+    assert_eq!(runs.iter().filter(|r| r.1).count(), 1, "{runs:?}");
+    assert_eq!(p.calls().len(), 1, "{:?}", p.calls());
+    let paths = [runs[0].0.clone()];
     let out = std::process::Command::new(&paths[0])
         .arg("__write-interfaces")
         .arg(p.root.join("cbi-out"))
@@ -393,8 +404,9 @@ fn bindings_writes_the_interface_and_check_compares() {
     // Repaired.
     assert!(command::bindings(&env, &args(false)).unwrap());
     assert_eq!(fs::read_to_string(&cbi).unwrap(), text);
-    // The cargo calls: one build, the rest were cache hits.
-    assert_eq!(p.calls().len(), 1);
+    // The cargo calls: the `--check` without a lock builds (it cannot write the lock it
+    // resolved, so the next call does not find that runner), the write builds, the rest hit.
+    assert_eq!(p.calls().len(), 2);
 }
 
 #[test]
@@ -432,4 +444,209 @@ fn a_script_without_bindings_has_nothing_to_build() {
     p.write("colibri.toml", "[package]\nname = \"app\"\n");
     let err = p.ensure(&p.env(&[]), RUN).unwrap_err();
     assert!(err.contains("declares no `[rust-dependencies]`"), "{err}");
+}
+
+#[test]
+fn a_crate_the_binding_depends_on_by_path_is_part_of_the_stamp() {
+    let p = Project::new("shared");
+    p.write(
+        "native/Cargo.toml",
+        &format!("{CRATE_TOML}shared = {{ path = \"../shared\" }}\n"),
+    );
+    p.write(
+        "shared/Cargo.toml",
+        // It names the binding back: a cycle of path crates must not hang the walk.
+        "[package]\nname = \"shared\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nnative = { path = \"../native\" }\n",
+    );
+    p.write("shared/src/lib.rs", "// shared\n");
+    let env = p.env(&[]);
+    assert!(p.ensure(&env, RUN).unwrap().built);
+    assert!(!p.ensure(&env, RUN).unwrap().built);
+    p.write("shared/src/lib.rs", "// shared, edited\n");
+    assert!(p.ensure(&env, RUN).unwrap().built);
+    // A further level, and a build dependency.
+    p.write(
+        "shared/Cargo.toml",
+        "[package]\nname = \"shared\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[build-dependencies]\ndeep = { path = \"../deep\" }\n",
+    );
+    p.write("deep/Cargo.toml", "[package]\nname = \"deep\"\n");
+    p.write("deep/src/lib.rs", "// deep\n");
+    assert!(p.ensure(&env, RUN).unwrap().built);
+    p.write("deep/src/lib.rs", "// deep, edited\n");
+    assert!(p.ensure(&env, RUN).unwrap().built);
+    assert!(!p.ensure(&env, RUN).unwrap().built);
+}
+
+/// A copy of the fixture runner with `mark` after its last byte, so that the runner of one
+/// project can be told from another's.
+fn marked_runner(dir: &Path, mark: &str) -> PathBuf {
+    let path = dir.join(format!("runner-{mark}{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(env!("CARGO_BIN_EXE_colibri-runner-fixture"), &path).unwrap();
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.extend_from_slice(mark.as_bytes());
+    fs::write(&path, bytes).unwrap();
+    path
+}
+
+#[test]
+fn two_projects_building_at_once_each_get_their_own_runner() {
+    let a = Project::new("two-a");
+    let b = Project::new("two-b");
+    let shared_cache = a.root.join("shared-cache");
+    let runner_a = marked_runner(&a.root, "AAAA");
+    let runner_b = marked_runner(&b.root, "BBBB");
+    let results: Vec<PathBuf> = std::thread::scope(|s| {
+        let ha = s.spawn(|| {
+            let env = a.env_in(
+                &shared_cache,
+                &[
+                    ("FAKE_CARGO_SLEEP_MS", "200"),
+                    ("FAKE_CARGO_RUNNER", runner_a.to_str().unwrap()),
+                ],
+            );
+            a.ensure(&env, RUN).unwrap().path
+        });
+        let hb = s.spawn(|| {
+            let env = b.env_in(
+                &shared_cache,
+                &[
+                    ("FAKE_CARGO_SLEEP_MS", "200"),
+                    ("FAKE_CARGO_RUNNER", runner_b.to_str().unwrap()),
+                ],
+            );
+            b.ensure(&env, RUN).unwrap().path
+        });
+        vec![ha.join().unwrap(), hb.join().unwrap()]
+    });
+    assert_ne!(results[0], results[1]);
+    assert!(fs::read(&results[0]).unwrap().ends_with(b"AAAA"));
+    assert!(fs::read(&results[1]).unwrap().ends_with(b"BBBB"));
+}
+
+#[test]
+fn check_changes_nothing_not_even_the_lock() {
+    let p = Project::new("checklock");
+    let env = p.env(&[]);
+    let args = |check| Args {
+        path: &p.root,
+        release: false,
+        output: None,
+        check,
+        deps: DepFlags::default(),
+    };
+    // No lock and no interface: stale, and neither is created.
+    assert!(!command::bindings(&env, &args(true)).unwrap());
+    assert!(!p.lock().exists());
+    assert!(!p.real_root().join("fixture.cbi").exists());
+    // Written for real.
+    assert!(command::bindings(&env, &args(false)).unwrap());
+    assert!(p.lock().exists());
+    assert!(command::bindings(&env, &args(true)).unwrap());
+    // A lock that is gone (or would change) is a reason to fail, and is not repaired.
+    fs::remove_file(p.lock()).unwrap();
+    assert!(!command::bindings(&env, &args(true)).unwrap());
+    assert!(!p.lock().exists());
+    // Another resolution is the same: the committed lock is not touched.
+    assert!(command::bindings(&env, &args(false)).unwrap());
+    let lock = fs::read_to_string(p.lock()).unwrap();
+    let older = lock.replace("# resolved by fake cargo\n", "");
+    fs::write(p.lock(), &older).unwrap();
+    assert!(!command::bindings(&env, &args(true)).unwrap());
+    assert_eq!(fs::read_to_string(p.lock()).unwrap(), older);
+}
+
+#[test]
+fn interfaces_of_git_packages_are_reported_never_written() {
+    let p = Project::new("gitdep");
+    let env = p.env(&[]);
+    let runner = p.ensure(&env, RUN).unwrap();
+    // A binding as the loader reports it for a package in a git checkout.
+    let manifest = colibri_runtime::parse_manifest(
+        colibri_runtime::debug::FileId(0),
+        "[package]\nname = \"lib\"\n[rust-dependencies]\nfixture = { path = \"native/\" }\n",
+    )
+    .unwrap();
+    let checkout = p.root.join("checkout");
+    fs::create_dir_all(&checkout).unwrap();
+    let binding = colibri_runtime::ProjectBinding {
+        dep: manifest.rust_dependencies[0].clone(),
+        dir: checkout.clone(),
+        interface: checkout.join("fixture.cbi"),
+        from_git: true,
+    };
+    for check in [true, false] {
+        // Missing: reported, not created.
+        let report =
+            command::write_interfaces(&runner, std::slice::from_ref(&binding), check).unwrap();
+        assert!(report.changed.is_empty(), "{report:?}");
+        assert_eq!(report.git_stale, std::slice::from_ref(&binding.interface));
+        assert!(!binding.interface.exists());
+        // Stale: reported, not touched.
+        fs::write(&binding.interface, "authors own\n").unwrap();
+        let report =
+            command::write_interfaces(&runner, std::slice::from_ref(&binding), check).unwrap();
+        assert_eq!(report.git_stale.len(), 1);
+        assert_eq!(
+            fs::read_to_string(&binding.interface).unwrap(),
+            "authors own\n"
+        );
+        fs::remove_file(&binding.interface).unwrap();
+    }
+    // The same binding from the user's own package is written.
+    let own = colibri_runtime::ProjectBinding {
+        from_git: false,
+        ..binding
+    };
+    let report = command::write_interfaces(&runner, std::slice::from_ref(&own), false).unwrap();
+    assert_eq!(report.changed.len(), 1);
+    assert!(own.interface.is_file());
+}
+
+#[test]
+fn an_edit_in_the_engine_tree_rebuilds_the_runner() {
+    let p = Project::new("engine");
+    let tree = p.root.join("engine-tree");
+    for (rel, text) in [
+        (
+            "Cargo.toml",
+            format!(
+                "[workspace]\nmembers = [\"crates/*\"]\n[workspace.package]\nversion = \"{}\"\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        ),
+        ("crates/colibri-cli/Cargo.toml", "[package]\n".to_string()),
+        ("crates/colibri-cli/src/lib.rs", "// cli\n".to_string()),
+        ("crates/colibri-cli/tests/t.rs", "// test\n".to_string()),
+        (
+            "crates/colibri-runtime/Cargo.toml",
+            "[package]\n".to_string(),
+        ),
+        (
+            "crates/colibri-runtime/src/lib.rs",
+            "// runtime\n".to_string(),
+        ),
+    ] {
+        let full = tree.join(rel);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(full, text).unwrap();
+    }
+    let mut env = p.env(&[]);
+    env.engine.env = Some(tree.clone().into_os_string());
+    assert!(p.ensure(&env, RUN).unwrap().built);
+    assert!(!p.ensure(&env, RUN).unwrap().built);
+    // A test of the engine is no part of a runner.
+    fs::write(
+        tree.join("crates/colibri-cli/tests/t.rs"),
+        "// test, edited\n",
+    )
+    .unwrap();
+    assert!(!p.ensure(&env, RUN).unwrap().built);
+    // Its source is.
+    fs::write(
+        tree.join("crates/colibri-runtime/src/lib.rs"),
+        "// runtime, edited\n",
+    )
+    .unwrap();
+    assert!(p.ensure(&env, RUN).unwrap().built);
+    assert_eq!(p.calls().len(), 2);
 }

@@ -448,6 +448,8 @@ pub struct ProjectBinding {
     pub dir: std::path::PathBuf,
     /// Where its `<key>.cbi` is (it may not exist yet).
     pub interface: std::path::PathBuf,
+    /// Declared by a git package: its folder is a checkout in the cache, which is not written to.
+    pub from_git: bool,
 }
 
 /// Every Rust binding the program at `entry` declares, the root's and each dependency's, for the
@@ -468,10 +470,14 @@ pub fn project_bindings(
     };
     let loaded = colibri_check::package::load_with(fs, &mut sources, entry, host_modules, options)
         .map_err(|e| format!("{}: {}", e.path, e.message))?;
-    for d in &loaded.diagnostics {
-        if d.severity == Severity::Error && d.message.contains("has not allowed it") {
-            return Err(render_diagnostic(d, &sources, false));
-        }
+    if let Some(b) = loaded.rust_bindings.iter().find(|b| !b.allowed) {
+        return Err(format!(
+            "the git dependency in `{}` declares the Rust dependency `{}` (it may build Rust code), and the root package has not allowed it\n  add its name to `allow-rust = [..]` in the `[package]` table of the root `colibri.toml`",
+            b.interface
+                .parent()
+                .map_or(String::new(), |d| d.display().to_string()),
+            b.key
+        ));
     }
     let mut out = Vec::new();
     for binding in &loaded.rust_bindings {
@@ -498,6 +504,7 @@ pub fn project_bindings(
                 dep,
                 dir: dir.to_path_buf(),
                 interface: binding.interface.clone(),
+                from_git: binding.from_git,
             });
         }
     }

@@ -209,8 +209,9 @@ fn inherited_field(table: &DeTable<'_>, prefix: &str) -> Option<String> {
     None
 }
 
-/// `"path"` or `"git"` if a dependency table of the manifest names `colibri-runtime` that way.
-fn names_runtime_by_path_or_git(table: &DeTable<'_>) -> Option<&'static str> {
+/// The dependency tables a build reads: `[dependencies]`, `[build-dependencies]` and the same
+/// under `[target.*]`.
+fn dependency_sections<'a>(table: &'a DeTable<'a>) -> Vec<&'a DeTable<'a>> {
     let mut sections: Vec<&DeTable<'_>> = Vec::new();
     for key in ["dependencies", "build-dependencies"] {
         sections.extend(field(table, key).and_then(DeValue::as_table));
@@ -225,7 +226,34 @@ fn names_runtime_by_path_or_git(table: &DeTable<'_>) -> Option<&'static str> {
             }
         }
     }
-    for section in sections {
+    sections
+}
+
+/// The folders of the `path = ".."` dependencies of the crate whose `Cargo.toml` is `text`,
+/// relative ones joined to `dir` (the crate's folder). Text that is not TOML has none.
+pub fn path_dependencies(text: &str, dir: &Path) -> Vec<PathBuf> {
+    let Ok(parsed) = DeTable::parse(text) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for section in dependency_sections(parsed.get_ref()) {
+        for (_, value) in section {
+            if let Some(path) = value
+                .get_ref()
+                .as_table()
+                .and_then(|spec| field(spec, "path"))
+                .and_then(DeValue::as_str)
+            {
+                out.push(dir.join(path));
+            }
+        }
+    }
+    out
+}
+
+/// `"path"` or `"git"` if a dependency table of the manifest names `colibri-runtime` that way.
+fn names_runtime_by_path_or_git(table: &DeTable<'_>) -> Option<&'static str> {
+    for section in dependency_sections(table) {
         for (key, value) in section {
             let Some(spec) = value.get_ref().as_table() else {
                 continue;

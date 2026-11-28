@@ -53,36 +53,59 @@ pub fn bindings(env: &Env, args: &Args<'_>) -> Result<bool, String> {
         },
         locked: args.deps.locked,
         offline: args.deps.offline,
+        write_lock: !args.check,
     };
     // Nothing is written to the project before the build has succeeded.
     let runner = build::ensure_runner(env, &root, &found, options)?;
     if let Some(out) = args.output {
         copy_runner(&runner, out)?;
     }
-    let stale = write_interfaces(&runner, &found, args.check)?;
-    for path in &stale {
+    let report = write_interfaces(&runner, &found, args.check)?;
+    for path in &report.changed {
         eprintln!(
             "{}: {}",
             path.display(),
             if args.check { "out of date" } else { "written" }
         );
     }
-    Ok(!(args.check && !stale.is_empty()))
+    // The cache of a git dependency is never written to: its author commits the interface.
+    for path in &report.git_stale {
+        eprintln!(
+            "warning: {}: a git dependency's interface is out of date; its author must regenerate and commit it",
+            path.display()
+        );
+    }
+    if args.check && runner.lock_changed {
+        eprintln!(
+            "{}: missing or out of date (run `colibri bindings` to write it)",
+            root.join(build::LOCK_FILE).display()
+        );
+    }
+    Ok(!(args.check && (!report.changed.is_empty() || runner.lock_changed)))
 }
 
-/// Asks the runner for every interface and puts each at its place. Returns the files that were
-/// (or, with `check`, would be) changed.
-fn write_interfaces(
+/// What [`write_interfaces`] found.
+#[derive(Debug, Default)]
+pub struct Report {
+    /// Interfaces of the project's own packages that were (or, with `check`, would be) written.
+    pub changed: Vec<PathBuf>,
+    /// Interfaces of git dependencies that differ: reported, never written.
+    pub git_stale: Vec<PathBuf>,
+}
+
+/// Asks the runner for every interface and puts each at its place (never inside a git checkout).
+#[doc(hidden)]
+pub fn write_interfaces(
     runner: &Runner,
     found: &[ProjectBinding],
     check: bool,
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<Report, String> {
     let scratch = runner
         .path
         .with_file_name(format!("interfaces-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     let result = ask_runner(runner, &scratch).and_then(|()| {
-        let mut changed = Vec::new();
+        let mut report = Report::default();
         for b in found {
             let text = std::fs::read_to_string(scratch.join(format!("{}.cbi", b.dep.name)))
                 .map_err(|e| format!("the runner wrote no interface for `{}`: {e}", b.dep.name))?;
@@ -90,12 +113,16 @@ fn write_interfaces(
             if same {
                 continue;
             }
+            if b.from_git {
+                report.git_stale.push(b.interface.clone());
+                continue;
+            }
             if !check {
                 build::write_if_changed(&b.interface, &text)?;
             }
-            changed.push(b.interface.clone());
+            report.changed.push(b.interface.clone());
         }
-        Ok(changed)
+        Ok(report)
     });
     let _ = std::fs::remove_dir_all(&scratch);
     result

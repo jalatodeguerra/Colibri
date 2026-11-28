@@ -53,6 +53,9 @@ pub struct Options {
     pub locked: bool,
     /// `--offline`: cargo never uses the network.
     pub offline: bool,
+    /// Copy the lock cargo resolved back to `colibri.rust.lock` (`colibri bindings --check` does
+    /// not: it reports instead).
+    pub write_lock: bool,
 }
 
 /// What a build depends on besides the project: the machine's facts, replaceable in a test.
@@ -85,33 +88,28 @@ pub struct Runner {
     pub path: PathBuf,
     /// Whether cargo ran for it (false: it was cached).
     pub built: bool,
+    /// The resolved lock differs from `colibri.rust.lock` (or there is none): it was written back
+    /// if `Options::write_lock`, else the project's lock is out of date.
+    pub lock_changed: bool,
 }
 
 /// The package that holds `path` (a folder, or a script below one) and its Rust bindings.
 pub fn project(path: &Path) -> Result<(PathBuf, Vec<ProjectBinding>), String> {
-    let start = if path.is_dir() {
+    // As the loader finds a package: a folder is the package, a script's package is its own folder.
+    let folder = if path.is_dir() {
         path.to_path_buf()
     } else {
         path.parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."))
+            .filter(|p| !p.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
     };
-    let start = if start.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        start
-    };
-    let start = canonical(&start)?;
-    let root = start
-        .ancestors()
-        .find(|d| d.join(colibri_runtime::MANIFEST_FILE).is_file())
-        .map(Path::to_path_buf)
-        .ok_or_else(|| {
-            format!(
-                "`{}` is not in a package (there is no `colibri.toml` above it)",
-                path.display()
-            )
-        })?;
+    let root = canonical(&folder)?;
+    if !root.join(colibri_runtime::MANIFEST_FILE).is_file() {
+        return Err(format!(
+            "`{}` has no `colibri.toml`: `colibri bindings` takes a package folder",
+            root.display()
+        ));
+    }
     let names: Vec<String> = colibri_std::MODULES
         .iter()
         .map(|m| format!("std.{m}"))
@@ -149,35 +147,53 @@ pub fn ensure_runner(
     let engine = engine::resolve(&env.engine)?;
     let generated = r#gen::generate(&engine, &crates)?;
     let lock_path = root.join(LOCK_FILE);
-    let (lock_in, lock_present) = match std::fs::read_to_string(&lock_path) {
-        Ok(text) => (normalize(&text), true),
-        Err(_) => (normalize(&generated.seed_lock), false),
-    };
-    let tree = tree_identity(&crates, &engine);
-    let stamp_of = |lock: &str| {
-        stamp(
-            &generated.cargo_toml,
-            &generated.main_rs,
-            lock,
-            &tree,
-            options.profile,
-        )
-    };
     let dir = env.runners.join(format!(
         "{:016x}",
         fnv(r#gen::display_path(root).as_bytes())
     ));
     let exe = if cfg!(windows) { ".exe" } else { "" };
     let runner_in = |stamp: &str| dir.join(format!("runner-{stamp}{exe}"));
-    let first = runner_in(&stamp_of(&lock_in));
+    // What the stamp is made of that can change under us: the lock and the files.
+    let state = || {
+        let (lock_in, lock_present) = match std::fs::read_to_string(&lock_path) {
+            Ok(text) => (normalize(&text), true),
+            Err(_) => (normalize(&generated.seed_lock), false),
+        };
+        (lock_in, lock_present, tree_identity(&crates, &engine))
+    };
+    let stamp_of = |lock: &str, tree: &str| {
+        stamp(
+            &generated.cargo_toml,
+            &generated.main_rs,
+            lock,
+            tree,
+            options.profile,
+        )
+    };
+    let (lock_in, _, tree) = state();
+    let first = runner_in(&stamp_of(&lock_in, &tree));
     if first.is_file() {
         return Ok(Runner {
             path: first,
             built: false,
+            lock_changed: false,
         });
     }
 
     let cargo = find_cargo(env.cargo.as_deref())?;
+    // One build at a time on this machine: two projects share the target folder (and its binary's
+    // path), and two builds of one project share its workspace and its lock. What the build
+    // before ours made is looked at again once we hold the lock.
+    let _guard = BuildLock::acquire(&env.runners)?;
+    let (lock_in, lock_present, tree) = state();
+    let first = runner_in(&stamp_of(&lock_in, &tree));
+    if first.is_file() {
+        return Ok(Runner {
+            path: first,
+            built: false,
+            lock_changed: false,
+        });
+    }
     write_if_changed(&dir.join("Cargo.toml"), &generated.cargo_toml)?;
     write_if_changed(&dir.join("src").join("main.rs"), &generated.main_rs)?;
     write_if_changed(&dir.join("Cargo.lock"), &lock_in)?;
@@ -203,13 +219,18 @@ pub fn ensure_runner(
     check_one_runtime(&lock_out)?;
     // The runner is named for the lock it was built with, which is what the next call will see
     // once the lock is copied back.
-    let path = runner_in(&stamp_of(&lock_out));
+    let path = runner_in(&stamp_of(&lock_out, &tree));
     install(&produced, &path)?;
-    if lock_out != lock_in || !lock_present {
+    let lock_changed = lock_out != lock_in || !lock_present;
+    if lock_changed && options.write_lock {
         write_if_changed(&lock_path, &lock_out)?;
     }
     prune(&dir, &path);
-    Ok(Runner { path, built: true })
+    Ok(Runner {
+        path,
+        built: true,
+        lock_changed,
+    })
 }
 
 /// The binding crates of every package, each resolved against the folder that declares it.
@@ -230,23 +251,67 @@ fn crates_of(bindings: &[ProjectBinding]) -> Result<Vec<BindingCrate>, String> {
     }
 }
 
+/// The machine-wide build lock: held from writing a workspace until the runner is installed and
+/// the lock is copied back, and dropped (so released) when the build is over or fails.
+struct BuildLock(std::fs::File);
+
+impl BuildLock {
+    fn acquire(runners: &Path) -> Result<BuildLock, String> {
+        std::fs::create_dir_all(runners)
+            .map_err(|e| format!("cannot create `{}`: {e}", runners.display()))?;
+        let path = runners.join("build.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("cannot open `{}`: {e}", path.display()))?;
+        file.lock()
+            .map_err(|e| format!("cannot lock `{}`: {e}", path.display()))?;
+        Ok(BuildLock(file))
+    }
+}
+
+impl Drop for BuildLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 /// `\r\n` is `\n`: a lock checked out on Windows is the same lock.
 fn normalize(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
 
-/// The part of the cache key that comes from files: each path dependency and the engine source.
+/// The part of the cache key that comes from files: each path binding crate and, transitively,
+/// every crate it names with `path =` (a binding is usually a thin crate over a core crate next
+/// to it), and the engine source. Each folder is walked once, whatever reaches it.
 fn tree_identity(crates: &[BindingCrate], engine: &Engine) -> String {
     let mut text = String::new();
-    for c in crates {
-        if let CrateSource::Path { dir, .. } = &c.source {
-            let _ = writeln!(
-                text,
-                "path {} {:016x}",
-                c.key,
-                walk_hash(dir, &["target", ".git"])
-            );
+    let mut seen: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut todo: Vec<PathBuf> = crates
+        .iter()
+        .filter_map(|c| match &c.source {
+            CrateSource::Path { dir, .. } => Some(dir.clone()),
+            _ => None,
+        })
+        .collect();
+    while let Some(dir) = todo.pop() {
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        if !seen.insert(dir.clone()) {
+            continue;
         }
+        if let Ok(manifest) = std::fs::read_to_string(dir.join("Cargo.toml")) {
+            todo.extend(r#gen::path_dependencies(&manifest, &dir));
+        }
+    }
+    for dir in &seen {
+        let _ = writeln!(
+            text,
+            "path {} {:016x}",
+            r#gen::display_path(dir),
+            walk_hash(dir, &["target", ".git"])
+        );
     }
     match engine {
         Engine::Git { url, rev } => {
