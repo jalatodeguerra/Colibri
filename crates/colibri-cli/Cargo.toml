@@ -25,6 +25,10 @@ libc = "0.2"
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false, features = ["v2"] }
 
+# Ctrl-C while the project runner is a child: this `colibri` ignores it (see `delegate`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
 [features]
 default = ["ffi"]
 # `extern` blocks: calling C libraries (libffi). `colibri-runtime` explains the feature.

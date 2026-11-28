@@ -243,9 +243,16 @@ pub fn own_version() -> &'static str {
 /// a 2 byte, made of the characters a version has. A prefix followed by anything else (the
 /// code that looks for it holds the prefix too) is skipped.
 pub fn runner_version<R: Read>(file: &mut R) -> std::io::Result<Option<String>> {
+    marker_after(file, PREFIX)
+}
+
+/// The text of a marker in a file: what follows `prefix` up to a 2 byte (see [`runner_version`],
+/// which is this with the version prefix; the bindings marker of a project runner is read the
+/// same way).
+pub fn marker_after<R: Read>(file: &mut R, prefix: &str) -> std::io::Result<Option<String>> {
     const CHUNK: usize = 1 << 20;
     const KEEP: usize = 96;
-    let prefix = PREFIX.as_bytes();
+    let prefix = prefix.as_bytes();
     let mut buf: Vec<u8> = Vec::with_capacity(CHUNK + KEEP);
     loop {
         let old = buf.len();

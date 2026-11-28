@@ -4,7 +4,9 @@ pub mod assets;
 pub mod bindings;
 pub mod buildcmd;
 pub mod checkcmd;
+pub mod cliargs;
 pub mod debugcmd;
+pub mod delegate;
 pub mod depscmd;
 pub mod doccmd;
 mod flame;
@@ -29,7 +31,6 @@ pub mod webbuild;
 use std::thread;
 
 #[doc(hidden)]
-pub use runner::command_help as runner_command_help;
 pub use runner::runner_main;
 
 /// The stack of the thread that runs Colibri code. Colibri calls keep their frames on the heap,

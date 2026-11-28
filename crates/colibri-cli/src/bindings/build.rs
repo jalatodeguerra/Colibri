@@ -184,7 +184,7 @@ pub fn ensure_runner(
     // One build at a time on this machine: two projects share the target folder (and its binary's
     // path), and two builds of one project share its workspace and its lock. What the build
     // before ours made is looked at again once we hold the lock.
-    let _guard = BuildLock::acquire(&env.runners)?;
+    let _guard = BuildLock::acquire(&env.runners, &mut |m| eprintln!("{m}"))?;
     let (lock_in, lock_present, tree) = state();
     let first = runner_in(&stamp_of(&lock_in, &tree));
     if first.is_file() {
@@ -233,6 +233,17 @@ pub fn ensure_runner(
     })
 }
 
+/// The marker (`\x01colibri-bindings=<hex>\x02`) a runner of exactly these bindings holds, and
+/// their keys.
+pub fn expected_marker(bindings: &[ProjectBinding]) -> Result<(String, Vec<String>), String> {
+    let crates = crates_of(bindings)?;
+    let refs: Vec<&BindingCrate> = crates.iter().collect();
+    Ok((
+        r#gen::bindings_marker(&refs),
+        crates.iter().map(|c| c.key.clone()).collect(),
+    ))
+}
+
 /// The binding crates of every package, each resolved against the folder that declares it.
 fn crates_of(bindings: &[ProjectBinding]) -> Result<Vec<BindingCrate>, String> {
     let mut crates = Vec::new();
@@ -252,11 +263,15 @@ fn crates_of(bindings: &[ProjectBinding]) -> Result<Vec<BindingCrate>, String> {
 }
 
 /// The machine-wide build lock: held from writing a workspace until the runner is installed and
-/// the lock is copied back, and dropped (so released) when the build is over or fails.
-struct BuildLock(std::fs::File);
+/// the lock is copied back, and dropped (so released) when the build is over or fails. `None` in
+/// it: the file system cannot lock, so the build goes on without (and said so).
+struct BuildLock(Option<std::fs::File>);
 
 impl BuildLock {
-    fn acquire(runners: &Path) -> Result<BuildLock, String> {
+    /// Takes the lock without waiting if it is free; else says (through `say`) that another build
+    /// holds it, and waits.
+    fn acquire(runners: &Path, say: &mut dyn FnMut(&str)) -> Result<BuildLock, String> {
+        use std::fs::TryLockError;
         std::fs::create_dir_all(runners)
             .map_err(|e| format!("cannot create `{}`: {e}", runners.display()))?;
         let path = runners.join("build.lock");
@@ -266,15 +281,34 @@ impl BuildLock {
             .write(true)
             .open(&path)
             .map_err(|e| format!("cannot open `{}`: {e}", path.display()))?;
-        file.lock()
-            .map_err(|e| format!("cannot lock `{}`: {e}", path.display()))?;
-        Ok(BuildLock(file))
+        match file.try_lock() {
+            Ok(()) => Ok(BuildLock(Some(file))),
+            Err(TryLockError::WouldBlock) => {
+                say(&format!(
+                    "waiting for another Colibri build ({})",
+                    path.display()
+                ));
+                file.lock()
+                    .map_err(|e| format!("cannot lock `{}`: {e}", path.display()))?;
+                Ok(BuildLock(Some(file)))
+            }
+            Err(TryLockError::Error(e)) if e.kind() == std::io::ErrorKind::Unsupported => {
+                say(&format!(
+                    "warning: the file system of `{}` cannot lock files: building without the lock, so two builds at once may disturb each other",
+                    path.display()
+                ));
+                Ok(BuildLock(None))
+            }
+            Err(TryLockError::Error(e)) => Err(format!("cannot lock `{}`: {e}", path.display())),
+        }
     }
 }
 
 impl Drop for BuildLock {
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        if let Some(file) = &self.0 {
+            let _ = file.unlock();
+        }
     }
 }
 
@@ -802,5 +836,32 @@ mod tests {
         .unwrap();
         assert!(offline.contains("without `--offline`"), "{offline}");
         assert!(network_trouble("error[E0425]: cannot find value", false).is_none());
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn a_second_build_says_it_waits_and_then_gets_the_lock() {
+        let dir = std::env::temp_dir().join(format!("colibri-lock-{}", std::process::id()));
+        let first = BuildLock::acquire(&dir, &mut |m| panic!("the free lock said `{m}`")).unwrap();
+        let mut said = Vec::new();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(first);
+        });
+        let second = BuildLock::acquire(&dir, &mut |m| said.push(m.to_string())).unwrap();
+        release.join().unwrap();
+        assert!(second.0.is_some());
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said[0].starts_with("waiting for another Colibri build (")
+                && said[0].contains("build.lock"),
+            "{said:?}"
+        );
+        drop(second);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

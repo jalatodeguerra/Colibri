@@ -549,7 +549,8 @@ fn the_guide_has_its_pages_and_samples() {
     for (name, text) in &pages {
         let blocks = blocks_of(name, text);
         let samples = blocks.iter().filter(|b| b.lang == "colibri").count();
-        if name != "README.md" {
+        // (The page on Rust bindings is about commands: it has no programs to show.)
+        if name != "README.md" && name != "rust-bindings.md" {
             assert!(samples >= 10, "{name} has only {samples} colibri samples");
         }
         let problems = fence_problems(name, &blocks);

@@ -47,6 +47,9 @@ impl Pkg {
             .args([verb, self.0.to_str().unwrap()])
             .env("PATH", "")
             .env("CARGO", "colibri-no-such-cargo")
+            // As if this `colibri` were a project runner without the binding (a `run` that did not
+            // hand over would say so): `run` in a package with bindings otherwise hands over.
+            .env("COLIBRI_PROJECT_RUNNER", "1")
             .output()
             .expect("the colibri binary runs");
         Out {
