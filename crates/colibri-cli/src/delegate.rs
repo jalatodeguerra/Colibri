@@ -57,7 +57,7 @@ pub fn delegate(request: &Request<'_>) -> Option<ExitCode> {
 }
 
 /// The folder of the package of a script (or the folder given), as the loader sees it.
-fn package_folder(file: &Path) -> PathBuf {
+pub(crate) fn package_folder(file: &Path) -> PathBuf {
     if file.is_dir() {
         file.to_path_buf()
     } else {
@@ -69,7 +69,7 @@ fn package_folder(file: &Path) -> PathBuf {
 
 /// What the manifest of a package says about Rust bindings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Wants {
+pub(crate) enum Wants {
     /// Neither `[rust-dependencies]` nor `[dependencies]` (or no manifest that can be read: the
     /// command reports it as it always did).
     No,
@@ -79,7 +79,7 @@ enum Wants {
     Yes,
 }
 
-fn manifest_wants_bindings(manifest: &Path) -> Wants {
+pub(crate) fn manifest_wants_bindings(manifest: &Path) -> Wants {
     let Ok(text) = std::fs::read_to_string(manifest) else {
         return Wants::No;
     };
@@ -226,6 +226,17 @@ fn check_runner(runner: &Path, found: &[colibri_runtime::ProjectBinding]) -> Res
         }
     }
     file.rewind().map_err(read)?;
+    check_bindings(&mut file, runner, found)
+}
+
+/// Refuses a runner whose bindings marker is not the one of `found` (the file is at its start).
+pub(crate) fn check_bindings(
+    file: &mut std::fs::File,
+    runner: &Path,
+    found: &[colibri_runtime::ProjectBinding],
+) -> Result<(), String> {
+    let shown = runner.display();
+    let read = |e: std::io::Error| format!("cannot read the runner `{shown}`: {e}");
     let (expected, keys) = build::expected_marker(found)?;
     let expected = expected
         .strip_prefix(MARKER_PREFIX)
@@ -233,7 +244,7 @@ fn check_runner(runner: &Path, found: &[colibri_runtime::ProjectBinding]) -> Res
         .unwrap_or_default()
         .to_string();
     let needs = format!("the bindings of this package ({})", keys.join(", "));
-    match platform::marker_after(&mut file, MARKER_PREFIX).map_err(read)? {
+    match platform::marker_after(file, MARKER_PREFIX).map_err(read)? {
         Some(have) if have == expected => Ok(()),
         Some(_) => Err(format!(
             "the runner `{shown}` holds other Rust bindings than this package needs: {needs}; build one with `colibri bindings -o FILE`"

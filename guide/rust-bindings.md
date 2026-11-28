@@ -60,6 +60,25 @@ the project runner running; what you edit decides what happens.
 - The command ends with the program's exit code. Ctrl-C ends the program and the command. If
   `colibri` itself is killed, the runner ends too.
 
+## Shipping with `colibri build`
+
+`colibri build` of a package with `[rust-dependencies]` writes one executable: the release runner
+of the project (the one `colibri bindings --release` builds, once, then cached) with the program
+after it. It runs like `colibri run` does, needs no Rust, no cargo and no cache where it runs, and
+says how big the runner is:
+
+```text
+building the Rust bindings of this project (once, then cached)
+  runner /home/me/.colibri/runners/.../runner-9f2c (SIZE bytes, with the Rust bindings of `native`)
+built app (3 source files, SIZE bytes)
+```
+
+For another platform, build the runner on that platform with `colibri bindings --release -o FILE`
+and name it: `colibri build --target windows-x86_64 --runner FILE`. The runner must be of the same
+`colibri` version and hold exactly the bindings of the package; a plain `colibri`, or the runner of
+another project, is refused. Nothing is cross-compiled. `colibri build --web` refuses a package
+with Rust bindings (they cannot run in a page yet).
+
 ## Commands that never call cargo
 
 `colibri check`, `fmt`, `doc`, `new`, `update` (git dependencies only) and the language server
