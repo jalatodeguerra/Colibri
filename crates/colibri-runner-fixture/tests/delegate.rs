@@ -264,3 +264,59 @@ fn a_dependency_that_declares_bindings_makes_run_hand_over() {
     );
     assert_eq!(w.cargo_log().len(), 1, "{:?}", w.cargo_log());
 }
+
+/// The package is a folder of the binding crate (`path = ".."`): editing a Colibri file does not
+/// make the next run build again, and neither does the lock the first build wrote into the crate.
+#[test]
+fn a_package_inside_the_crate_folder_is_not_rebuilt_for_a_colibri_edit() {
+    let w = World::new("inside");
+    let krate = w.root.join("crate");
+    let app = krate.join("app");
+    fs::create_dir_all(krate.join("src")).unwrap();
+    fs::create_dir_all(&app).unwrap();
+    fs::write(
+        krate.join("Cargo.toml"),
+        "[package]\nname = \"colibri-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\ncolibri-runtime = \"0.1\"\n",
+    )
+    .unwrap();
+    fs::write(krate.join("src/lib.rs"), "// the binding\n").unwrap();
+    fs::write(
+        app.join("colibri.toml"),
+        "[package]\nname = \"app\"\n\n[rust-dependencies]\nfixture = { path = \"..\" }\n",
+    )
+    .unwrap();
+    fs::write(app.join("main.colibri"), PROGRAM).unwrap();
+    let out = std::process::Command::new(RUNNER)
+        .arg("__write-interfaces")
+        .arg(&app)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let first = w.colibri(&app, &["run", "main.colibri"], "a\n");
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    assert_eq!(w.cargo_log().len(), 1);
+    fs::write(app.join("main.colibri"), format!("{PROGRAM}\n// an edit\n")).unwrap();
+    let second = w.colibri(&app, &["run", "main.colibri"], "a\n");
+    assert_eq!(second.code, 0, "{}", second.stderr);
+    assert_eq!(w.cargo_log().len(), 1, "a Colibri edit called cargo");
+    assert!(!second.stderr.contains("building"), "{}", second.stderr);
+    // A Rust edit still does.
+    fs::write(krate.join("src/lib.rs"), "// another binding\n").unwrap();
+    w.colibri(&app, &["run", "main.colibri"], "a\n");
+    assert_eq!(w.cargo_log().len(), 2);
+}
+
+/// What a runner was started with is not for the programs it runs.
+#[test]
+fn a_runner_does_not_pass_its_guard_to_its_program() {
+    let w = World::new("guardenv");
+    let dir = w.package("bound", BOUND);
+    fs::write(
+        dir.join("main.colibri"),
+        "import os\n\nfn main() {\n    print(os.env(\"COLIBRI_PROJECT_RUNNER\"))\n}\n",
+    )
+    .unwrap();
+    let out = w.colibri(&dir, &["run", "main.colibri"], "");
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout.trim(), "none", "{}{}", out.stdout, out.stderr);
+}

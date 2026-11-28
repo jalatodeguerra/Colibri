@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use colibri_runtime::ProjectBinding;
 
@@ -31,10 +31,8 @@ pub struct Project {
     pub options: Options,
 }
 
-/// How often the child and the Rust files are looked at.
+/// How often the child is looked at.
 const TICK: Duration = Duration::from_millis(100);
-/// Every this many ticks the Rust inputs are looked at (a walk of the binding crates).
-const LOOK_EVERY: u32 = 5;
 
 fn note(text: &str) {
     eprintln!("colibri: {text}");
@@ -61,18 +59,22 @@ pub fn supervise(mut project: Project, runner: PathBuf) -> ExitCode {
     let mut manifests = manifest_times(&project);
     // The runner path a failed build was for: not tried again until it changes.
     let mut failed_for: Option<PathBuf> = None;
-    let mut ticks = 0u32;
+    let mut next_look = Instant::now() + MIN_LOOK;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return exit_code(status),
             Ok(None) => {}
             Err(e) => return fail(&format!("cannot wait for the runner: {e}")),
         }
+        // Ctrl-C sent to this process alone (the terminal sends it to both): the runner gets it.
+        if take_interrupt() {
+            interrupt(&child);
+        }
         std::thread::sleep(TICK);
-        ticks += 1;
-        if !ticks.is_multiple_of(LOOK_EVERY) {
+        if Instant::now() < next_look {
             continue;
         }
+        let looked = Instant::now();
         // A manifest edit may add, drop or change a binding: ask the loader again.
         let now = manifest_times(&project);
         if now != manifests {
@@ -88,12 +90,12 @@ pub fn supervise(mut project: Project, runner: PathBuf) -> ExitCode {
                 Err(e) => note(&format!("cannot read the Rust bindings: {e}")),
             }
         }
-        let expected = match build::expected_runner(
-            &project.env,
-            &project.root,
-            &project.found,
-            project.options,
-        ) {
+        let expected =
+            build::expected_runner(&project.env, &project.root, &project.found, project.options);
+        // The next look waits in proportion to what this one cost (a big crate is looked at less
+        // often), so that an idle watch stays a small share of a core.
+        next_look = Instant::now() + next_look_after(looked.elapsed());
+        let expected = match expected {
             Ok(path) => path,
             Err(e) => {
                 note(&format!("cannot tell whether the Rust code changed: {e}"));
@@ -104,20 +106,23 @@ pub fn supervise(mut project: Project, runner: PathBuf) -> ExitCode {
             continue;
         }
         note("Rust code changed: building the runner");
-        match build::ensure_runner(&project.env, &project.root, &project.found, project.options) {
+        let options = Options {
+            rebuilding: true,
+            ..project.options
+        };
+        match build::ensure_runner(&project.env, &project.root, &project.found, options) {
             Ok(built) => {
                 failed_for = None;
                 if built.path == current {
                     continue;
                 }
                 // Ctrl-C in the meantime ended the runner: this is the end, not a restart.
-                if let Ok(Some(status)) = child.try_wait() {
+                if let Some(status) = ended_meanwhile(&mut child, false) {
                     return exit_code(status);
                 }
                 crate::delegate::say_interfaces(&built);
                 note("Rust code changed: rebuilt the runner and restarted");
-                let _ = child.kill();
-                let _ = child.wait();
+                stop(&mut child);
                 current = built.path;
                 child = match spawn(&current, &guard) {
                     Ok(c) => c,
@@ -130,13 +135,93 @@ pub fn supervise(mut project: Project, runner: PathBuf) -> ExitCode {
                 };
             }
             Err(e) => {
+                // Ctrl-C during the build: the runner is gone, and that is all there is to say.
+                if let Some(status) = ended_meanwhile(&mut child, e.contains("cargo was stopped")) {
+                    return exit_code(status);
+                }
                 eprintln!("error: {e}");
                 note("the Rust code does not build; the old runner keeps running");
                 failed_for = Some(expected);
             }
         }
+        next_look = Instant::now() + next_look_after(looked.elapsed());
     }
 }
+
+/// After a build: did the runner end while it ran (Ctrl-C)? If this process was interrupted, the
+/// runner is given the signal and a moment to end, so that the answer does not depend on which of
+/// the two processes the system got to first.
+fn ended_meanwhile(child: &mut Child, stopped: bool) -> Option<std::process::ExitStatus> {
+    // (`stopped`: cargo itself was ended by a signal, which may reach this process a moment later.)
+    if take_interrupt() || stopped {
+        interrupt(child);
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until {
+            if let Ok(Some(status)) = child.try_wait() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    child.try_wait().ok().flatten()
+}
+
+/// The least time between two looks at the Rust code.
+const MIN_LOOK: Duration = Duration::from_millis(500);
+
+/// When the next look is, given what the last one took: never sooner than [`MIN_LOOK`], and not
+/// before 20 times the cost of a look, which keeps the watch under about 5% of a core.
+pub fn next_look_after(last: Duration) -> Duration {
+    MIN_LOOK.max(last * 20)
+}
+
+/// Stops a runner to start another: it is asked to end (so that it, and what it started, can
+/// clean up) and killed if it has not ended after a short while.
+fn stop(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // SAFETY: sending a signal to a child of this process.
+        unsafe {
+            libc::kill(child.id() as i32, libc::SIGTERM);
+        }
+        let until = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < until {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Set by the SIGINT handler: this process was interrupted.
+#[cfg(unix)]
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+fn take_interrupt() -> bool {
+    INTERRUPTED.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(unix)]
+fn interrupt(child: &Child) {
+    // SAFETY: sending a signal to a child of this process; if the terminal sent it already,
+    // a second one is harmless.
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGINT);
+    }
+}
+
+// (On Windows the console sends the event to every process on it.)
+#[cfg(windows)]
+fn take_interrupt() -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn interrupt(_child: &Child) {}
 
 fn fail(message: &str) -> ExitCode {
     eprintln!("error: {message}");
@@ -187,15 +272,17 @@ fn exit_code(status: std::process::ExitStatus) -> ExitCode {
     std::process::exit(status.code().unwrap_or(1))
 }
 
-/// This process leaves Ctrl-C to the runner: the runner ends, then so does this process, with the
-/// runner's status. (A handler that does nothing, not `SIG_IGN`: an ignored signal stays ignored
+/// This process passes Ctrl-C on to the runner: the runner ends, then so does this process, with the
+/// runner's status. (A handler that only sets a flag, not `SIG_IGN`: an ignored signal stays ignored
 /// in what is started, cargo and the runner, and a handler does not.)
 #[cfg(unix)]
 fn ignore_interrupts() {
-    extern "C" fn nothing(_signal: i32) {}
+    extern "C" fn interrupted(_signal: i32) {
+        INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     // SAFETY: installing a handler that does nothing.
     unsafe {
-        libc::signal(libc::SIGINT, nothing as extern "C" fn(i32) as usize);
+        libc::signal(libc::SIGINT, interrupted as extern "C" fn(i32) as usize);
     }
 }
 
@@ -231,7 +318,13 @@ pub fn die_with_parent() {
         else {
             return;
         };
-        // The runner's own children must not hold on to it.
+        // Not for the programs this runner runs: the descriptor is closed on exec, and the
+        // variable that names it is gone.
+        // SAFETY: the start of `runner_main`, before any thread of ours exists.
+        unsafe {
+            std::env::remove_var(PARENT_FD);
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
         // SAFETY: the supervisor passed this descriptor, open for reading, for this process alone.
         let mut pipe = unsafe { std::fs::File::from_raw_fd(fd) };
         let _ = std::thread::Builder::new()
@@ -239,8 +332,14 @@ pub fn die_with_parent() {
             .spawn(move || {
                 let mut byte = [0u8; 1];
                 // Nothing is ever written: a read returns when the other end is gone.
-                while matches!(pipe.read(&mut byte), Ok(n) if n > 0) {}
-                std::process::exit(1);
+                loop {
+                    match pipe.read(&mut byte) {
+                        Ok(n) if n > 0 => {}
+                        // A signal interrupted the read: not the end of the file.
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        _ => std::process::exit(1),
+                    }
+                }
             });
     }
 }
@@ -328,5 +427,25 @@ impl Guard {
         unsafe {
             AssignProcessToJobObject(self.job, child.as_raw_handle());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_next_look_waits_in_proportion_to_the_last() {
+        // A cheap look: the least time.
+        assert_eq!(next_look_after(Duration::from_millis(1)), MIN_LOOK);
+        assert_eq!(next_look_after(Duration::ZERO), MIN_LOOK);
+        // A look of 43 ms (20,000 files): 20 times that, so the watch is at most 5% busy.
+        assert_eq!(
+            next_look_after(Duration::from_millis(43)),
+            Duration::from_millis(860)
+        );
+        // The boundary: 25 ms is exactly the least time.
+        assert_eq!(next_look_after(Duration::from_millis(25)), MIN_LOOK);
+        assert!(next_look_after(Duration::from_millis(26)) > MIN_LOOK);
     }
 }

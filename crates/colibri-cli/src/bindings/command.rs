@@ -55,6 +55,7 @@ pub fn bindings(env: &Env, args: &Args<'_>) -> Result<bool, String> {
         offline: args.deps.offline,
         write_lock: !args.check,
         write_interfaces: false,
+        rebuilding: false,
     };
     // Nothing is written to the project before the build has succeeded.
     let runner = build::ensure_runner(env, &root, &found, options)?;

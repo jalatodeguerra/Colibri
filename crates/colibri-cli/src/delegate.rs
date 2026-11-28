@@ -150,6 +150,7 @@ fn hand_over(
                 offline: request.deps.offline,
                 write_lock: true,
                 write_interfaces: true,
+                rebuilding: false,
             };
             let runner = build::ensure_runner(&env, &root, &found, options)?;
             say_interfaces(&runner);

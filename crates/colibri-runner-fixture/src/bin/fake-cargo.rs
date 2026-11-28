@@ -24,12 +24,6 @@ fn main() {
             .expect("the log opens");
         writeln!(file, "{}", args.join(" ")).expect("the log is written");
     }
-    if let Some(ms) = std::env::var("FAKE_CARGO_SLEEP_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
-    }
     let after = |flag: &str| {
         args.iter()
             .position(|a| a == flag)
@@ -46,6 +40,13 @@ fn main() {
             .find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix('=')))
             .map(str::to_string)
     };
+    // `sleep_ms=N` in the control file, or the variable: wait first (a build that takes a while).
+    if let Some(ms) = controlled("sleep_ms")
+        .or_else(|| std::env::var("FAKE_CARGO_SLEEP_MS").ok())
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
     let fail = controlled("fail").or_else(|| std::env::var("FAKE_CARGO_FAIL").ok());
     match fail.as_deref() {
         Some("build") => {

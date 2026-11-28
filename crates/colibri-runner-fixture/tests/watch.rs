@@ -41,6 +41,7 @@ fn pump(reader: impl std::io::Read + Send + 'static) -> Receiver<String> {
 struct Watch {
     w: World,
     dir: PathBuf,
+    rust_file: PathBuf,
     control: PathBuf,
     child: Child,
     out: Receiver<String>,
@@ -51,12 +52,34 @@ struct Watch {
 
 impl Watch {
     fn start(name: &str, main: &str) -> Watch {
+        Watch::start_with(name, main, false, false)
+    }
+
+    /// With `inside`, the package is a folder of the binding crate (`path = ".."`); with
+    /// `grouped` the command is the leader of a process group of its own (so a test can interrupt
+    /// the group the way a terminal does).
+    fn start_with(name: &str, main: &str, inside: bool, grouped: bool) -> Watch {
         let w = World::new(name);
-        let dir = w.root.join("app");
-        fs::create_dir_all(dir.join("native/src")).unwrap();
-        fs::write(dir.join("colibri.toml"), PATH_BOUND).unwrap();
-        fs::write(dir.join("native/Cargo.toml"), CRATE_TOML).unwrap();
-        fs::write(dir.join("native/src/lib.rs"), "// version 1\n").unwrap();
+        let (dir, rust_file) = if inside {
+            let krate = w.root.join("crate");
+            let dir = krate.join("app");
+            fs::create_dir_all(krate.join("src")).unwrap();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(krate.join("Cargo.toml"), CRATE_TOML).unwrap();
+            fs::write(
+                dir.join("colibri.toml"),
+                PATH_BOUND.replace("native/", ".."),
+            )
+            .unwrap();
+            (dir, krate.join("src/lib.rs"))
+        } else {
+            let dir = w.root.join("app");
+            fs::create_dir_all(dir.join("native/src")).unwrap();
+            fs::write(dir.join("colibri.toml"), PATH_BOUND).unwrap();
+            fs::write(dir.join("native/Cargo.toml"), CRATE_TOML).unwrap();
+            (dir.clone(), dir.join("native/src/lib.rs"))
+        };
+        fs::write(&rust_file, "// version 1\n").unwrap();
         fs::write(dir.join("main.colibri"), main).unwrap();
         let out = std::process::Command::new(RUNNER)
             .arg("__write-interfaces")
@@ -72,12 +95,19 @@ impl Watch {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(unix)]
+        if grouped {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let _ = grouped;
         let mut child = command.spawn().unwrap();
         let out = pump(child.stdout.take().unwrap());
         let err = pump(child.stderr.take().unwrap());
         Watch {
             w,
             dir,
+            rust_file,
             control,
             child,
             out,
@@ -123,11 +153,7 @@ impl Watch {
     }
 
     fn edit_rust(&self, n: u32) {
-        fs::write(
-            self.dir.join("native/src/lib.rs"),
-            format!("// version {n}\n"),
-        )
-        .unwrap();
+        edit(&self.rust_file, &format!("// version {n}\n"));
     }
 
     fn builds(&self) -> usize {
@@ -216,6 +242,12 @@ fn a_rust_edit_builds_again_and_restarts_with_the_new_behaviour() {
     w.edit_rust(2);
     w.err_has("Rust code changed: rebuilt the runner and restarted");
     w.out_has("one 63");
+    // The build line says "again" the second time.
+    assert!(
+        w.seen_err.iter().any(|l| l.contains("project again")),
+        "{:?}",
+        w.seen_err
+    );
     assert_eq!(w.builds(), 2, "{:?}", w.w.cargo_log());
     let out = w.seen_out.clone();
     assert_eq!(out.iter().filter(|l| *l == "main").count(), 2, "{out:?}");
@@ -260,9 +292,11 @@ fn a_build_that_fails_keeps_the_old_runner_going_until_the_next_edit() {
 
 #[test]
 fn the_exit_code_of_the_program_is_the_exit_code_of_the_command() {
-    let main = "import fixture\nimport os\n\nfn main() {\n    print(fixture.double(21))\n    os.exit(7)\n}\n";
+    let main = "import fixture\nimport os\n\nfn main() {\n    print(fixture.double(21))\n    print(os.env(\"COLIBRI_SUPERVISOR_FD\"))\n    os.exit(7)\n}\n";
     let mut w = Watch::start("exit", main);
     w.out_has("42");
+    // The runner keeps its supervisor's descriptor to itself.
+    w.out_has("none");
     let deadline = Instant::now() + Duration::from_secs(60);
     let status = loop {
         if let Some(s) = w.child.try_wait().unwrap() {
@@ -306,4 +340,92 @@ fn a_runner_does_not_outlive_its_supervisor() {
         assert!(Instant::now() < deadline, "the runner is still there");
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// The package is a folder of the binding crate: its Colibri files are not Rust inputs.
+#[test]
+fn a_colibri_edit_in_a_package_inside_the_crate_folder_builds_nothing() {
+    let mut w = Watch::start_with("inside", &program("one"), true, false);
+    w.out_has("one 42");
+    edit(&w.dir.join("main.colibri"), &program("two"));
+    w.err_has("patched 1 function");
+    w.out_has("two 42");
+    let first = w
+        .seen_out
+        .iter()
+        .find(|l| l.starts_with("two "))
+        .and_then(|l| counter_of(l))
+        .unwrap();
+    // Longer than a look at the Rust code takes (the counter is the clock).
+    w.until("the program to go on", |o, _| {
+        o.iter()
+            .filter(|l| l.starts_with("two "))
+            .filter_map(|l| counter_of(l))
+            .max()
+            .is_some_and(|n| n >= first + 40)
+    });
+    assert_eq!(w.builds(), 1, "{:?}", w.w.cargo_log());
+    assert_eq!(w.seen_out.iter().filter(|l| *l == "main").count(), 1);
+    assert!(!w.seen_err.iter().any(|l| l.contains("Rust code changed")));
+}
+
+/// SIGINT to the supervisor alone (an editor's stop button, `timeout -s INT`): the runner gets it
+/// and the command ends with the status of an interrupted program.
+#[cfg(unix)]
+#[test]
+fn an_interrupt_sent_to_the_supervisor_alone_ends_the_runner_and_the_command() {
+    let mut w = Watch::start("sigint", &program("one"));
+    w.out_has("one 42");
+    let pid = w.child.id().to_string();
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-INT", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(s) = w.child.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "the command did not end");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.code(), Some(130));
+}
+
+/// Ctrl-C (SIGINT to the whole group) while the runner is being built: the command ends, and says
+/// nothing false about the build.
+#[cfg(unix)]
+#[test]
+fn an_interrupt_during_a_rebuild_ends_quietly() {
+    let mut w = Watch::start_with("sigint-build", &program("one"), false, true);
+    w.out_has("one 42");
+    fs::write(&w.control, format!("runner={RUNNER_V3}\nsleep_ms=20000\n")).unwrap();
+    w.edit_rust(2);
+    w.err_has("building the Rust bindings of this project again");
+    let group = format!("-{}", w.child.id());
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-INT", "--", &group])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(s) = w.child.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "the command did not end");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.code(), Some(130));
+    w.drain();
+    assert!(
+        !w.seen_err.iter().any(|l| l.contains("does not build")),
+        "{:?}",
+        w.seen_err
+    );
 }

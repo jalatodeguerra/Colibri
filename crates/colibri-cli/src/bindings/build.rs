@@ -23,6 +23,9 @@ pub const LOCK_FILE: &str = "colibri.rust.lock";
 /// The line `colibri run` and friends print before the first build of a project.
 pub const BUILDING: &str = "building the Rust bindings of this project (once, then cached)";
 
+/// The line when the runner is built again while a program runs.
+pub const REBUILDING: &str = "building the Rust bindings of this project again";
+
 /// Runners kept in a workspace folder after a build (the newest ones: a project's `colibri-run`
 /// and `release` runners, and the one before each).
 const KEEP: usize = 4;
@@ -60,6 +63,8 @@ pub struct Options {
     /// After a build, write the `<key>.cbi` that differ (never into a git checkout), and when the
     /// runner was cached, say which differ without writing: what `run` and `test` do.
     pub write_interfaces: bool,
+    /// The runner is built again while one runs (`run --watch`): the line says "again".
+    pub rebuilding: bool,
 }
 
 /// What a build depends on besides the project: the machine's facts, replaceable in a test.
@@ -205,7 +210,14 @@ pub fn ensure_runner(
     let target = env
         .runners
         .join(format!("target-{}", env!("CARGO_PKG_VERSION")));
-    eprintln!("{BUILDING}");
+    eprintln!(
+        "{}",
+        if options.rebuilding {
+            REBUILDING
+        } else {
+            BUILDING
+        }
+    );
     run_cargo(env, &cargo, &dir, &target, options)?;
 
     let produced = target
@@ -451,7 +463,7 @@ fn tree_identity(crates: &[BindingCrate], engine: &Engine) -> String {
             text,
             "path {} {:016x}",
             r#gen::display_path(dir),
-            walk_hash(dir, &["target", ".git"])
+            walk_hash(dir, &["target", ".git", "node_modules"])
         );
     }
     match engine {
@@ -515,15 +527,35 @@ fn walk_into(h: &mut Fnv, base: &Path, rel: &Path, skip: &[&str]) {
             if skip.iter().any(|s| name == *s) {
                 continue;
             }
+            // A Colibri package inside the crate's folder (`path = ".."`): its sources are not
+            // Rust's, and a Colibri edit must not rebuild the runner.
+            if base
+                .join(&here)
+                .join(colibri_runtime::MANIFEST_FILE)
+                .exists()
+            {
+                continue;
+            }
             h.write(b"d");
             h.write(here.to_string_lossy().as_bytes());
             walk_into(h, base, &here, skip);
         } else {
+            if is_colibri_file(&name.to_string_lossy()) {
+                continue;
+            }
             h.write(b"f");
             h.write(here.to_string_lossy().as_bytes());
             facts(h, &meta);
         }
     }
+}
+
+/// A file of the Colibri side of a package: not an input of the Rust build (and the build itself
+/// writes `colibri.rust.lock` and the `.cbi` files next to the manifest).
+fn is_colibri_file(name: &str) -> bool {
+    name.ends_with(".colibri")
+        || name.ends_with(".cbi")
+        || matches!(name, "colibri.toml" | "colibri.lock" | "colibri.rust.lock")
 }
 
 fn file_facts(h: &mut Fnv, path: &Path, label: &str) {
