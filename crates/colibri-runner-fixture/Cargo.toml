@@ -30,3 +30,8 @@ path = "src/bin/fake-cargo.rs"
 [[bin]]
 name = "colibri-under-test"
 path = "../colibri-cli/src/main.rs"
+
+# The fixture runner with another signature, for the tests of interfaces that follow a rebuild.
+[[bin]]
+name = "colibri-runner-fixture-v2"
+path = "src/bin/runner-v2.rs"

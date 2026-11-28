@@ -146,11 +146,36 @@ fn hand_over(
                 locked: request.deps.locked,
                 offline: request.deps.offline,
                 write_lock: true,
+                write_interfaces: true,
             };
-            build::ensure_runner(&env, &root, &found, options)?.path
+            let runner = build::ensure_runner(&env, &root, &found, options)?;
+            say_interfaces(&runner);
+            runner.path
         }
     };
     Ok(Some(run_runner(&runner)))
+}
+
+/// What the runner says of the project's interfaces: the ones it wrote after a build (one line
+/// each), and one warning for those that differ and were not written.
+fn say_interfaces(runner: &build::Runner) {
+    for path in &runner.written {
+        eprintln!("updated {} (the Rust bindings changed)", path.display());
+    }
+    if !runner.stale.is_empty() {
+        let names: Vec<String> = runner
+            .stale
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        eprintln!(
+            "warning: the interface of the Rust bindings is out of date: {}; run `colibri bindings` to update it (the author of a git dependency commits its own)",
+            names.join(", ")
+        );
+    }
+    if let Some(problem) = &runner.interface_problem {
+        eprintln!("warning: cannot compare the interfaces of the Rust bindings: {problem}");
+    }
 }
 
 /// Refuses a runner that is not a `colibri` of this version holding exactly the bindings of the

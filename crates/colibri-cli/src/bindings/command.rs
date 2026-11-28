@@ -54,6 +54,7 @@ pub fn bindings(env: &Env, args: &Args<'_>) -> Result<bool, String> {
         locked: args.deps.locked,
         offline: args.deps.offline,
         write_lock: !args.check,
+        write_interfaces: false,
     };
     // Nothing is written to the project before the build has succeeded.
     let runner = build::ensure_runner(env, &root, &found, options)?;
@@ -93,39 +94,55 @@ pub struct Report {
     pub git_stale: Vec<PathBuf>,
 }
 
-/// Asks the runner for every interface and puts each at its place (never inside a git checkout).
+/// Compares each binding's `<key>.cbi` with the one the runner writes and, unless `check`, puts the
+/// runner's there (never inside a git checkout). The runner's are asked once and kept next to it.
 #[doc(hidden)]
 pub fn write_interfaces(
     runner: &Runner,
     found: &[ProjectBinding],
     check: bool,
 ) -> Result<Report, String> {
+    let live = live_interfaces(runner)?;
+    let mut report = Report::default();
+    for b in found {
+        let text = std::fs::read_to_string(live.join(format!("{}.cbi", b.dep.name)))
+            .map_err(|e| format!("the runner wrote no interface for `{}`: {e}", b.dep.name))?;
+        let same = std::fs::read_to_string(&b.interface).is_ok_and(|old| old == text);
+        if same {
+            continue;
+        }
+        if b.from_git {
+            report.git_stale.push(b.interface.clone());
+            continue;
+        }
+        if !check {
+            build::write_if_changed(&b.interface, &text)?;
+        }
+        report.changed.push(b.interface.clone());
+    }
+    Ok(report)
+}
+
+/// The folder of the interfaces `runner` writes: kept from the first time it was asked (it is
+/// made aside and moved into place, so a folder that is there is whole).
+fn live_interfaces(runner: &Runner) -> Result<PathBuf, String> {
+    let dir = build::interfaces_dir(&runner.path);
+    if dir.is_dir() {
+        return Ok(dir);
+    }
     let scratch = runner
         .path
         .with_file_name(format!("interfaces-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
-    let result = ask_runner(runner, &scratch).and_then(|()| {
-        let mut report = Report::default();
-        for b in found {
-            let text = std::fs::read_to_string(scratch.join(format!("{}.cbi", b.dep.name)))
-                .map_err(|e| format!("the runner wrote no interface for `{}`: {e}", b.dep.name))?;
-            let same = std::fs::read_to_string(&b.interface).is_ok_and(|old| old == text);
-            if same {
-                continue;
-            }
-            if b.from_git {
-                report.git_stale.push(b.interface.clone());
-                continue;
-            }
-            if !check {
-                build::write_if_changed(&b.interface, &text)?;
-            }
-            report.changed.push(b.interface.clone());
-        }
-        Ok(report)
+    let asked = ask_runner(runner, &scratch);
+    let moved = asked.and_then(|()| match std::fs::rename(&scratch, &dir) {
+        Ok(()) => Ok(()),
+        // Another process put it there first: the same text.
+        Err(_) if dir.is_dir() => Ok(()),
+        Err(e) => Err(format!("cannot keep the interfaces of the runner: {e}")),
     });
     let _ = std::fs::remove_dir_all(&scratch);
-    result
+    moved.map(|()| dir)
 }
 
 fn ask_runner(runner: &Runner, scratch: &Path) -> Result<(), String> {
